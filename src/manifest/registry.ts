@@ -20,9 +20,17 @@ import type { Session } from '../session.ts';
 // (the article reader) · embed = an inline quoted/referenced card.
 export type Surface = 'timeline' | 'focused' | 'reader' | 'embed';
 
+/** How an inline REFERENCE to this kind renders (a `nostr:naddr` link inside content): the embed
+ * route's `as` tag, the link label, and the canonical in-app path. Absent ⇒ a reference to this kind
+ * falls back to a generic external (njump) link. This is the reference/link seam, distinct from the
+ * event-card render surfaces - so the content tokenizer stays free of `kind === ...` branches too. */
+export interface RefDescriptor { as: string; label: string; path(bech: string): string; }
+
 export interface KindHandler<D = unknown> {
     /** The event kinds this handler claims (e.g. [1, 1068] for notes+polls, [30023] for articles). */
     kinds: readonly number[];
+    /** How an inline reference to this kind renders inline in content (optional). */
+    ref?: RefDescriptor;
     /** Render this event for a given surface. The SAME code Satori runs today, relocated not rewritten. */
     render(ev: NostrEvent, surface: Surface, deps: D): SafeHtml;
     /** Optional kind-specific prefetch for a page of events (keeps routes from hardcoding hydration). */
@@ -54,6 +62,12 @@ export function handlerFor(kind: number): AnyHandler | undefined {
 
 export function hasHandler(kind: number): boolean {
     return handlers.has(kind);
+}
+
+/** The inline-reference descriptor for a kind, or undefined (→ a generic external link). Uses the
+ * REGISTERED handler only (not the fallback): a clean in-app reference link is opt-in per kind. */
+export function refFor(kind: number): RefDescriptor | undefined {
+    return handlers.get(kind)?.ref;
 }
 
 /** Dispatch: render an event for a surface via its handler (or the fallback). Throws only if neither a

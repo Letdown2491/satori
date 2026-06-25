@@ -13,6 +13,7 @@ import { icon } from './svg.ts';
 import { parseYouTube, youtubeWatchUrl } from '../data/youtube.ts';
 import type { MediaMeta, ImetaMap } from '../nostr/imeta.ts';
 import type { EmojiMap } from '../nostr/emoji30.ts';
+import { refFor } from '../manifest/registry.ts';
 
 const SHORTCODE = /:([a-zA-Z0-9_-]+):/g;
 
@@ -237,7 +238,7 @@ function lightbox(run: MediaItem[]): SafeHtml {
 
 /** A lazily-loaded embed card (helmjs intersect → /embed): the quoted note /
  * article renders inline. The chip inside is the zero-JS + loading fallback. */
-function embedCard(bech: string, as: 'quote' | 'article', label: string, href: string): SafeHtml {
+function embedCard(bech: string, as: string, label: string, href: string): SafeHtml {
     const id = `emb-${bech.slice(-14)}`;
     return html`<div class="quote embed-card" id="${id}" h-get="/embed/${bech}?as=${as}" h-trigger="intersect once" h-target="#${raw(id)}" h-swap="inner" h-push-url="false"><a class="quote-label" href="${href}">${label}</a></div>`;
 }
@@ -265,7 +266,7 @@ export function renderContent(text: string, profiles?: ProfileMap, embeds = true
         if (!t) return false;
         if (t.t === 'image' || t.t === 'video') return true;
         if (t.t === 'quote') return embeds;
-        if (t.t === 'address') return embeds && t.kind === 30023;
+        if (t.t === 'address') return embeds && !!refFor(t.kind); // a kind with an in-app reference embeds as a block
         if (t.t === 'url') return embeds && media.autoLoad && !!parseYouTube(t.url);
         return false;
     };
@@ -309,8 +310,9 @@ export function renderContent(text: string, profiles?: ProfileMap, embeds = true
             parts.push(embeds ? embedCard(tok.bech, 'quote', '↗ quoted note', `/t/${tok.bech}`)
                 : html`<a class="mention" href="/t/${tok.bech}" h-scroll="top instant">↗ quoted note</a>`);
         } else if (tok.t === 'address') {
-            if (tok.kind === 30023) parts.push(embeds ? embedCard(tok.bech, 'article', '↗ article', `/a/${tok.bech}`)
-                : html`<a class="mention" href="/a/${tok.bech}" h-scroll="top instant">↗ article</a>`);
+            const r = refFor(tok.kind); // the manifest decides how a reference to this addressable kind renders
+            if (r) parts.push(embeds ? embedCard(tok.bech, r.as, r.label, r.path(tok.bech))
+                : html`<a class="mention" href="${r.path(tok.bech)}" h-scroll="top instant">${r.label}</a>`);
             else parts.push(html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ event</a>`);
         } else {
             parts.push(html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ ${tok.type}</a>`);
@@ -342,9 +344,9 @@ function inlineEntities(text: string, profiles?: ProfileMap): SafeHtml {
         else if (tok.t === 'image' || tok.t === 'video') parts.push(extLink(tok.url, tok.url));
         else if (tok.t === 'mention') parts.push(mentionLink(tok.pubkey, profiles));
         else if (tok.t === 'quote') parts.push(html`<a class="mention" href="/t/${tok.bech}" h-scroll="top instant">↗ note</a>`);
-        else if (tok.t === 'address') parts.push(tok.kind === 30023
-            ? html`<a class="mention" href="/a/${tok.bech}" h-scroll="top instant">↗ article</a>`
-            : html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ event</a>`);
+        else if (tok.t === 'address') { const r = refFor(tok.kind); parts.push(r
+            ? html`<a class="mention" href="${r.path(tok.bech)}" h-scroll="top instant">${r.label}</a>`
+            : html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ event</a>`); }
         else parts.push(html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ ${tok.type}</a>`);
     }
     return join(parts);

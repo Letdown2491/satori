@@ -10,6 +10,8 @@ import { KIND_ARTICLE } from '../nostr/nip23.ts';
 export const articleHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_ARTICLE],
     actions: ARTICLE_ACTIONS,
+    ref: { as: 'article', label: '↗ article', path: (bech) => `/a/${bech}` }, // inline naddr → the article reader
+
     render(ev, surface, d) {
         if (surface === 'timeline') return articleRow(ev, d.profiles, d.s);
         if (surface === 'reader') return articleReader(ev, d.profiles, d.s);
