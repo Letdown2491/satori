@@ -7,7 +7,7 @@
 //   Phase 2: timeline, Phase 3: focused, Phase 4: declared action vocabulary.
 
 import { registerKind, registerFallback, type KindHandler, type Surface } from './registry.ts';
-import { embedPreview, articleEmbedPreview, articleRow, noteRow, type NoteOpts } from '../render/note.ts';
+import { embedPreview, articleEmbedPreview, articleRow, noteRow, focusedNote, articleReader, type NoteOpts } from '../render/note.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import type { ProfileMap } from '../render/util.ts';
 import type { Session } from '../session.ts';
@@ -15,8 +15,9 @@ import type { Session } from '../session.ts';
 // Per-surface render inputs. Accretes as later phases wire more surfaces.
 export interface SatoriDeps {
     profiles?: ProfileMap;
-    s?: Session;     // timeline/focused need the session (media prefs, signing mode, etc.)
-    opts?: NoteOpts; // timeline note-render options (pending, depth, mute, hideParent, inThread)
+    s?: Session;       // timeline/focused/reader need the session (media prefs, signing mode, etc.)
+    opts?: NoteOpts;   // timeline note-render options (pending, depth, mute, hideParent, inThread)
+    inThread?: string; // focused: this thread's nevent, so reply buttons append back here
     bech?: string;   // embed: the embedded entity's bech32 (note/nevent/naddr) - link + lazy-load key
     naddr?: string;  // embed: an article's addressable form (article embed links via this)
     label?: string;  // embed: the note-embed label ("↗ quoted note" / "↩ in reply to")
@@ -29,8 +30,12 @@ const articleHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_ARTICLE],
     render(ev, surface, d) {
         if (surface === 'timeline') return articleRow(ev, d.profiles, d.s);
+        if (surface === 'reader') return articleReader(ev, d.profiles, d.s);
+        // An article reached via /t/ (by nevent) renders as the note-shaped thread anchor, exactly as
+        // getThread does today - it does NOT promote to the reader page. The /a/ route owns the reader.
+        if (surface === 'focused') return focusedNote(ev, d.profiles, d.s, d.inThread);
         if (surface === 'embed') return articleEmbedPreview(ev, d.naddr ?? d.bech ?? '', d.profiles);
-        return notWired(surface); // focused → Phase 3
+        return notWired(surface);
     },
 };
 
@@ -41,8 +46,9 @@ const fallbackHandler: KindHandler<SatoriDeps> = {
     kinds: [],
     render(ev, surface, d) {
         if (surface === 'timeline') return noteRow(ev, d.profiles, d.s, d.opts);
+        if (surface === 'focused') return focusedNote(ev, d.profiles, d.s, d.inThread);
         if (surface === 'embed') return embedPreview(ev, d.bech ?? '', d.profiles, d.label);
-        return notWired(surface);
+        return notWired(surface); // reader is article-only (no /-route for other kinds)
     },
 };
 

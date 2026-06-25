@@ -12,7 +12,7 @@ import { replyParent } from '../nostr/nip10.ts';
 import { getFilters, compileFilters } from '../data/filters.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
-import { profileHeader, focusedNote, noteCard, noteList, articleReader, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
+import { profileHeader, noteCard, noteList, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
 import { renderEvent } from '../manifest/registry.ts';
 import { emptyItem } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
@@ -192,7 +192,7 @@ export async function getThread(ctx: Ctx): Promise<void> {
     // `inThread` (this thread's nevent) lets every reply button append back here.
     // The #thread <ul> is where an optimistic reply is appended (helmjs `append`).
     const tree = renderReplyTree(buildReplyTree(replies.filter((r) => !muted.has(r.pubkey)), id), 0, s.profiles, s, entity);
-    const content = html`<ul class="feed" id="thread">${focusedNote(focused, s.profiles, s, entity)}${tree}</ul>`;
+    const content = html`<ul class="feed" id="thread">${renderEvent(focused, 'focused', { profiles: s.profiles, s, inThread: entity })}${tree}</ul>`;
     sendPage(ctx, content, chromeFor(ctx, s, { title: 'Thread' }));
 }
 
@@ -232,7 +232,7 @@ export async function getArticle(ctx: Ctx): Promise<void> {
     // nip07 cold-decrypt of private lists (bookmark/mute) so the bookmark heart reflects saved
     // state - the article page was missing the primer that the feed/profile already have.
     const primer = pendingPrivateKinds(s).length ? listPrimer({ ret: `/a/${entity}` }) : html``;
-    sendPage(ctx, html`${articleReader(ev, s.profiles, s)}${commentSection(s, ra, ev.pubkey, comments, s.profiles)}${primer}`,
+    sendPage(ctx, html`${renderEvent(ev, 'reader', { profiles: s.profiles, s })}${commentSection(s, ra, ev.pubkey, comments, s.profiles)}${primer}`,
         chromeFor(ctx, s, { title: 'Article', contentH1: true })); // article-title is the page <h1>
 }
 

@@ -16,7 +16,9 @@ import type { NostrEvent } from '../nostr/types.ts';
 import type { SafeHtml } from '../html.ts';
 import type { Session } from '../session.ts';
 
-export type Surface = 'timeline' | 'focused' | 'embed';
+// timeline = feed/list row · focused = the anchor at the top of a thread · reader = a full-page view
+// (the article reader) · embed = an inline quoted/referenced card.
+export type Surface = 'timeline' | 'focused' | 'reader' | 'embed';
 
 export interface KindHandler<D = unknown> {
     /** The event kinds this handler claims (e.g. [1, 1068] for notes+polls, [30023] for articles). */
