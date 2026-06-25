@@ -949,10 +949,14 @@
             vertical-align: middle; line-height: 1; cursor: default;
         }
         .time { color: var(--muted); white-space: nowrap; flex: none; }
-        /* A gift-wrapped private reply: a quiet lock by the timestamp. Accent-tinted so it reads as
-           "only you and the author see this", not as a warning. */
+        /* A gift-wrapped private reply: a quiet lock right after the author's name (ties the privacy to
+           the identity). Accent-tinted so it reads as "only you and the author see this", not a warning.
+           In a note-head the lock takes the auto slack (instead of .author), so name+lock sit together
+           on the left and the timestamp still pushes right. */
         .private-mark { display: inline-flex; align-items: center; flex: none; color: var(--accent); opacity: 0.7; }
         .private-mark .icon { width: 13px; height: 13px; }
+        .note-head .author:has(+ .private-mark) { margin-right: 0; }
+        .note-head .private-mark { margin-right: auto; align-self: center; }
         /* Timestamp doubles as the "open thread" affordance: a muted conversation
            glyph rides after the time; the whole thing is one link to /t/<nevent>. */
         .time-thread { display: inline-flex; align-items: center; gap: 5px; text-decoration: none; }
