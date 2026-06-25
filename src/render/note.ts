@@ -6,7 +6,7 @@
 
 import { neventEncode, naddrEncode } from 'nostr-tools/nip19';
 import { html, join, raw, safeUrl, type SafeHtml } from '../html.ts';
-import { renderContent, renderMarkdown, mediaLightboxes, imgSrc, withEmoji, type MediaPrefs } from './content.ts';
+import { renderContent, renderMarkdown, mediaLightboxes, imgSrc, withEmoji, cleanTrackingParams, type MediaPrefs } from './content.ts';
 import { parseImeta, type ImetaMap } from '../nostr/imeta.ts';
 import { parseEmojiTags } from '../nostr/emoji30.ts';
 import { tokenize } from '../nostr/content.ts';
@@ -489,7 +489,8 @@ export function profileHeader(pubkey: string, profile: Profile | undefined, prof
  * https://; the visible text drops the scheme + trailing slash for a clean look. */
 function websiteLink(raw0?: string): SafeHtml | null {
     if (!raw0) return null;
-    const url = /^https?:\/\//i.test(raw0) ? raw0 : `https://${raw0}`;
+    // Clean tracking params off the profile website too (same privacy stance as content links).
+    const url = cleanTrackingParams(/^https?:\/\//i.test(raw0) ? raw0 : `https://${raw0}`);
     const href = safeUrl(url);
     if (href === '#') return null;
     const text = url.replace(/^https?:\/\//i, '').replace(/\/+$/, '');

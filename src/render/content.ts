@@ -63,7 +63,7 @@ const UTM_PREFIX = /^utm_/i;
 
 /** Strip known tracking params from a URL for display + click-through. Returns the input
  * unchanged if it isn't a parseable http(s) URL, has no query, or carried no tracking params. */
-function cleanTrackingParams(url: string): string {
+export function cleanTrackingParams(url: string): string {
     if (!url.includes('?')) return url;
     let u: URL;
     try { u = new URL(url); } catch { return url; }
