@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join as pathJoin } from 'node:path';
-import { parseCookies, notFound, setPageRenderer, type Ctx } from './http.ts';
+import { parseCookies, notFound, redirect, setPageRenderer, type Ctx } from './http.ts';
 import { page } from './render/layout.ts';
 import { installTorRouting } from './data/ws-tor.ts';
 import { registerSatoriKinds } from './manifest/satori.ts';
@@ -15,7 +15,7 @@ import { startScheduledSweep } from './data/scheduled.ts';
 import { getScheduled, postScheduledCancel } from './routes/scheduled.ts';
 import { prunePersisted, persistedPubkeys } from './store.ts';
 import { adoptOwnerIfUnclaimed, accessMode } from './access.ts';
-import { getSession } from './session.ts';
+import { getSession, isLoggedIn } from './session.ts';
 import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
 import { getProfile, getProfileExtras, getThread, getArticle, getEmbed } from './routes/read.ts';
@@ -229,6 +229,15 @@ async function serveStatic(_req: IncomingMessage, res: ServerResponse, path: str
 
 // --- request dispatch ------------------------------------------------------
 
+// Reachable WITHOUT a session: only the login page + the login flow itself (which creates the
+// session, so it can't require one). Static assets are served above, before routing. EVERYTHING
+// else - including the /media, /avatar, /yt/* media proxies - requires a session, so an exposed
+// instance (clearnet or .onion) shows a stranger only the login wall: never your data, and never
+// your daemon as an open proxy. Default-DENY: a new route is private unless listed here.
+const PUBLIC_ROUTES = new Set([
+    'GET /login', 'POST /login', 'POST /login/nip07', 'POST /login/nip07/verify',
+]);
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // A malformed request target (e.g. `//`) makes new URL throw; respond 400 rather
     // than letting the throw escape into the void-dispatched promise below.
@@ -256,6 +265,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const m = match(method, path);
     if (!m) { notFound(ctx); return; }
     ctx.params = m.params;
+
+    // Default-deny gate: no session + not a public (login) route → the login wall. Covers everything,
+    // including the media proxies, so they can't be used unauthenticated on an exposed instance.
+    if (!isLoggedIn(ctx.session) && !PUBLIC_ROUTES.has(`${method} ${path}`)) {
+        redirect(ctx, '/login');
+        return;
+    }
 
     try {
         await m.handler(ctx);

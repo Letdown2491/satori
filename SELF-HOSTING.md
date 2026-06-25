@@ -52,9 +52,11 @@ Open it in **Tor Browser**. The owner lock from step 2 means only you can actual
 
 ## 4. Client authorization (recommended)
 
-The owner lock stops anyone from *signing in*, but the `.onion` is still *reachable* by anyone who
-learns the address. Tor v3 **client authorization** makes it unreachable - invisible - to anyone
-without your key. Strongly recommended for a truly private door.
+The owner lock stops anyone from *signing in*, and everything except the login page requires a
+session (even the media proxies - default-deny), so a stranger who reaches your `.onion` sees only
+the **login wall**, never your data or your daemon as a proxy. But the wall itself is still
+*reachable* by anyone who learns the address. Tor v3 **client authorization** makes the address
+unreachable - invisible - to anyone without your key. Strongly recommended for a truly private door.
 
 Generate a keypair:
 
