@@ -16,7 +16,7 @@ The browser runs exactly **two** scripts, both general-purpose libraries, neithe
 app-specific:
 
 - **[helmjs](../helmjs)** (`public/helm.js`) — an htmx-style hypermedia engine.
-- **[hateoas-extensions](../hateoas-extensions)** (`public/hx-ext.js`) — bridges
+- **[hateoas-extensions](../hateoas-extensions)** (`public/hext.js`) — bridges
   browser *credentials/capabilities* into the hypermedia flow: NIP-07 signing and
   WebLN payment, via a sign/pay-and-resubmit primitive.
 
@@ -122,6 +122,14 @@ SOCKS5 sidecar**; `.onion` relays added in Settings are routed through it
 (`TOR_SOCKS=socks5h://tor:9050`). Clearnet relays connect directly. Remove
 `TOR_SOCKS` to disable Tor (onion relays then simply fail).
 
+### Self-hosting (production + a Tor `.onion`)
+
+The compose above is dev-flavored (bind-mounts + a file watcher). To run it for real,
+and optionally reach your own client from anywhere over Tor as a `.onion` hidden
+service locked to your Nostr identity (sign-in is owner-only; only the login page is
+reachable unauthenticated), see **[SELF-HOSTING.md](SELF-HOSTING.md)**
+(`docker-compose.prod.yml`).
+
 It's a **local single-user daemon**: the browser hits localhost, the bunker
 connection lives in an in-memory session keyed by an httpOnly `sid` cookie, and the
 port is published only on `127.0.0.1`.
@@ -145,7 +153,7 @@ src/
                 actions, compose, settings, poll, zap, comments, …
   routes/       login, feed, read, note, poll, like, actions, zap, comment, article,
                 profile, settings, notifications, suggest, upload, pages
-public/         helm.js + hx-ext.js (the only client scripts), styles.css (verbatim
+public/         helm.js + hext.js (the only client scripts), styles.css (verbatim
                 Sumi-e port, both themes)
 ```
 
