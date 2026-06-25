@@ -18,6 +18,7 @@ import { getSession } from './session.ts';
 import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
 import { getProfile, getProfileExtras, getThread, getArticle, getEmbed } from './routes/read.ts';
+import { getHandlers } from './routes/handlers.ts';
 import { getAvatar } from './routes/avatar.ts';
 import { getMedia, getVideoEmbed } from './routes/media.ts';
 import { getYtCard, getYtThumb, getYtPlay } from './routes/youtube.ts';
@@ -106,6 +107,7 @@ const ROUTES: Route[] = [
     route('GET', '/t/:id', getThread),
     route('GET', '/a/:naddr', getArticle),
     route('GET', '/embed/:id', getEmbed),
+    route('GET', '/handlers/:id', getHandlers),
     route('GET', '/settings', getSettings),
     route('POST', '/settings/appearance', postAppearance),
     route('POST', '/settings/privacy', postPrivacy),

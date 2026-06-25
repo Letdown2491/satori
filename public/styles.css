@@ -1205,6 +1205,22 @@
         }
         .quote-missing { color: var(--muted); font-size: 13px; }
 
+        /* Unknown-kind (NIP-89 fallback) card: honest, not a note. A muted "kind" label, an
+           optional raw-content preview, and the "open in an app" links - all quiet. */
+        .event-kind {
+            color: var(--muted); font-size: 12px; letter-spacing: 0.02em;
+            text-transform: uppercase; margin: 1px 0 6px;
+        }
+        .event-raw {
+            white-space: pre-wrap; word-break: break-word; color: var(--muted);
+            font-size: 13px; max-height: 8.5em; overflow: hidden; margin-bottom: 8px;
+        }
+        .event-open { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 2px; }
+        .event-open-link { color: var(--accent); font-size: 13px; text-decoration: none; }
+        .event-open-link:hover, .event-open-link:focus-visible { text-decoration: underline; }
+        .event-open-link.njump { color: var(--muted); }
+        .event-unsupported { color: var(--muted); font-size: 13px; }
+
         /* Quiet empty/loading states - a still line, centered, with an ensō. */
         .empty {
             color: color-mix(in srgb, var(--text) 80%, transparent); padding: 56px 20px; text-align: center;
