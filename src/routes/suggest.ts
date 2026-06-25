@@ -9,6 +9,8 @@
 import { npubEncode } from 'nostr-tools/nip19';
 import { requireLogin, ensureProfiles } from './common.ts';
 import { ensureLists } from '../actions.ts';
+import { searchPeople } from '../data/search.ts';
+import { readAppearance } from '../theme.ts';
 import { searchEmoji, type Emoji } from '../emoji.ts';
 import { avatar, displayName } from '../render/util.ts';
 import { withEmoji } from '../render/content.ts';
@@ -77,12 +79,20 @@ export async function getSuggest(ctx: Ctx): Promise<void> {
     const mm = MENTION_RE.exec(before);
     if (mm) {
         await ensureLists(s, ['follow']);
-        const pks = searchProfiles(s, mm[1]!.toLowerCase());
+        const q = mm[1]!.toLowerCase();
+        let pks = searchProfiles(s, q);
         if (pks.length) {
             await ensureProfiles(s, pks).catch(() => { /* names degrade to npub */ });
-            sendFragment(ctx, mentionOptions(s, pks));
-            return;
+        } else if (q.length >= 2) {
+            // Hybrid fallback: nothing in the local cache matches, so reach for the network (NIP-50,
+            // the same search /search uses). Local stays instant + private; only a name your cache
+            // can't resolve hits relays (already debounced 150ms by the textarea trigger). This does
+            // leak the typed query to the search relays - the accepted tradeoff for @-ing a stranger.
+            const found = await searchPeople(s.pool, readAppearance(ctx).searchProfileRelays, q, 6).catch(() => []);
+            for (const r of found) s.profiles.set(r.pubkey, r.profile); // fresh profiles → render directly
+            pks = found.map((r) => r.pubkey);
         }
+        if (pks.length) { sendFragment(ctx, mentionOptions(s, pks)); return; }
     }
     const em = EMOJI_RE.exec(before);
     if (em) {
