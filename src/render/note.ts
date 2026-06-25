@@ -235,7 +235,7 @@ function replyFacesEl(key: string, href: string, s?: Session): SafeHtml {
  * slot in. Each id maps to its button below; the list decides which appear and in what order. */
 export const NOTE_ACTIONS = ['reply', 'quote', 'like', 'zap', 'bookmark', 'mute', 'pin'] as const;
 
-function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThread?: string, faces = true, mute = false): SafeHtml {
+export function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThread?: string, faces = true, mute = false): SafeHtml {
     const mine = !!s && ev.pubkey === s.me;
     // In a thread, the reply carries the thread context so it appends back here
     // (optimistic reply) instead of landing on the feed.

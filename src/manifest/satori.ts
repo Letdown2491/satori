@@ -9,6 +9,7 @@
 import { registerKind, registerFallback, type KindHandler, type Surface } from './registry.ts';
 import { embedPreview, articleEmbedPreview, articleRow, noteRow, focusedNote, articleReader, NOTE_ACTIONS, ARTICLE_ACTIONS, type NoteOpts } from '../render/note.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
+import { pictureHandler } from './picture.ts';
 import type { ProfileMap } from '../render/util.ts';
 import type { Session } from '../session.ts';
 
@@ -56,5 +57,6 @@ const fallbackHandler: KindHandler<SatoriDeps> = {
 
 export function registerSatoriKinds(): void {
     registerKind(articleHandler);
+    registerKind(pictureHandler); // Phase 6 litmus: NIP-68 picture (kind 20) - added purely in the manifest layer
     registerFallback(fallbackHandler);
 }

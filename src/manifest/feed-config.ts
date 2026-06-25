@@ -7,6 +7,6 @@ import { KIND_POLL } from '../nostr/nip88.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 
 export const FEED_KINDS = {
-    note: [1, KIND_POLL] as number[],     // the timeline feeds (following/followers/commons): notes + polls (1, 1068)
+    note: [1, KIND_POLL, 20] as number[], // timeline feeds (following/followers/commons): notes + polls + NIP-68 pictures (1, 1068, 20)
     longform: [KIND_ARTICLE] as number[], // the longform feed (30023)
 };
