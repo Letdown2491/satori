@@ -14,7 +14,7 @@ import { dmUnread } from './dm-read.ts';
 import { myDmReadRelays, publishWrapPair } from './dm-routing.ts';
 import { recordScan } from './dm-metrics.ts';
 import {
-    buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
+    buildRumor, buildPrivateReplyRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
     KIND_GIFTWRAP, KIND_DM, KIND_DM_RELAYS, KIND_PRIVATE_REPLY, type Rumor,
 } from '../nostr/nip17.ts';
 import { replyParent } from '../nostr/nip10.ts';
@@ -528,4 +528,31 @@ export async function sendDm(s: Session, peer: string, text: string): Promise<bo
         scheduleFlush();
         return true;
     } catch (e) { console.warn('[dms] send failed:', (e as Error)?.message ?? e); return false; }
+}
+
+/** Send a PRIVATE reply (bunker): a kind:1 reply rumor (NIP-10 `baseTags` built exactly like a public
+ * reply) gift-wrapped to the note author AND yourself, delivered to their DM relays. Never published as
+ * a public note. Returns the rumor so the caller can render it optimistically in-thread. Null on failure. */
+export async function sendPrivateReply(s: Session, author: string, parentId: string, baseTags: string[][], content: string): Promise<Rumor | null> {
+    if (!signsOnServer(s) || !s.me) return null;
+    const sg = s as Signed;
+    const me = sg.me;
+    const body = content.trim();
+    if (!body) return null;
+    const rumor = buildPrivateReplyRumor(me, baseTags, body);
+
+    const wrapFor = async (target: string): Promise<NostrEvent> => {
+        const encrypted = await sg.signer.nip44Encrypt(target, JSON.stringify(rumor));
+        const seal = await sg.signer.signEvent(sealTemplate(me, encrypted));
+        return finalizeWrap(seal, target);
+    };
+
+    try {
+        const [toPeer, toSelf] = await Promise.all([wrapFor(author), wrapFor(me)]);
+        await publishWrapPair(sg, author, toPeer, toSelf);
+        // Cache our own copy keyed by the parent note, so it shows in-thread immediately.
+        cache.set(toSelf.id, { kind: 'reply', owner: me, parent: parentId, id: rumor.id, from: me, at: rumor.created_at, text: body, tags: rumor.tags });
+        scheduleFlush();
+        return rumor;
+    } catch (e) { console.warn('[dms] private reply failed:', (e as Error)?.message ?? e); return null; }
 }

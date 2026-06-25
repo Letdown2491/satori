@@ -1406,6 +1406,14 @@ html[data-theme^="sumi-e"] .article-body a.mention { text-decoration: none; }
 #cw-toggle:checked ~ .compose-foot .cw-btn { color: var(--warn); }
 .compose-box .field-input { margin-top: 8px; }
 
+/* Reply privately: same hidden-checkbox pattern as CW. When on, the lock button turns accent and the
+   caption reveals - the one explicit signal that this reply is gift-wrapped, not public. */
+.private-check { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+.compose-box .private-row { margin-top: 10px; display: none; align-items: center; gap: 7px; font-size: 13px; color: var(--accent); }
+.compose-box .private-row .icon { width: 14px; height: 14px; flex: none; }
+#private-toggle:checked ~ .private-row { display: flex; }
+#private-toggle:checked ~ .compose-foot .private-btn { color: var(--accent); }
+
 /* ── Phase 3b: poll vote forms (keep options stacked, not flexed by `form{}`) ──*/
 .poll-opt-form { display: block; margin: 0; }
 .poll-opt-form .poll-option { width: 100%; }

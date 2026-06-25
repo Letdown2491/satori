@@ -25,10 +25,13 @@ import { articleComposePage, draftsScreen, type ArticleComposeCtx } from '../ren
 import { getDraft, saveDraft, listDrafts, newDraftId, type NoteDraft, type PollDraft } from '../drafts.ts';
 import { composeSyncEl } from './article.ts';
 import { addScheduled, listScheduled } from '../data/scheduled.ts';
+import { sendPrivateReply } from '../data/dms.ts';
+import { beginPrivateReplySend, sealStep, wrapPrivateReplyStep } from '../data/dms-nip07.ts';
+import type { Rumor } from '../nostr/nip17.ts';
 import { page } from '../render/layout.ts';
 import { requireLogin, chromeFor, ensureProfiles, LAND_ON_FEED } from './common.ts';
 import { readSignedEvent } from '../nip07.ts';
-import { readForm, redirect, sendPage, sendFragment, sendSignRequest, type Ctx } from '../http.ts';
+import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, type Ctx } from '../http.ts';
 import { feedDocument } from './feed.ts';
 import { pollComposeFields } from '../render/poll.ts';
 import type { Session } from '../session.ts';
@@ -93,6 +96,10 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
              row reveals on :checked, pure CSS. The checkbox is also the submitted cw field. -->
         <input type="checkbox" id="cw-toggle" name="cw" value="1" class="cw-check"${c.cw ? raw(' checked') : raw('')}>
         <div class="cw-row"><input class="cw-reason-input" type="text" name="cw_reason" value="${c.cwReason ?? ''}" placeholder="Content warning reason (optional)" autocomplete="off"></div>
+        <!-- Private reply (replies only): the .private-btn lock toggles this checkbox. When on it turns
+             accent and reveals the caption; the form posts private=1 → a gift-wrapped reply, not a public one. -->
+        ${c.reply ? html`<input type="checkbox" id="private-toggle" name="private" value="1" class="private-check">
+        <div class="private-row">${icon('lock')}<span>Gift-wrapped: only ${c.reply.name} can read this. It won’t appear publicly.</span></div>` : null}
         <!-- Schedule (new notes only): the .schedule-btn clock toggles this checkbox; the row
              reveals on :checked (pure CSS, like CW). The "Schedule" button sends do=schedule. -->
         ${c.isNew ? html`<input type="checkbox" id="schedule-toggle" class="sched-check">
@@ -110,6 +117,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         <div class="compose-foot">
           <label class="attach-btn" id="compose-attach" title="Add photo or video" aria-label="Add photo or video">${icon('image')}${composeFileInput()}</label>
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
+          ${c.reply ? html`<label class="attach-btn private-btn" for="private-toggle" title="Reply privately - gift-wrapped, only the author can read it" aria-label="Reply privately">${icon('lock')}</label>` : null}
           ${c.isNew ? html`<label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>` : null}
           <!-- Zero-JS only: with JS the file auto-uploads on select, so this fallback
                button is hidden (noscript). It submits the form to its /upload action. -->
@@ -173,6 +181,12 @@ export function getComposePreview(ctx: Ctx): void {
     const content = [text, ...mediaUrls].filter(Boolean).join('\n');
     if (!content) { sendFragment(ctx, html``); return; }
     sendFragment(ctx, composePreview(s.me, content, imeta, s.profiles));
+}
+
+/** A decrypted private-reply rumor as a synthetic kind:1 event (sig empty, never published) so it
+ * renders in-thread exactly like a public reply - the lock badge marks it private. */
+function rumorEvent(r: Rumor): NostrEvent {
+    return { id: r.id, pubkey: r.pubkey, created_at: r.created_at, kind: r.kind, tags: r.tags, content: r.content, sig: '' };
 }
 
 /** Decode an nevent (or note1) into a reply target { id, pubkey }. */
@@ -388,6 +402,29 @@ export async function postNote(ctx: Ctx): Promise<void> {
         ...(scheduledAt ? { createdAt: scheduledAt } : {}),
     };
 
+    // Private reply (NIP-59 gift-wrapped): a reply only, delivered to the author's DM relays - never
+    // published publicly. We build the EXACT NIP-10 tags via signNote+capture signer (so it threads and
+    // renders like a public reply), then wrap instead of publish. Both signing families, parity with DMs.
+    if (replyNevent && form.get('private') === '1') {
+        const rt = decodeReplyTo(replyNevent);
+        if (!rt?.pubkey || !rt.id) { back("Can't send a private reply without knowing the author."); return; }
+        const tmpl = await signNote(captureSigner, s.pool, s.me, s.myRelays!, opts); // tags only; never signed/published
+        const baseTags = tmpl.signed.tags;
+        if (signsOnClient(s)) {
+            const r = beginPrivateReplySend(s, rt.pubkey, rt.id, baseTags, content);
+            if (!r) { back("Couldn't start the private reply."); return; }
+            const q = new URLSearchParams({ reply: replyNevent, chain: r.chainId });
+            if (inthread) q.set('inthread', inthread);
+            sendSignRequest(ctx, { items: r.items }, `/note/private/seal?${q}`, 'nip44_encrypt_batch');
+            return;
+        }
+        const rumor = await sendPrivateReply(s, rt.pubkey, rt.id, baseTags, content);
+        if (!rumor) { back("Couldn't send the private reply.", 502); return; }
+        if (inthread && ctx.isPartial) { sendReplyToThread(ctx, s, rumorEvent(rumor), inthread, undefined, true); return; }
+        redirect(ctx, `/t/${replyNevent}`);
+        return;
+    }
+
     // client-signs: build the exact template via signNote+capture signer, hand to the extension/app.
     if (signsOnClient(s)) {
         const prepared = await signNote(captureSigner, s.pool, s.me, s.myRelays!, opts);
@@ -467,6 +504,44 @@ export async function postNotePublish(ctx: Ctx): Promise<void> {
     // Undo off but a thread reply: append the confirmed reply; else land on the feed.
     if (inthread) { sendReplyToThread(ctx, s as Session & { me: string }, prepared.signed, inthread); return; }
     sendFragment(ctx, await feedDocument(ctx, s as Session & { me: string }), LAND_ON_FEED);
+}
+
+/** Error fragment for a stalled private-reply send chain. Appended into the open thread (and the compose
+ * modal closed) so it never wipes the page body the boosted form was targeting. */
+function privateSendError(ctx: Ctx, msg: string): void {
+    sendFragment(ctx, html`<li class="notice error">${msg}</li><div id="modal" h-oob="true"></div>`,
+        { 'H-Retarget': '#thread', 'H-Reswap': 'append' }, 400);
+}
+
+/** POST /note/private/seal - nip07 continuation: encrypt results in, build the seal templates, sign-batch.
+ * Mirrors the DM send chain but routed through the note composer (carries reply/inthread for the wrap). */
+export async function postPrivateReplySeal(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return; if (!signsOnClient(s)) { privateSendError(ctx, 'Wrong signing mode.'); return; }
+    const chainId = ctx.query.get('chain') ?? '';
+    const results = await readBatchResults(ctx.req);
+    const next = results ? sealStep(s, chainId, results) : null;
+    if (!next) { privateSendError(ctx, "Couldn't send the private reply."); return; }
+    const q = new URLSearchParams({ chain: chainId });
+    const reply = ctx.query.get('reply'); if (reply) q.set('reply', reply);
+    const inthread = ctx.query.get('inthread'); if (inthread) q.set('inthread', inthread);
+    sendSignRequest(ctx, { templates: next.templates }, `/note/private/wrap?${q}`, 'sign_event_batch');
+}
+
+/** POST /note/private/wrap - nip07 continuation: signed seals in, wrap + publish to the author's DM
+ * relays, then append the optimistic (lock-badged) reply in-thread, or redirect to the thread. */
+export async function postPrivateReplyWrap(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return; if (!signsOnClient(s)) { privateSendError(ctx, 'Wrong signing mode.'); return; }
+    const chainId = ctx.query.get('chain') ?? '';
+    const results = await readBatchResults(ctx.req);
+    const sent = results ? await wrapPrivateReplyStep(s, chainId, results) : null;
+    if (!sent) { privateSendError(ctx, "Couldn't send the private reply."); return; }
+    const reply = ctx.query.get('reply');
+    const inthread = (reply && ctx.query.get('inthread')) || null;
+    const ev = rumorEvent({ id: sent.id, pubkey: s.me, created_at: sent.at, kind: 1, tags: sent.tags, content: sent.content });
+    if (inthread) { sendReplyToThread(ctx, s as Session & { me: string }, ev, inthread, undefined, true); return; }
+    redirect(ctx, reply ? `/t/${reply}` : '/');
 }
 
 /** GET /note/tick?token= - the undo countdown poller. Each second it re-renders the

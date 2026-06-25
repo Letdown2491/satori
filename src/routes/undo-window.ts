@@ -28,9 +28,9 @@ const APPEND_THREAD = { 'H-Retarget': '#thread', 'H-Reswap': 'append' };
  * the boosted form's default body-swap is overridden. */
 export function sendReplyToThread(
     ctx: Ctx, s: Session & { me: string }, ev: NostrEvent, inThread: string,
-    pending?: { token: string; seconds: number },
+    pending?: { token: string; seconds: number }, isPrivate = false,
 ): void {
-    const card = noteCard(ev, s.profiles, s, { hideParent: true, depth: 0, inThread, pending });
+    const card = noteCard(ev, s.profiles, s, { hideParent: true, depth: 0, inThread, pending, isPrivate });
     sendFragment(ctx, html`${card}<div id="modal" h-oob="true"></div>`, APPEND_THREAD);
 }
 

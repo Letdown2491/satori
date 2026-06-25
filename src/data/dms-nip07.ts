@@ -19,7 +19,7 @@ import { myDmReadRelays, publishWrapPair } from './dm-routing.ts';
 import { recordScan } from './dm-metrics.ts';
 import { coerceEvent } from '../nip07.ts';
 import {
-    buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
+    buildRumor, buildPrivateReplyRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
     KIND_GIFTWRAP, KIND_SEAL, KIND_DM, KIND_PRIVATE_REPLY, type Rumor,
 } from '../nostr/nip17.ts';
 import { replyParent } from '../nostr/nip10.ts';
@@ -120,6 +120,7 @@ interface SendChain {
     rumor: Rumor;
     targets: string[]; // [peer, me] - aligned to the encrypt + sign batches
     text: string;
+    replyParent?: string; // set => this is a private REPLY to a public note (cache as 'reply', not 'msg')
     expires: number;
 }
 type Chain = SyncChain | SendChain;
@@ -396,13 +397,20 @@ export function sealStep(s: Session, chainId: string, results: BatchResult[]): {
     return { templates: ciphers.map((c) => sealTemplate(s.me!, c!)) };
 }
 
-/** Apply the signed seals: wrap each locally with a throwaway ephemeral key, publish
- * to the right inbox relays, cache our own copy, and return the optimistic bubble.
- * Null if a seal didn't verify. */
 export async function wrapStep(s: Session, chainId: string, results: BatchResult[]): Promise<DmMessage | null> {
     const chain = takeSend(chainId);
     if (!chain) return null;
     dropChain(chainId);
+    const me = s.me!;
+    const selfId = await finalizeAndPublish(s, chain, results);
+    if (!selfId) return null;
+    memSet(selfId, { kind: 'msg', peer: chain.peer, from: me, at: chain.rumor.created_at, text: chain.text });
+    listMem.delete(me); // the new message changes the conversation list
+    return { id: selfId, from: me, at: chain.rumor.created_at, text: chain.text };
+}
+
+/** Shared seal-verify + wrap + publish. Returns the self-wrap id (our kept copy), or null on failure. */
+async function finalizeAndPublish(s: Session, chain: SendChain, results: BatchResult[]): Promise<string | null> {
     const me = s.me!;
     const seals = chain.targets.map((_, i) => {
         const r = results[i];
@@ -417,10 +425,33 @@ export async function wrapStep(s: Session, chainId: string, results: BatchResult
         const toPeer = finalizeWrap(sealPeer, chain.peer);
         const toSelf = finalizeWrap(sealSelf, me);
         await publishWrapPair(s, chain.peer, toPeer, toSelf);
-        memSet(toSelf.id, { kind: 'msg', peer: chain.peer, from: me, at: chain.rumor.created_at, text: chain.text });
-        listMem.delete(me); // the new message changes the conversation list
-        return { id: toSelf.id, from: me, at: chain.rumor.created_at, text: chain.text };
+        return toSelf.id;
     } catch (e) { console.warn('[dms-nip07] send failed:', (e as Error)?.message ?? e); return null; }
+}
+
+/** Begin a private-reply send (nip07): the kind:1 reply rumor is built server-side (NIP-10 tags from the
+ * compose pipeline); we wrap it to the note `author` AND self. Returns the encrypt batch + chainId. */
+export function beginPrivateReplySend(s: Session, author: string, parentId: string, baseTags: string[][], content: string): { chainId: string; items: { pubkey: string; plaintext: string }[] } | null {
+    const body = content.trim();
+    if (!body) return null;
+    const rumor = buildPrivateReplyRumor(s.me!, baseTags, body);
+    const targets = [author, s.me!];
+    const plaintext = JSON.stringify(rumor);
+    const chainId = putChain({ kind: 'send', peer: author, rumor, targets, text: body, replyParent: parentId, expires: Date.now() + CHAIN_TTL_MS });
+    return { chainId, items: targets.map((t) => ({ pubkey: t, plaintext })) };
+}
+
+/** Apply the signed seals for a private reply: wrap + publish, cache our own copy keyed by the parent
+ * note, and return it as a PrivateReply for optimistic in-thread render. Null if a seal didn't verify. */
+export async function wrapPrivateReplyStep(s: Session, chainId: string, results: BatchResult[]): Promise<PrivateReply | null> {
+    const chain = takeSend(chainId);
+    if (!chain || !chain.replyParent) return null;
+    dropChain(chainId);
+    const me = s.me!;
+    const selfId = await finalizeAndPublish(s, chain, results);
+    if (!selfId) return null;
+    memSet(selfId, { kind: 'reply', parentId: chain.replyParent, id: chain.rumor.id, from: me, at: chain.rumor.created_at, text: chain.text, tags: chain.rumor.tags });
+    return { id: chain.rumor.id, parent: chain.replyParent, from: me, at: chain.rumor.created_at, content: chain.text, tags: chain.rumor.tags };
 }
 
 // --- the quiet unread dot (nip07) ------------------------------------------------
