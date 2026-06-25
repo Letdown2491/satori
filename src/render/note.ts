@@ -15,7 +15,7 @@ import { icon, enso } from './svg.ts';
 import { replyParent } from '../nostr/nip10.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
 import { parseArticle, readingMinutes, KIND_ARTICLE } from '../nostr/nip23.ts';
-import { renderEvent } from '../manifest/registry.ts';
+import { renderEvent, actionsFor } from '../manifest/registry.ts';
 import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
 import { isZapped } from '../zaps.ts';
 import { replyFaces } from '../replies.ts';
@@ -253,9 +253,12 @@ export function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThrea
         mute: mute && s && !mine ? muteAct(s, ev.pubkey, ev.id) : null,
         pin: mine && s ? pinButton(s, ev.id) : null,
     };
+    // The action set + order come from the kind's manifest declaration (actionsFor), so a kind
+    // affords exactly what its handler declares; NOTE_ACTIONS is the fallback for an unregistered kind.
+    const ids = actionsFor(ev.kind) ?? NOTE_ACTIONS;
     return html`
       <div class="note-actions">
-        <div class="note-acts">${NOTE_ACTIONS.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
+        <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
         ${faces ? replyFacesEl(ev.id, `/t/${nevent}`, s) : null}
       </div>`;
 }
@@ -297,9 +300,10 @@ function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPage = fal
         bookmark: s && naddr ? bookmarkButton(s, naddr) : null,
         pin: mine && s && naddr ? pinButton(s, naddr) : null,
     };
+    const ids = actionsFor(ev.kind) ?? ARTICLE_ACTIONS; // article's declared vocabulary (manifest-driven)
     return html`
       <div class="note-actions article-actions">
-        <div class="note-acts">${ARTICLE_ACTIONS.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
+        <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
         ${!onPage ? replyFacesEl(naddr, `/a/${naddr}`, s) : null}
       </div>`;
 }

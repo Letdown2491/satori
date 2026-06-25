@@ -59,7 +59,10 @@ function pictureCard(ev: NostrEvent, d: SatoriDeps, compact: boolean): SafeHtml 
 
 export const pictureHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_PICTURE],
-    actions: ['reply', 'quote', 'like', 'zap', 'bookmark'], // declared control vocabulary
+    // Declared control vocabulary, now LOAD-BEARING (actionsFor drives the row). pictureCard renders
+    // via noteActions without the mute flag, so a picture affords pin (your own) but not row-mute -
+    // this list is exactly that set (was missing pin while the field was still decorative).
+    actions: ['reply', 'quote', 'like', 'zap', 'bookmark', 'pin'],
     render(ev, surface, d) {
         if (surface === 'reader') return notWired(surface); // pictures have no reader page
         return pictureCard(ev, d, surface === 'embed');

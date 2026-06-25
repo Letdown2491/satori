@@ -66,6 +66,14 @@ export function refFor(kind: number): RefDescriptor | undefined {
     return handlers.get(kind)?.ref;
 }
 
+/** The declared action vocabulary (ids, in render order) for a kind, or undefined. Registered
+ * handler only (mirrors refFor); the render layer falls back to its built-in default set. This is
+ * what makes `handler.actions` LOAD-BEARING: the action row is assembled from the kind's manifest
+ * declaration, not a hardcoded list, so a kind affords exactly what it declares. */
+export function actionsFor(kind: number): readonly string[] | undefined {
+    return handlers.get(kind)?.actions;
+}
+
 /** Dispatch: render an event for a surface via its handler (or the fallback). Throws only if neither a
  * handler nor a fallback is registered - a boot wiring error, surfaced loudly rather than silently. */
 export function renderEvent<D>(ev: NostrEvent, surface: Surface, deps: D): SafeHtml {
