@@ -1,7 +1,8 @@
-// The search page (NIP-50): a query box + People and Notes result sections. The
-// form is a real GET to /search?q= (boosted → snappy partial nav with JS, full nav
-// without), so results are shareable/bookmarkable. v1 is submit-based (each query
-// hits several search relays, so live-as-you-type would be heavy); see [[search-plan]].
+// The search page (NIP-50): a query box + People and Notes result sections. LIVE as-you-type -
+// the input debounce-swaps just #search-results (helmjs h-trigger="input debounce:400", min 2 chars
+// server-side so the relay fan-out is throttled); Enter / the button does a boosted GET to /search?q=
+// so results stay shareable/bookmarkable, and it degrades to a plain submit with JS off. searchResults
+// is the swappable region. See [[search-plan]].
 
 import { html, join, raw, type SafeHtml } from '../html.ts';
 import { icon, enso } from './svg.ts';
@@ -27,31 +28,27 @@ function personRow(pubkey: string, profile: Profile, profiles: ProfileMap): Safe
       </li>`;
 }
 
-export function searchPage(
+/** The swappable results region (empty/seek state OR the People/Notes tabset) - the live-as-you-type
+ * target swapped into #search-results, and embedded in the full page below. Returns the INNER of
+ * #search-results (h-swap="inner"). */
+export function searchResults(
     q: string,
     people: { pubkey: string; profile: Profile }[],
     notes: NostrEvent[],
     s: Session & { me: string },
 ): SafeHtml {
-    const form = html`
-      <form class="search-form" action="/search" method="get" role="search">
-        <input class="search-input" id="search-input" type="search" name="q" value="${q}"
-               placeholder="Search people and notes…" aria-label="Search" autocomplete="off" autofocus>
-        <button type="submit" class="search-go" aria-label="Search">${icon('search')}</button>
-      </form>`;
-    // On-theme empty states: a still ensō + a rotating Zen/Taoist line (the input's
-    // placeholder carries the actual instruction). Pre-query draws from the `seek`
-    // pool (naming/seeking); no-results draws from `empty` with the query underneath.
-    if (!q) return html`${form}<div class="view-empty search-empty">${enso(52, true)}<p class="search-quote">${quote('seek')}</p></div>`;
+    // On-theme empty states: a still ensō + a rotating Zen/Taoist line (the input's placeholder
+    // carries the actual instruction). Pre-query / still-typing draws from the `seek` pool
+    // (naming/seeking); no-results draws from `empty` with the query underneath.
+    if (!q) return html`<div class="view-empty search-empty">${enso(52, true)}<p class="search-quote">${quote('seek')}</p></div>`;
     if (people.length === 0 && notes.length === 0) {
-        return html`${form}<div class="view-empty search-empty">${enso(52, true)}<p class="search-quote">${quote('empty')}</p><p class="search-noresults">Nothing found for “${q}”.</p></div>`;
+        return html`<div class="view-empty search-empty">${enso(52, true)}<p class="search-quote">${quote('empty')}</p><p class="search-noresults">Nothing found for “${q}”.</p></div>`;
     }
-    // CSS radio-hack tabs: both result sets are already fetched, so switching is
-    // instant + zero-JS (native radio arrow-key nav works). Count badges keep the
-    // other tab discoverable. Default to whichever tab has results (People first).
+    // CSS radio-hack tabs: both result sets are already fetched, so switching is instant + zero-JS
+    // (native radio arrow-key nav works). Count badges keep the other tab discoverable. Default to
+    // whichever tab has results (People first).
     const peopleFirst = people.length > 0;
     return html`
-      ${form}
       <div class="tabset">
         <input type="radio" name="stab" id="stab-people" class="tabset-radio"${peopleFirst ? raw(' checked') : raw('')}>
         <input type="radio" name="stab" id="stab-notes" class="tabset-radio"${peopleFirst ? raw('') : raw(' checked')}>
@@ -66,4 +63,23 @@ export function searchPage(
           ${notes.length ? html`<ul class="feed">${noteList(notes, s.profiles, s)}</ul>` : html`<p class="status search-hint">No notes found.</p>`}
         </section>
       </div>`;
+}
+
+export function searchPage(
+    q: string,
+    people: { pubkey: string; profile: Profile }[],
+    notes: NostrEvent[],
+    s: Session & { me: string },
+): SafeHtml {
+    // The input debounce-swaps #search-results live (h-get + input trigger); the form's submit /
+    // Enter is the boosted full nav (shareable URL). Both degrade to a plain GET with JS off.
+    const form = html`
+      <form class="search-form" action="/search" method="get" role="search">
+        <input class="search-input" id="search-input" type="search" name="q" value="${q}"
+               placeholder="Search people and notes…" aria-label="Search" autocomplete="off" autofocus
+               h-get="/search" h-trigger="input debounce:400" h-include="#search-input"
+               h-target="#search-results" h-swap="inner" h-push-url="false">
+        <button type="submit" class="search-go" aria-label="Search">${icon('search')}</button>
+      </form>`;
+    return html`${form}<div id="search-results" aria-live="polite">${searchResults(q, people, notes, s)}</div>`;
 }
