@@ -12,7 +12,8 @@ import { replyParent } from '../nostr/nip10.ts';
 import { getFilters, compileFilters } from '../data/filters.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
-import { profileHeader, focusedNote, noteCard, noteList, articleReader, naddrFor, pagerSentinel, embedPreview, articleEmbedPreview, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
+import { profileHeader, focusedNote, noteCard, noteList, articleReader, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
+import { renderEvent } from '../manifest/registry.ts';
 import { emptyItem } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
 import { type ProfileMap } from '../render/util.ts';
@@ -259,7 +260,7 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
         const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
         if (!ev || ev.kind !== KIND_ARTICLE) { sendFragment(ctx, fb()); return; }
         await ensureProfiles(s, notePubkeys([ev]));
-        sendFragment(ctx, articleEmbedPreview(ev, entity, s.profiles));
+        sendFragment(ctx, renderEvent(ev, 'embed', { profiles: s.profiles, bech: entity, naddr: entity }));
         return;
     }
 
@@ -274,14 +275,14 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     // Hydrate the author AND any @mentioned pubkeys in the embed's content, so
     // in-content mentions resolve to @names instead of falling back to @npub.
     await ensureProfiles(s, notePubkeys([ev]));
-    // A long-form article can be quoted by event-id (nevent), not just naddr. Render it as
-    // the clean article card (title + cover + summary), NOT a raw-markdown note body. Link via
-    // a freshly-encoded naddr (its addressable form) so the card opens the article reader.
+    // A long-form article can be quoted by event-id (nevent), not just naddr. The article handler
+    // renders the clean article card (title + cover + summary), NOT a raw-markdown note body, linking
+    // via a freshly-encoded naddr (its addressable form). Any other kind falls through to the note
+    // embed (the registry fallback) - exactly the old article-vs-everything-else branch, now dispatched.
+    let naddr: string | undefined;
     if (ev.kind === KIND_ARTICLE) {
         const identifier = ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
-        const naddr = naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier, relays });
-        sendFragment(ctx, articleEmbedPreview(ev, naddr, s.profiles));
-        return;
+        naddr = naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier, relays });
     }
-    sendFragment(ctx, embedPreview(ev, entity, s.profiles, as === 'quote' ? '↗ quoted note' : '↩ in reply to'));
+    sendFragment(ctx, renderEvent(ev, 'embed', { profiles: s.profiles, bech: entity, naddr, label: as === 'quote' ? '↗ quoted note' : '↩ in reply to' }));
 }
