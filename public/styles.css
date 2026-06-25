@@ -1236,7 +1236,6 @@
             border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
             background: color-mix(in srgb, var(--accent) 8%, transparent);
         }
-        .event-chip.njump { color: var(--muted); } /* the universal fallback, quietest */
         .event-unsupported { color: var(--muted); font-size: 13px; }
 
         /* Quiet empty/loading states - a still line, centered, with an ensō. */
