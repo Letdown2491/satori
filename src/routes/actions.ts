@@ -1,0 +1,214 @@
+// Stateful action routes: POST /act/:action/:target toggles a follow/mute/
+// bookmark/pin; for nip07 it returns H-Nostr-Sign and POST /act/:action/:target/
+// publish is the continuation. Both end by swapping the updated button in place
+// (helmjs), or - zero-JS bunker - by reloading the page the form was on.
+
+import { html } from '../html.ts';
+import {
+    isActionName, isValidTarget, actionKind, ensureList, ensurePrivate, isOn, buildToggle, applyPublished,
+    isPrivateList, buildPrivateToggle, applyPrivatePublished, resolveTarget, writeRelays, published, type ActionName,
+} from '../actions.ts';
+import { actionButton } from '../render/actions.ts';
+import { readSignedEvent, readSignResult } from '../nip07.ts';
+import { requireLogin } from './common.ts';
+import { redirect, safeReferer, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
+import type { Session } from '../session.ts';
+import { signsOnClient, signsOnServer } from '../session.ts';
+
+/** Placement for a private-toggle continuation's button swap (the sign-request set
+ * H-Reswap:none, which would otherwise no-op the swap). Keyed by action+target. */
+const placeBtn = (action: ActionName, target: string) => ({ 'H-Reswap': 'outer', 'H-Retarget': `#act-${action}-${target}` });
+
+/** Mute-from-a-row carries `?card=<eventId>`: on success we dismiss the whole card instead of
+ * swapping the button - an empty body retargeted at `#card-<eventId>` (outer-swap = remove). */
+function dismissCard(ctx: Ctx): string | null {
+    const c = ctx.query.get('card');
+    return c && /^[0-9a-f]{64}$/.test(c) ? c : null;
+}
+const placeDismiss = (eventId: string) => ({ 'H-Reswap': 'outer', 'H-Retarget': `#card-${eventId}` });
+/** Emit the card-dismissal (empty body retargeted at the card) when `?card=` is present. Used at the
+ * end of a mute. No isPartial gate: the nip07 sign-continuation is the lib's own fetch (no H-Request,
+ * so isPartial is false) yet still expects a swap via these headers. Returns true once handled. */
+function emitDismiss(ctx: Ctx): boolean {
+    const card = dismissCard(ctx);
+    if (!card) return false;
+    sendFragment(ctx, html``, placeDismiss(card));
+    return true;
+}
+/** Bunker path: dismiss only for a helmjs (partial) request, so a zero-JS form POST falls through
+ * to a normal redirect/reload instead of getting an empty body. */
+function dismissedCard(ctx: Ctx): boolean {
+    return ctx.isPartial && emitDismiss(ctx);
+}
+
+function parse(ctx: Ctx): { action: ActionName; target: string } | null {
+    const action = ctx.params.action ?? '';
+    const target = ctx.params.target ?? '';
+    if (!isActionName(action) || !isValidTarget(action, target)) return null;
+    return { action, target };
+}
+
+/** The private-chain intent, carried in each continuation URL (STATELESS - no server
+ * token store). `on` (the toggle direction) is added once step 1 (decrypt) computes it. */
+function parsePrivate(ctx: Ctx): { action: ActionName; target: string; on?: boolean } | null {
+    const action = ctx.query.get('action') ?? '';
+    const target = ctx.query.get('target') ?? '';
+    if (!isActionName(action) || !isValidTarget(action, target)) return null;
+    const on = ctx.query.get('on');
+    return { action, target, on: on == null ? undefined : on === '1' };
+}
+function privQuery(action: ActionName, target: string, on?: boolean, card?: string | null): string {
+    const q = new URLSearchParams({ action, target });
+    if (on !== undefined) q.set('on', on ? '1' : '0');
+    if (card) q.set('card', card); // ride the card-dismiss intent through the stateless chain
+    return q.toString();
+}
+
+/** Swap the updated button (helmjs) - or reload the originating page (zero-JS). */
+function respond(ctx: Ctx, s: Session & { me: string }, action: ActionName, target: string): void {
+    if (ctx.isPartial) sendFragment(ctx, actionButton(s, action, target));
+    else redirect(ctx, safeReferer(ctx));
+}
+
+export async function postAction(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const p = parse(ctx);
+    if (!p) { notFound(ctx); return; }
+    const { action, target } = p;
+
+    const prev = await ensureList(s, actionKind(action));
+    if (isPrivateList(action)) await ensurePrivate(s, actionKind(action)); // so isOn sees private state
+    const on = !isOn(s, action, target); // desired next state
+
+    // Private (bunker) write: mute/bookmark go NIP-44-encrypted to self, like Satori.
+    // (nip07 falls through to the public path for now - its key isn't on this server.)
+    if (isPrivateList(action) && signsOnServer(s)) {
+        try {
+            const template = await buildPrivateToggle(s, action, target, on);
+            const signed = await s.signer!.signEvent(template);
+            await s.pool.publish(writeRelays(s), signed);
+            applyPrivatePublished(s, signed, action, target, on);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            sendFragment(ctx, html`<div class="notice error">Couldn't ${action}: ${msg}</div>`, {}, 502);
+            return;
+        }
+        if (dismissedCard(ctx)) return; // mute-from-a-row: drop the card instead of swapping the button
+        respond(ctx, s, action, target);
+        return;
+    }
+
+    // Private (nip07) write: a 3-step extension chain - decrypt current private →
+    // modify → encrypt → sign. STATELESS: the {action,target,on} intent rides in each
+    // continuation URL (no server token store). When there's no private content yet,
+    // skip the decrypt - `on` is already known.
+    if (isPrivateList(action) && signsOnClient(s)) {
+        const kind = actionKind(action);
+        const content = s.lists.get(kind)?.content;
+        const card = dismissCard(ctx);
+        if (content) {
+            sendSignRequest(ctx, { pubkey: s.me, ciphertext: content }, `/act/private/dec?${privQuery(action, target, undefined, card)}`, 'nip44_decrypt');
+        } else {
+            s.privateTags.set(kind, []); // nothing private yet → on is known, encrypt directly
+            const { tag, value } = resolveTarget(action, target);
+            sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(on ? [[tag, value]] : []) }, `/act/private/enc?${privQuery(action, target, on, card)}`, 'nip44_encrypt');
+        }
+        return;
+    }
+
+    // Public path: follow/pin always.
+    const template = buildToggle(action, prev, target, on, s.me);
+    if (signsOnClient(s)) { sendSignRequest(ctx, template, `/act/${action}/${target}/publish`); return; }
+
+    // bunker: sign + publish here.
+    try {
+        const signed = await s.signer!.signEvent(template);
+        if (!await published(s, signed)) throw new Error('no relay accepted it');
+        applyPublished(s, signed);
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        sendFragment(ctx, html`<div class="notice error">Couldn't ${action}: ${msg}</div>`, {}, 502);
+        return;
+    }
+    respond(ctx, s, action, target);
+}
+
+/** nip07 continuation: verify the extension-signed list event, publish, swap. */
+export async function postActionPublish(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const p = parse(ctx);
+    if (!p) { notFound(ctx); return; }
+    const { action, target } = p;
+
+    const signed = await readSignedEvent(ctx.req);
+    if (!signed || signed.pubkey !== s.me || signed.kind !== actionKind(action)) {
+        sendFragment(ctx, html`<div class="notice error">Couldn't verify the signed ${action}.</div>`, {}, 400);
+        return;
+    }
+    if (!await published(s, signed)) {
+        sendFragment(ctx, html`<div class="notice error">Couldn't ${action}: no relay accepted it.</div>`, {}, 502);
+        return;
+    }
+    applyPublished(s, signed);
+    // The continuation is the lib's own fetch (no H-Request); the lib swaps it into
+    // the originating form via the seam. Re-assert placement: the sign-request set
+    // H-Reswap:none (don't swap the JSON template), which mutates the request's swap
+    // to "none" - without these headers the toggled button never swaps in (only a
+    // reload would). Mirrors the note-publish LAND_ON_FEED headers.
+    sendFragment(ctx, actionButton(s, action, target), placeBtn(action, target));
+}
+
+// --- nip07 private-toggle chain (decrypt → encrypt → sign) ------------------
+
+/** Step 1 result: the decrypted current private tags. Cache them, compute the
+ * toggle direction, then ask the extension to encrypt the new private set. */
+export async function postActPrivateDec(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const p = parsePrivate(ctx);
+    if (!p) { sendFragment(ctx, html`<div class="notice error">Couldn’t complete that action. Try again.</div>`, {}, 400); return; }
+    let priv: string[][];
+    try { const j = JSON.parse(String(await readSignResult(ctx.req))); if (!Array.isArray(j)) throw new Error(); priv = j as string[][]; }
+    catch { sendFragment(ctx, html`<div class="notice error">Couldn’t read your private list, so it wasn’t changed.</div>`, {}, 400); return; }
+    const kind = actionKind(p.action);
+    s.privateTags.set(kind, priv);
+    const on = !isOn(s, p.action, p.target);
+    const { tag, value } = resolveTarget(p.action, p.target);
+    const next = priv.filter((t) => !(t[0] === tag && t[1] === value));
+    if (on) next.push([tag, value]);
+    sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(next) }, `/act/private/enc?${privQuery(p.action, p.target, on, dismissCard(ctx))}`, 'nip44_encrypt');
+}
+
+/** Step 2 result: the re-encrypted private content. Build the list event (public
+ * tags minus the target, new encrypted content) and ask the extension to sign it. */
+export async function postActPrivateEnc(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const p = parsePrivate(ctx);
+    if (!p) { sendFragment(ctx, html`<div class="notice error">Couldn’t complete that action. Try again.</div>`, {}, 400); return; }
+    const ciphertext = await readSignResult(ctx.req);
+    if (typeof ciphertext !== 'string') { sendFragment(ctx, html`<div class="notice error">Encryption failed.</div>`, {}, 400); return; }
+    const kind = actionKind(p.action);
+    const { tag, value } = resolveTarget(p.action, p.target);
+    const publicTags = (s.lists.get(kind)?.tags ?? []).filter((t) => !(t[0] === tag && t[1] === value));
+    sendSignRequest(ctx, { kind, created_at: Math.floor(Date.now() / 1000), tags: publicTags, content: ciphertext, pubkey: s.me }, `/act/private/sign?${privQuery(p.action, p.target, p.on, dismissCard(ctx))}`, 'sign_event');
+}
+
+/** Step 3 result: the signed list event. Publish it, update caches, swap the button. */
+export async function postActPrivateSign(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const p = parsePrivate(ctx);
+    if (!p) { sendFragment(ctx, html`<div class="notice error">Couldn’t complete that action. Try again.</div>`, {}, 400); return; }
+    const signed = await readSignedEvent(ctx.req);
+    if (!signed || signed.pubkey !== s.me || signed.kind !== actionKind(p.action)) {
+        sendFragment(ctx, html`<div class="notice error">Couldn’t verify the signed ${p.action}.</div>`, {}, 400);
+        return;
+    }
+    await s.pool.publish(writeRelays(s), signed).catch(() => {});
+    applyPrivatePublished(s, signed, p.action, p.target, p.on ?? true);
+    if (emitDismiss(ctx)) return; // mute-from-a-row (nip07): drop the card instead of swapping the button
+    sendFragment(ctx, actionButton(s, p.action, p.target), placeBtn(p.action, p.target));
+}

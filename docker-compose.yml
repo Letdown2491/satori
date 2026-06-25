@@ -1,0 +1,55 @@
+# Dev-oriented compose: bind-mounts src/ + public/ and runs the server under a
+# polling watcher (dev-watch.mjs), so editing a host file auto-restarts the daemon.
+# NOTE: `node --watch` was used here, but its inotify-based detection does NOT
+# propagate over this bind mount — edits landed on disk but never triggered a
+# restart, so the daemon kept serving STALE code. dev-watch.mjs polls mtimes
+# instead (works over any mount). Logs stream to `docker compose logs -f satori`.
+#
+#   docker compose up -d --build            # build + start in the background
+#   docker compose up -d                    # apply compose changes (recreate)
+#   docker compose logs -f satori-hateoas   # follow logs
+#   docker compose down                     # stop
+#
+# Published only on 127.0.0.1 so it stays a local single-user daemon; inside the
+# container the server binds 0.0.0.0 (HOST) so the port map can reach it.
+
+services:
+  satori-hateoas:
+    build: .
+    container_name: satori-hateoas
+    command: node dev-watch.mjs
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8787
+      # Route .onion relays through the Tor sidecar's SOCKS5 port. `socks5h` lets
+      # the proxy resolve the .onion name (a SOCKS client can't). Remove this to
+      # disable Tor — onion relays then just fail to connect. Clearnet relays
+      # always connect directly, never through Tor.
+      - TOR_SOCKS=socks5h://tor:9050
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+      # The polling watcher itself (so editing it doesn't need a rebuild).
+      - ./dev-watch.mjs:/app/dev-watch.mjs
+      # Persisted sessions (survive container reloads/rebuilds; resumed from cookie).
+      - ./.data:/app/.data
+      # Track the host's timezone (read-only). Needs tzdata in the image (see
+      # Dockerfile) so Node can resolve this file's zone. Scheduled posts parse +
+      # format naive datetime-local values in the daemon's local tz, so this must
+      # match the browser's tz or "today" is blocked and times shift by the offset.
+      - /etc/localtime:/etc/localtime:ro
+      # Keep the image's node_modules (don't let an absent/host one shadow it).
+      - /app/node_modules
+    depends_on:
+      - tor
+    restart: unless-stopped
+
+  # Tor SOCKS5 proxy sidecar — reachable only on the internal compose network (no
+  # published port). satori-hateoas dials .onion relays through it. Swap the image
+  # for any Tor proxy that serves SOCKS5 on 9050.
+  tor:
+    image: dperson/torproxy
+    container_name: satori-tor
+    restart: unless-stopped

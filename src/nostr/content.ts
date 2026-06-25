@@ -1,0 +1,81 @@
+// Pure note-content tokenizer: text → an ordered list of tokens. No DOM, no HTML
+// strings - the UI's Content component turns these into safe nodes via h().
+// Replaces the old contentHtml/nostrEntityHtml string-building.
+
+import { decodeEntity } from './nip19.ts';
+
+export type ContentToken =
+    | { t: 'text'; value: string }
+    | { t: 'url'; url: string }
+    | { t: 'image'; url: string }
+    | { t: 'video'; url: string }
+    | { t: 'mention'; pubkey: string; bech: string }
+    | { t: 'quote'; id: string; relays: string[]; bech: string }
+    | { t: 'address'; kind: number; pubkey: string; identifier: string; relays: string[]; bech: string }
+    | { t: 'entity'; type: string; bech: string };
+
+const IMG_RE = /\.(jpe?g|png|gif|webp|bmp|avif)(\?[^\s]*)?$/i;
+const VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv)(\?[^\s]*)?$/i;
+// An http(s) URL (group 1), a nostr: NIP-21 entity (group 2), or a *bare* bech32
+// entity (group 3) - many notes paste e.g. npub1… without the nostr: prefix. The
+// bare form needs a preceding boundary so it isn't matched inside another word.
+const BECH = '[023456789acdefghjklmnpqrstuvwxyz]{20,}'; // bech32 data charset (no 1/b/i/o)
+const TOKEN_RE = new RegExp(`(https?:\\/\\/[^\\s<]+)|nostr:([a-z0-9]+)|(?<![\\w/])((?:npub1|nprofile1|nevent1|note1|naddr1)${BECH})`, 'gi');
+
+/** Decode a bech32 entity into a token, falling back to raw text (`raw`). */
+function decodeToken(bech: string, raw: string): ContentToken {
+    const d = decodeEntity(bech);
+    if (!d) return { t: 'text', value: raw };
+    if (d.kind === 'mention') return { t: 'mention', pubkey: d.pubkey, bech: d.bech };
+    if (d.kind === 'quote') return { t: 'quote', id: d.id, relays: d.relays, bech: d.bech };
+    if (d.kind === 'address') return { t: 'address', kind: d.addr.kind, pubkey: d.addr.pubkey, identifier: d.addr.identifier, relays: d.addr.relays, bech: d.bech };
+    return { t: 'entity', type: d.type, bech: d.bech };
+}
+
+/** Normalize whitespace consistently for every note (trim, cap blank-line runs). */
+function normalize(text: string): string {
+    return text.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// `normalize` trims + collapses blank lines - right for a whole note, but wrong
+// for an inline fragment (it'd eat the spaces around markdown links/marks), so
+// callers tokenizing a fragment pass normalize=false.
+// A small bounded memo: one note's content is tokenized a few times per render (renderContent +
+// mediaLightboxes, plus mention-hydration), all with the same input. The returned token array is
+// treated as read-only by every caller, so sharing it is safe. CAP covers a feed page's distinct
+// notes; oldest-inserted is evicted (good enough - a page's contents are all inserted together).
+const memo = new Map<string, ContentToken[]>();
+const MEMO_CAP = 64;
+export function tokenize(text: string, normalizeWhitespace = true): ContentToken[] {
+    const key = (normalizeWhitespace ? '1' : '0') + text;
+    const hit = memo.get(key);
+    if (hit) return hit;
+    const tokens = tokenizeImpl(text, normalizeWhitespace);
+    memo.set(key, tokens);
+    if (memo.size > MEMO_CAP) memo.delete(memo.keys().next().value as string);
+    return tokens;
+}
+
+function tokenizeImpl(text: string, normalizeWhitespace: boolean): ContentToken[] {
+    const src = normalizeWhitespace ? normalize(text) : text;
+    const tokens: ContentToken[] = [];
+    let last = 0;
+    for (const m of src.matchAll(TOKEN_RE)) {
+        const i = m.index ?? 0;
+        if (i > last) tokens.push({ t: 'text', value: src.slice(last, i) });
+
+        if (m[1]) {
+            const url = m[1];
+            if (IMG_RE.test(url)) tokens.push({ t: 'image', url });
+            else if (VIDEO_RE.test(url)) tokens.push({ t: 'video', url });
+            else tokens.push({ t: 'url', url });
+        } else if (m[2]) {
+            tokens.push(decodeToken(m[2], `nostr:${m[2]}`));
+        } else if (m[3]) {
+            tokens.push(decodeToken(m[3], m[3]));
+        }
+        last = i + m[0].length;
+    }
+    if (last < src.length) tokens.push({ t: 'text', value: src.slice(last) });
+    return tokens;
+}

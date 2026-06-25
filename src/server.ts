@@ -1,0 +1,289 @@
+// Owned HTTP server (Node http) - routing, static assets, and per-request session
+// resolution. No web framework. Run with: node --experimental-strip-types src/server.ts
+
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { dirname, join as pathJoin } from 'node:path';
+import { parseCookies, notFound, setPageRenderer, type Ctx } from './http.ts';
+import { page } from './render/layout.ts';
+import { installTorRouting } from './data/ws-tor.ts';
+import { Pool } from './data/pool.ts';
+import { resumeHolds } from './undo.ts';
+import { startScheduledSweep } from './data/scheduled.ts';
+import { getScheduled, postScheduledCancel } from './routes/scheduled.ts';
+import { prunePersisted } from './store.ts';
+import { getSession } from './session.ts';
+import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getListPrime, postListPrimed } from './routes/feed.ts';
+import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
+import { getProfile, getProfileExtras, getThread, getArticle, getEmbed } from './routes/read.ts';
+import { getAvatar } from './routes/avatar.ts';
+import { getMedia, getVideoEmbed } from './routes/media.ts';
+import { getYtCard, getYtThumb, getYtPlay } from './routes/youtube.ts';
+import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
+import { postAppearance, getWallet, postWallet, getMetrics } from './routes/pages.ts';
+import { getBookmarks, getMuted, getListDecrypt, postListDecrypted } from './routes/saved.ts';
+import { getSettings, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postFilters } from './routes/settings.ts';
+import { getProfileEdit, postProfile, postProfilePublish } from './routes/profile.ts';
+import { getNotifications, getNotifUnread } from './routes/notifications.ts';
+import { getMessages, getRequests, getMessagesDot, getNewMessage, getThread as getDmThread, getThreadOlder, postSend, postReadAll, getDmSync, getThreadSync, postDmSeals, postDmRumors, postDmLegacy, postSendSeal, postSendWrap } from './routes/dms.ts';
+import { postAction, postActionPublish, postActPrivateDec, postActPrivateEnc, postActPrivateSign } from './routes/actions.ts';
+import { postUpload, postUploadFinish } from './routes/upload.ts';
+import { getSuggest } from './routes/suggest.ts';
+import { getSearch } from './routes/search.ts';
+import { postLike, postLikePublish } from './routes/like.ts';
+import { getZap, postZap, postZapInvoice, postZapPaid } from './routes/zap.ts';
+import { postArticle, postArticlePublish, postDraft, getDrafts, postDraftDelete, postDraftDeleteFinish, postDraftSync, postDraftSyncWrap, postDraftSyncPublish, getDraftsSync, postDraftsSyncApply } from './routes/article.ts';
+import { postComment, postCommentPublish, getCommentForm } from './routes/comment.ts';
+import { getPoll, getPollOption, postPoll, postPollPublish, postPollVote, postPollVotePublish } from './routes/poll.ts';
+
+// Inject the app's full-page shell into the HTTP kernel (the one place engine and app fuse).
+// The kernel's sendPage() calls this; with it the kernel no longer imports the app's layout.
+setPageRenderer(page);
+
+const ROOT = dirname(fileURLToPath(import.meta.url));
+const PUBLIC = pathJoin(ROOT, '..', 'public');
+
+type Handler = (ctx: Ctx) => void | Promise<void>;
+interface Route { method: string; segs: string[]; handler: Handler; }
+
+function route(method: string, path: string, handler: Handler): Route {
+    return { method, segs: path.split('/').filter(Boolean), handler };
+}
+
+// Flat, explicit route table. `:name` captures one path segment into ctx.params.
+const ROUTES: Route[] = [
+    route('GET', '/', getFeed),
+    route('GET', '/login', getLogin),
+    route('POST', '/login', postLogin),
+    route('POST', '/login/nip07', postLoginNip07),
+    route('POST', '/login/nip07/verify', postLoginNip07Verify),
+    route('POST', '/logout', postLogout),
+    route('GET', '/compose', getCompose),
+    route('GET', '/compose/close', getComposeClose),
+    route('GET', '/compose/preview', getComposePreview),
+    route('GET', '/compose/suggest', getSuggest),
+    route('GET', '/compose/poll-option', getPollOption),
+    route('POST', '/note', postNote),
+    route('POST', '/note/draft', postNoteDraft),
+    route('POST', '/note/publish', postNotePublish),
+    route('GET', '/note/tick', getNoteTick),
+    route('POST', '/note/undo', postNoteUndo),
+    route('POST', '/article', postArticle),
+    route('POST', '/article/publish', postArticlePublish),
+    route('POST', '/draft', postDraft),
+    route('POST', '/draft/delete/:id', postDraftDelete),
+    route('POST', '/draft/delete/:id/finish', postDraftDeleteFinish),
+    route('POST', '/draft/sync/:id', postDraftSync),
+    route('POST', '/draft/sync/:id/wrap', postDraftSyncWrap),
+    route('POST', '/draft/sync/:id/publish', postDraftSyncPublish),
+    route('GET', '/comment/form', getCommentForm),
+    route('POST', '/comment', postComment),
+    route('POST', '/comment/publish', postCommentPublish),
+    route('POST', '/upload', postUpload),
+    route('POST', '/upload/finish', postUploadFinish),
+    route('POST', '/like/:target', postLike),
+    route('POST', '/like/:target/publish', postLikePublish),
+    route('GET', '/zap', getZap),
+    route('POST', '/zap', postZap),
+    route('POST', '/zap/invoice', postZapInvoice),
+    route('POST', '/zap/paid', postZapPaid),
+    route('POST', '/poll', postPoll),
+    route('POST', '/poll/draft', postPollDraft),
+    route('POST', '/poll/publish', postPollPublish),
+    route('GET', '/poll/:id', getPoll),
+    route('POST', '/poll/vote/:pollid', postPollVote),
+    route('POST', '/poll/vote/:pollid/publish', postPollVotePublish),
+    route('GET', '/profile/edit', getProfileEdit),
+    route('POST', '/profile/edit', postProfile),
+    route('POST', '/profile/edit/publish', postProfilePublish),
+    route('GET', '/u/:npub', getProfile),
+    route('GET', '/u/:npub/extras', getProfileExtras),
+    route('GET', '/t/:id', getThread),
+    route('GET', '/a/:naddr', getArticle),
+    route('GET', '/embed/:id', getEmbed),
+    route('GET', '/settings', getSettings),
+    route('POST', '/settings/appearance', postAppearance),
+    route('POST', '/settings/privacy', postPrivacy),
+    route('POST', '/settings/filters', postFilters),
+    route('GET', '/settings/privacy/status', getPrivacyStatus),
+    route('POST', '/settings/relays/edit', postRelaysEdit),
+    route('POST', '/settings/relays', postRelays),
+    route('POST', '/settings/relays/publish', postRelaysPublish),
+    route('POST', '/settings/dm-relays/edit', postDmRelaysEdit),
+    route('POST', '/settings/dm-relays', postDmRelays),
+    route('POST', '/settings/dm-relays/publish', postDmRelaysPublish),
+    route('GET', '/settings/relay-score', getRelayScore),
+    route('GET', '/settings/backup/export', getBackupExport),
+    route('POST', '/settings/backup/import', postBackupImport),
+    route('POST', '/settings/backup/restore', postBackupRestore),
+    route('POST', '/settings/search/edit', postSearchEdit),
+    route('POST', '/settings/search', postSearchSave),
+    route('POST', '/settings/media/edit', postMediaEdit),
+    route('POST', '/settings/media', postMedia),
+    route('POST', '/settings/media/publish', postMediaPublish),
+    route('GET', '/followers', getFollowers),
+    route('GET', '/commons', getCommons),
+    route('GET', '/longform', getLongform),
+    route('GET', '/notes/dot', getNotesDot),
+    route('GET', '/notes/list-prime', getListPrime),
+    route('POST', '/notes/list-primed', postListPrimed),
+    route('GET', '/bookmarks', getBookmarks),
+    route('GET', '/list/:kind/decrypt', getListDecrypt),
+    route('POST', '/list/:kind/decrypted', postListDecrypted),
+    route('GET', '/drafts', getDrafts),
+    route('GET', '/scheduled', getScheduled),
+    route('POST', '/scheduled/cancel/:token', postScheduledCancel),
+    route('GET', '/drafts/sync', getDraftsSync),
+    route('POST', '/drafts/sync/apply', postDraftsSyncApply),
+    route('GET', '/muted', getMuted),
+    route('GET', '/search', getSearch),
+    route('GET', '/notifications', getNotifications),
+    route('GET', '/notifications/unread', getNotifUnread),
+    route('GET', '/messages', getMessages),
+    route('GET', '/messages/requests', getRequests),
+    route('GET', '/messages/dot', getMessagesDot),
+    route('GET', '/messages/sync', getDmSync),
+    route('GET', '/messages/new', getNewMessage),
+    route('GET', '/messages/:peer', getDmThread),
+    route('GET', '/messages/:peer/sync', getThreadSync),
+    route('GET', '/messages/:peer/older', getThreadOlder),
+    route('POST', '/messages/sync/seals', postDmSeals),
+    route('POST', '/messages/sync/rumors', postDmRumors),
+    route('POST', '/messages/sync/legacy', postDmLegacy),
+    route('POST', '/messages/read-all', postReadAll),
+    route('POST', '/messages/:peer', postSend),
+    route('POST', '/messages/:peer/seal', postSendSeal),
+    route('POST', '/messages/:peer/wrap', postSendWrap),
+    route('GET', '/avatar', getAvatar),
+    route('GET', '/media', getMedia),
+    route('GET', '/video', getVideoEmbed),
+    route('GET', '/yt/card/:id', getYtCard),
+    route('GET', '/yt/thumb/:id', getYtThumb),
+    route('GET', '/yt/play/:id', getYtPlay),
+    route('GET', '/metrics', getMetrics),
+    route('GET', '/wallet', getWallet),
+    route('POST', '/wallet', postWallet),
+    // The nip07 private-toggle chain - registered BEFORE /act/:action/:target so
+    // these literal 3-segment paths win over the param route.
+    route('POST', '/act/private/dec', postActPrivateDec),
+    route('POST', '/act/private/enc', postActPrivateEnc),
+    route('POST', '/act/private/sign', postActPrivateSign),
+    route('POST', '/act/:action/:target', postAction),
+    route('POST', '/act/:action/:target/publish', postActionPublish),
+];
+
+function match(method: string, path: string): { handler: Handler; params: Record<string, string> } | null {
+    const parts = path.split('/').filter(Boolean);
+    for (const r of ROUTES) {
+        if (r.method !== method) continue;
+        if (r.segs.length !== parts.length) continue;
+        const params: Record<string, string> = {};
+        let ok = true;
+        for (let i = 0; i < r.segs.length; i++) {
+            const seg = r.segs[i]!;
+            if (seg.startsWith(':')) {
+                // A malformed percent-escape (/u/%ZZ) throws here; treat as no-match so
+                // dispatch falls through to a clean 404 instead of crashing the handler.
+                try { params[seg.slice(1)] = decodeURIComponent(parts[i]!); }
+                catch { ok = false; break; }
+            } else if (seg !== parts[i]) { ok = false; break; }
+        }
+        if (ok) return { handler: r.handler, params };
+    }
+    return null;
+}
+
+// --- static assets (public/) ----------------------------------------------
+
+const STATIC: Record<string, { file: string; type: string }> = {
+    '/helm.js': { file: 'helm.js', type: 'application/javascript; charset=utf-8' },
+    '/hext.js': { file: 'hext.js', type: 'application/javascript; charset=utf-8' },
+    '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
+};
+
+// Local single-user dev daemon: serve assets uncompressed (helm.js is ~12 KB) and
+// `no-cache` so editing styles.css / swapping in a new helm.js shows on reload -
+// no stale-cache or out-of-sync .gz footguns.
+async function serveStatic(_req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
+    const entry = STATIC[path];
+    if (!entry) return false;
+    try {
+        const buf = await readFile(pathJoin(PUBLIC, entry.file));
+        res.writeHead(200, { 'Content-Type': entry.type, 'Cache-Control': 'no-cache' });
+        res.end(buf);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// --- request dispatch ------------------------------------------------------
+
+async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // A malformed request target (e.g. `//`) makes new URL throw; respond 400 rather
+    // than letting the throw escape into the void-dispatched promise below.
+    let url: URL;
+    try { url = new URL(req.url ?? '/', 'http://localhost'); }
+    catch { res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Bad request'); return; }
+    const method = req.method ?? 'GET';
+    const path = url.pathname;
+
+    if (method === 'GET' && await serveStatic(req, res, path)) return;
+
+    const cookies = parseCookies(req.headers.cookie);
+    const ctx: Ctx = {
+        req, res, method, path,
+        query: url.searchParams,
+        params: {},
+        cookies,
+        secure: (req.socket as { encrypted?: boolean }).encrypted === true
+            || String(req.headers['x-forwarded-proto'] ?? '').split(',')[0]!.trim().toLowerCase() === 'https',
+        session: getSession(cookies.sid ?? null),
+        isPartial: req.headers['h-request'] === 'true',
+        hTarget: (req.headers['h-target'] as string | undefined) ?? null,
+    };
+
+    const m = match(method, path);
+    if (!m) { notFound(ctx); return; }
+    ctx.params = m.params;
+
+    try {
+        await m.handler(ctx);
+    } catch (err) {
+        console.error(`[server] ${method} ${path} failed:`, err);
+        if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Internal error');
+        }
+    }
+}
+
+const PORT = Number(process.env.PORT ?? 8787);
+const HOST = process.env.HOST ?? '127.0.0.1';
+
+// Install .onion→Tor routing (if TOR_SOCKS is set) BEFORE accepting connections,
+// so the WebSocket impl is in place before any relay socket opens.
+void installTorRouting().finally(() => {
+    createServer((req, res) => {
+        // Backstop: a synchronous throw before handle()'s own try block (or any stray
+        // rejection) must end the response, never become an unhandled rejection that
+        // takes down the single-user daemon.
+        void handle(req, res).catch((err) => {
+            console.error('[server] unhandled:', err);
+            if (!res.headersSent) { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Internal error'); }
+        });
+    }).listen(PORT, HOST, () => {
+        console.log(`satori-hateoas → http://${HOST}:${PORT}  (local single-user daemon)`);
+        // Prune persisted sessions whose cookies (maxAge 7d) are long dead, so stale bunker
+        // transport secrets don't linger at rest forever.
+        const pruned = prunePersisted(30 * 24 * 60 * 60 * 1000);
+        if (pruned) console.log(`[store] pruned ${pruned} stale session(s)`);
+        // Re-publish any undo-window holds that outlived a restart, and start the scheduled-posts
+        // sweep - both on one standalone background pool (no session signer → best-effort for
+        // auth-only relays). The sweep broadcasts due posts every 30s, restart-safe (re-reads disk).
+        const bgPool = new Pool();
+        resumeHolds(bgPool);
+        startScheduledSweep(bgPool);
+    });
+});

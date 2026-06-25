@@ -1,0 +1,196 @@
+// Stateful list actions (NIP-02 follow, NIP-51 mute/bookmark/pin) + the keystone
+// signed-action runner. Every action is the same shape: toggle one tag in a
+// replaceable list event, then sign+publish. The runner branches on signing mode:
+//   bunker - the server signs via the bunker and publishes now.
+//   nip07  - the server returns H-Nostr-Sign + the unsigned template; the browser
+//            extension signs it and POSTs it to the continuation, which publishes.
+// Either way the user's key never reaches this server.
+//
+// mute (10000) + bookmark (10003) are PRIVATE-by-default (NIP-44-encrypted to self
+// in `content`), like Satori; follow (3) + pin (10001) stay public. Reads MERGE
+// public tags + decrypted private tags. Writing private is BUNKER-only for now (the
+// server decrypts/encrypts via the bunker); nip07 still writes public (its key isn't
+// on this server - the chained nip44 round-trips are a follow-up). A write NEVER
+// overwrites unreadable private content (no data loss).
+
+import { decode } from 'nostr-tools/nip19';
+import { INDEXER_RELAYS } from './nostr/nip65.ts';
+import type { NostrEvent, UnsignedEvent } from './nostr/types.ts';
+import type { Session } from './session.ts';
+import { signsOnServer } from './session.ts';
+
+export type ActionName = 'follow' | 'mute' | 'bookmark' | 'pin';
+
+interface ActionDef { kind: number; tag: 'p' | 'e' }
+const DEFS: Record<ActionName, ActionDef> = {
+    follow: { kind: 3, tag: 'p' },      // NIP-02 contact list
+    mute: { kind: 10000, tag: 'p' },    // NIP-51 mute list
+    bookmark: { kind: 10003, tag: 'e' },// NIP-51 bookmarks
+    pin: { kind: 10001, tag: 'e' },     // NIP-51 pins
+};
+
+export function isActionName(x: string): x is ActionName {
+    return x === 'follow' || x === 'mute' || x === 'bookmark' || x === 'pin';
+}
+export function actionKind(name: ActionName): number { return DEFS[name].kind; }
+
+/** Lists kept private-by-default (NIP-44-encrypted), like Satori. */
+export const PRIVATE_KINDS = new Set([DEFS.mute.kind, DEFS.bookmark.kind]);
+export function isPrivateList(name: ActionName): boolean { return PRIVATE_KINDS.has(DEFS[name].kind); }
+
+/** Decrypt + cache a private list's NIP-44 tags. Idempotent. Bunker decrypts via
+ * the signer; nip07 can't (no key here) so it's left unattempted → reads public
+ * only. `null` = present-but-unreadable (so a write won't clobber it). */
+export async function ensurePrivate(s: Session, kind: number): Promise<void> {
+    if (s.privateTags.has(kind)) return;
+    const ev = s.lists.get(kind);
+    if (!ev || !ev.content) { s.privateTags.set(kind, []); return; } // nothing private
+    if (!signsOnServer(s)) return; // client-signs (e.g. nip07): no server key, needs a decrypt round-trip
+    try {
+        const json = JSON.parse(await s.signer.nip44Decrypt(s.me!, ev.content));
+        s.privateTags.set(kind, Array.isArray(json) ? json as string[][] : []);
+    } catch {
+        s.privateTags.set(kind, null); // unreadable - never overwrite on write
+    }
+}
+
+/** Public tags + decrypted private tags for a list kind (private merged when read). */
+export function listTags(s: Session, kind: number): string[][] {
+    const pub = s.lists.get(kind)?.tags ?? [];
+    const priv = s.privateTags.get(kind);
+    return Array.isArray(priv) ? [...pub, ...priv] : [...pub];
+}
+
+/** True when the list's private content was loaded and decrypted (or there was
+ * none). False = present but couldn't be read (e.g. nip07, or a decrypt failure). */
+export function privateReadable(s: Session, kind: number): boolean {
+    const ev = s.lists.get(kind);
+    if (!ev || !ev.content) return true; // nothing to read
+    return Array.isArray(s.privateTags.get(kind));
+}
+
+/** Muted pubkeys (NIP-51 kind:10000 `p` tags - public + decrypted private). */
+export function mutedPubkeys(s: Session): Set<string> {
+    const set = new Set<string>();
+    for (const t of listTags(s, DEFS.mute.kind)) if (t[0] === 'p' && t[1]) set.add(t[1]);
+    return set;
+}
+
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** Resolve a URL target token to the (tag, value) it toggles. follow/mute target
+ * a pubkey (`p`). bookmark/pin target a note (`e`, hex id) or - for an naddr - an
+ * article by address (`a`, `kind:pubkey:d`), matching Satori's article actions. */
+export function resolveTarget(name: ActionName, target: string): { tag: string; value: string } {
+    if (name === 'follow' || name === 'mute') return { tag: 'p', value: target };
+    if (target.startsWith('naddr1')) {
+        try {
+            const d = decode(target);
+            if (d.type === 'naddr') return { tag: 'a', value: `${d.data.kind}:${d.data.pubkey}:${d.data.identifier}` };
+        } catch { /* fall through */ }
+    }
+    return { tag: 'e', value: target };
+}
+
+/** Validate a URL target for an action (pubkey hex, note id hex, or article naddr). */
+export function isValidTarget(name: ActionName, target: string): boolean {
+    if (name === 'follow' || name === 'mute') return HEX64.test(target);
+    if (HEX64.test(target)) return true;
+    if (target.startsWith('naddr1')) { try { return decode(target).type === 'naddr'; } catch { return false; } }
+    return false;
+}
+
+export function writeRelays(s: Session): string[] {
+    return s.myRelays?.write?.length ? s.myRelays.write : INDEXER_RELAYS;
+}
+
+/** Publish a signed event to `relays` (default: your write relays) and report whether at least one
+ * relay accepted it - the accepted-check every sign/publish path otherwise repeats inline, in both
+ * the server-signs branch and the client-signs continuation. (allSettled never rejects, so this
+ * never throws on relay failure: the caller decides whether to throw or render an error.) */
+export async function published(s: Session, signed: NostrEvent, relays?: string[]): Promise<boolean> {
+    const results = await s.pool.publish(relays ?? writeRelays(s), signed);
+    return results.some((r) => r.status === 'fulfilled');
+}
+
+// Per-(session,kind) in-flight guard so two concurrent ensureList calls share one query
+// (instead of both querying and both writing s.lists after the await).
+const listInflight = new Map<string, Promise<NostrEvent | null>>();
+
+/** Load (and cache) the user's list event of a kind. */
+export async function ensureList(s: Session, kind: number): Promise<NostrEvent | null> {
+    if (s.lists.has(kind)) return s.lists.get(kind) ?? null;
+    const key = `${s.id}:${kind}`;
+    const inf = listInflight.get(key);
+    if (inf) return inf;
+    const p = (async (): Promise<NostrEvent | null> => {
+        const relays = [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? []), ...INDEXER_RELAYS])];
+        const events = await s.pool.query(relays, { kinds: [kind], authors: [s.me!] }).catch(() => [] as NostrEvent[]);
+        const newest = events.sort((a, b) => b.created_at - a.created_at)[0] ?? null;
+        // Don't clobber a value that arrived while we queried (e.g. a toggle publish set a
+        // newer event, or the relay copy is older/absent) - the publish is the source of truth.
+        const cur = s.lists.get(kind);
+        if (cur && (!newest || cur.created_at >= newest.created_at)) return cur;
+        s.lists.set(kind, newest);
+        return newest;
+    })();
+    listInflight.set(key, p);
+    try { return await p; } finally { listInflight.delete(key); }
+}
+
+/** Ensure several lists are loaded (before rendering buttons that read them), and
+ * decrypt the private ones (mute/bookmark) so reads merge public + private. */
+export async function ensureLists(s: Session, names: ActionName[]): Promise<void> {
+    const kinds = [...new Set(names.map((n) => DEFS[n].kind))];
+    await Promise.all(kinds.map((k) => ensureList(s, k)));
+    await Promise.all(kinds.filter((k) => PRIVATE_KINDS.has(k)).map((k) => ensurePrivate(s, k)));
+}
+
+/** Is `target` currently in the list for `name` (public + decrypted private)? */
+export function isOn(s: Session, name: ActionName, target: string): boolean {
+    const { tag, value } = resolveTarget(name, target);
+    return listTags(s, actionKind(name)).some((t) => t[0] === tag && t[1] === value);
+}
+
+/** Build the toggled list event: drop the target tag, add it back iff `on`.
+ * Other tags + the content blob are preserved (no data loss). */
+export function buildToggle(name: ActionName, prev: NostrEvent | null, target: string, on: boolean, me: string): UnsignedEvent {
+    const { tag, value } = resolveTarget(name, target);
+    const tags = (prev?.tags ?? []).filter((t) => !(t[0] === tag && t[1] === value));
+    if (on) tags.push([tag, value]);
+    return { kind: actionKind(name), created_at: Math.floor(Date.now() / 1000), tags, content: prev?.content ?? '', pubkey: me };
+}
+
+/** Record a freshly-published list event as the new source of truth. */
+export function applyPublished(s: Session, signed: NostrEvent): void {
+    s.lists.set(signed.kind, signed);
+}
+
+/** Build the PRIVATE-toggled list event (bunker): decrypt current private tags,
+ * toggle the target in the PRIVATE set, re-encrypt to `content`, keep the public
+ * tags untouched. Throws if the existing private content is unreadable (so we never
+ * overwrite - i.e. lose - private items we couldn't read). Bunker only. */
+export async function buildPrivateToggle(s: Session, name: ActionName, target: string, on: boolean): Promise<UnsignedEvent> {
+    const kind = actionKind(name);
+    await ensurePrivate(s, kind);
+    const priv = s.privateTags.get(kind);
+    if (priv === null) throw new Error('couldn’t read your private list, so it wasn’t overwritten');
+    const { tag, value } = resolveTarget(name, target);
+    const next = (priv ?? []).filter((t) => !(t[0] === tag && t[1] === value));
+    if (on) next.push([tag, value]);
+    const content = await s.signer!.nip44Encrypt(s.me!, JSON.stringify(next));
+    // Drop the target from PUBLIC tags too, so toggling off an item saved publicly
+    // (by an older client / our old public toggle) actually removes it; new items
+    // live only in the private set.
+    const publicTags = (s.lists.get(kind)?.tags ?? []).filter((t) => !(t[0] === tag && t[1] === value));
+    return { kind, created_at: Math.floor(Date.now() / 1000), tags: publicTags, content, pubkey: s.me! };
+}
+
+/** Record a published private toggle: update the list event + the private-tag cache. */
+export function applyPrivatePublished(s: Session, signed: NostrEvent, name: ActionName, target: string, on: boolean): void {
+    s.lists.set(signed.kind, signed);
+    const { tag, value } = resolveTarget(name, target);
+    const next = (s.privateTags.get(signed.kind) ?? []).filter((t) => !(t[0] === tag && t[1] === value));
+    if (on) next.push([tag, value]);
+    s.privateTags.set(signed.kind, next);
+}

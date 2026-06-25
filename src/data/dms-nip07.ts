@@ -1,0 +1,430 @@
+// NIP-17 DM engine for NIP-07 (browser-extension) logins - the SLOW path inverted.
+// The user's key lives in the extension, not here, so every NIP-44 decrypt/encrypt
+// and seal-sign is a round-trip driven by the browser via the nip07-hateoas batch
+// chain (H-Nostr-Sign + *_batch methods). Batching collapses a full mailbox sync to
+// 2 decrypt round-trips (layer-1 wrap->seal for all wraps, layer-2 seal->rumor for
+// known senders), and a send to encrypt-batch -> sign-batch -> local wrap.
+//
+// Plaintext at rest: NONE. An extension user reasonably expects nothing of theirs to
+// persist on the daemon, so the decrypt cache is IN-MEMORY ONLY (no .data/dms.json),
+// cleared on restart and logout. A restart costs a re-decrypt (cheap: 2 round-trips).
+// Mid-chain correlation (which result belongs to which wrap) is too big for a URL, so
+// we hold a short-lived `chains` map keyed by a chainId in the continuation URL - the
+// one bit of server state, TTL'd and dropped on completion. See [[nip17-dms-plan]].
+
+import { randomUUID } from 'node:crypto';
+import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { mutedPubkeys } from '../actions.ts';
+import { dmUnread } from './dm-read.ts';
+import { coerceEvent } from '../nip07.ts';
+import {
+    buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients, parseDmRelays,
+    KIND_GIFTWRAP, KIND_SEAL, KIND_DM_RELAYS, type Rumor,
+} from '../nostr/nip17.ts';
+import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
+import type { Filter } from 'nostr-tools';
+import type { BatchResult } from '../wire.ts';
+import type { Session } from '../session.ts';
+import type { Conversation, DmMessage, DmInbox } from './dms.ts';
+
+const HEX64 = /^[0-9a-f]{64}$/i;
+const RECENT_WRAPS = 500; // fits in one batch (maxBatchItems 1024); timestamps fuzzed ±2d
+const THREAD_WINDOW = 250; // wraps per thread page; older history loads on scroll-up
+const KIND_LEGACY = 4; // NIP-04 (read-only; we never SEND this metadata-leaky format)
+
+// --- in-memory cache (decrypt once per process lifetime; never touches disk) ----
+// `legacy` marks a NIP-04 (kind-4) message/request -> no shield, decrypted via nip04 not nip44.
+type Entry =
+    | { kind: 'msg'; peer: string; from: string; at: number; text: string; legacy?: boolean }
+    | { kind: 'request'; peer: string; at: number; legacy?: boolean }
+    | { kind: 'drop' };
+
+/** A legacy (kind-4) message queued for nip04 decryption through the browser. */
+interface LegacyItem { id: string; peer: string; from: string; at: number; ciphertext: string }
+
+const mem = new Map<string, Entry>();
+// Bound it: keys are gift-wrap ids from relays (external, unbounded over a long DM history) and
+// this cache never touches disk, so without a cap it grows for the whole process lifetime. An
+// evicted entry just costs one cheap re-decrypt next time it's viewed (the data is reconstructible).
+const MEM_CAP = 8000;
+function memSet(id: string, e: Entry): void {
+    mem.set(id, e);
+    if (mem.size > MEM_CAP) { let over = mem.size - MEM_CAP; for (const k of mem.keys()) { if (over-- <= 0) break; mem.delete(k); } }
+}
+
+// Conversation-list cache: lets the route skip the whole decrypt-chain (and its relay
+// round-trip) on quick re-visits to Messages/Requests. TTL'd; cleared on send + logout.
+const LIST_TTL_MS = 30_000;
+const listMem = new Map<string, { inbox: DmInbox; at: number }>();
+
+/** The cached conversation list for `me`. Fresh listMem within the TTL is returned as-is; past
+ * the TTL we rebuild from the in-memory `mem` decrypt cache (no relay round-trip, no spinner) -
+ * the analog of bunker's disk-backed aggregateCached, so a refresh stays warm for the whole
+ * process lifetime, not just 30s. Null only when truly cold (mem empty, e.g. after a restart),
+ * where the route falls back to the decrypting shell. */
+export function cachedInboxNip07(me: string): DmInbox | null {
+    const hit = listMem.get(me);
+    if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit.inbox;
+    if (mem.size === 0) return null;
+    const inbox = aggregate(mem.keys(), me); // iterate the keys directly - no full-array allocation
+    listMem.set(me, { inbox, at: Date.now() });
+    return inbox;
+}
+
+/** A thread's messages straight from the warm decrypt cache (no relay query, no decrypt
+ * round-trip, no spinner) - usable only when the inbox is warm AND we already decrypted
+ * messages for this peer. Null otherwise (cold, or a stranger whose body wasn't decrypted
+ * during inbox triage), so the caller falls back to the decrypt-chain shell. */
+export function cachedThreadNip07(me: string, peer: string): DmMessage[] | null {
+    if (mem.size === 0) return null; // truly cold -> decrypt-chain shell
+    const msgs = threadMessages(mem.keys(), peer, me); // iterate the keys directly - no full-array allocation
+    // Only serve from cache when an incoming message is present (the peer's side was decrypted);
+    // a your-side-only set means a stranger thread not yet fully decrypted -> let the chain run.
+    return msgs.some((m) => m.from !== me) ? msgs : null;
+}
+
+/** Wipe the in-memory nip07 DM state (logout, or account switch). */
+export function clearNip07DmCache(): void { mem.clear(); chains.clear(); listMem.clear(); }
+
+// --- ephemeral chain state (the wrap<->result correlation across round-trips) ---
+const CHAIN_TTL_MS = 2 * 60_000;
+
+interface SyncChain {
+    kind: 'sync';
+    view: 'inbox' | 'requests' | 'thread';
+    peer?: string;                          // thread / opened-request target
+    older: boolean;                         // a scroll-up older-page (prepend) vs initial load
+    cursor: number | null;                  // next older-paging `until` (thread only; null = exhausted)
+    allIds: string[];                       // this window's wrap ids - terminal aggregation
+    l1: { id: string; at: number }[];       // uncached wraps, aligned to decrypt batch #1
+    l2: { id: string; sealPubkey: string }[]; // known-sender wraps, aligned to decrypt batch #2
+    legacy: LegacyItem[];                    // kind-4 to decrypt via nip04 (a 3rd batch step)
+    expires: number;
+}
+interface SendChain {
+    kind: 'send';
+    peer: string;
+    rumor: Rumor;
+    targets: string[]; // [peer, me] - aligned to the encrypt + sign batches
+    text: string;
+    expires: number;
+}
+type Chain = SyncChain | SendChain;
+
+const chains = new Map<string, Chain>();
+
+function putChain(c: Chain): string {
+    const now = Date.now();
+    for (const [k, v] of chains) if (v.expires < now) chains.delete(k); // sweep
+    const id = randomUUID();
+    chains.set(id, c);
+    return id;
+}
+function takeSync(id: string): SyncChain | null {
+    const c = chains.get(id);
+    if (!c || c.kind !== 'sync' || c.expires < Date.now()) { chains.delete(id); return null; }
+    return c;
+}
+/** The view a sync chain is rendering ('thread' vs inbox/requests), so a chain error/timeout
+ * can be placed at the right DOM target. Returns null if the chain is gone/expired. */
+export function chainView(id: string): SyncChain['view'] | null {
+    const c = chains.get(id);
+    return c && c.kind === 'sync' && c.expires >= Date.now() ? c.view : null;
+}
+function takeSend(id: string): SendChain | null {
+    const c = chains.get(id);
+    if (!c || c.kind !== 'send' || c.expires < Date.now()) { chains.delete(id); return null; }
+    return c;
+}
+function dropChain(id: string): void { chains.delete(id); }
+
+// --- relay discovery (NIP-17 kind 10050), no signer needed -----------------------
+// Memoized per pubkey (TTL + in-flight coalescing): this runs on every DM op + the 90s dot
+// poll, but kind:10050 almost never changes - and a never-published 10050 would otherwise
+// re-pay the full GET_MAX_WAIT timeout every cycle. The 10-min TTL picks up out-of-band changes;
+// the in-app DM-relay editor invalidates your own entry on save.
+const DM_RELAYS_TTL_MS = 10 * 60 * 1000;
+const dmRelaysCache = new Map<string, { relays: string[]; at: number }>();
+const dmRelaysInflight = new Map<string, Promise<string[]>>();
+
+/** Drop a cached DM-relay lookup (all, or one pubkey) so the next read re-fetches.
+ * Called after the DM-relay editor publishes a new kind:10050. */
+export function clearDmRelaysCache(pubkey?: string): void {
+    if (pubkey) dmRelaysCache.delete(pubkey); else dmRelaysCache.clear();
+}
+
+async function dmRelaysOf(s: Session, pubkey: string): Promise<string[]> {
+    const hit = dmRelaysCache.get(pubkey);
+    if (hit && Date.now() - hit.at < DM_RELAYS_TTL_MS) return hit.relays;
+    const inf = dmRelaysInflight.get(pubkey);
+    if (inf) return inf;
+    const p = (async (): Promise<string[]> => {
+        const ev = await s.pool.get([...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], { kinds: [KIND_DM_RELAYS], authors: [pubkey] }).catch(() => null);
+        const list = ev ? parseDmRelays(ev) : [];
+        const relays = list.length ? list : INDEXER_RELAYS;
+        dmRelaysCache.set(pubkey, { relays, at: Date.now() });
+        return relays;
+    })();
+    dmRelaysInflight.set(pubkey, p);
+    try { return await p; } finally { dmRelaysInflight.delete(pubkey); }
+}
+/** Where to READ your own incoming wraps: your DM relays ∪ your read relays ∪ indexers.
+ * Spec says senders use your kind-10050 DM relays, but wraps also land on read relays /
+ * indexers in practice, so we query all three to find everything. The 30s list cache
+ * absorbs the cost on repeat visits. */
+async function myDmReadRelays(s: Session): Promise<string[]> {
+    return [...new Set([...(await dmRelaysOf(s, s.me!)), ...(s.myRelays?.read ?? []), ...INDEXER_RELAYS])];
+}
+
+// --- aggregation (reads the cache; no legacy NIP-04 - the lib has no nip04) -------
+function peerOf(rumor: Rumor, me: string): string {
+    return rumor.pubkey === me ? (rumorRecipients(rumor).find((p) => p !== me) ?? me) : rumor.pubkey;
+}
+
+function aggregate(ids: Iterable<string>, me: string): DmInbox {
+    const byPeer = new Map<string, Conversation>();
+    for (const id of ids) {
+        const e = mem.get(id);
+        if (!e || e.kind === 'drop') continue;
+        const peer = e.peer;
+        const prev = byPeer.get(peer);
+        if (e.kind === 'msg') {
+            const preview = e.from === me ? `You: ${e.text}` : e.text;
+            if (!prev || prev.bucket === 'request' || e.at > prev.lastAt) byPeer.set(peer, { peer, lastAt: e.at, preview, bucket: 'inbox', secure: !e.legacy, unread: dmUnread(me, peer, e.at, e.from === me) });
+        } else if (!prev) {
+            byPeer.set(peer, { peer, lastAt: e.at, preview: e.legacy ? 'Encrypted message' : 'Message request', bucket: 'request', secure: !e.legacy, unread: dmUnread(me, peer, e.at, false) });
+        }
+    }
+    const all = [...byPeer.values()].sort((a, b) => b.lastAt - a.lastAt);
+    return { conversations: all.filter((c) => c.bucket === 'inbox'), requests: all.filter((c) => c.bucket === 'request') };
+}
+
+function threadMessages(ids: Iterable<string>, peer: string, me: string): DmMessage[] {
+    const out: DmMessage[] = [];
+    for (const id of ids) {
+        const e = mem.get(id);
+        if (e?.kind === 'msg' && e.peer === peer) out.push({ id, from: e.from, at: e.at, text: e.text, legacy: e.legacy });
+    }
+    return out.sort((a, b) => a.at - b.at);
+}
+
+// --- legacy NIP-04 discovery (kind-4; participants public, so query without decrypting) ----
+/** Find kind-4 messages to fold in. For the inbox: the latest per peer (in-network -> queued
+ * for a preview decrypt; strangers -> cached as deferred Requests). For a thread: every kind-4
+ * with that peer, queued. Returns the decrypt queue + the event ids to add to the sync window
+ * (so aggregate/threadMessages include them). NIP-04's conversation key is symmetric, so the
+ * peer pubkey decrypts both directions. */
+async function fetchLegacy(s: Session, view: SyncChain['view'], peer: string | undefined): Promise<{ queue: LegacyItem[]; ids: string[] }> {
+    const me = s.me!;
+    const relays = await myDmReadRelays(s);
+    const muted = mutedPubkeys(s);
+    const follows = new Set(s.followsRoute?.authors ?? []);
+    const other = (ev: NostrEvent): string | undefined => (ev.pubkey === me ? ev.tags.find((t) => t[0] === 'p' && t[1])?.[1] : ev.pubkey);
+    const queue: LegacyItem[] = [];
+    const ids: string[] = [];
+    if (view === 'thread' && peer) {
+        const evs = await s.pool.query(relays, { kinds: [KIND_LEGACY], authors: [peer, me], '#p': [peer, me], limit: 400 }).catch(() => [] as NostrEvent[]);
+        for (const ev of evs) {
+            if (other(ev) !== peer) continue; // only this pair
+            ids.push(ev.id);
+            if (!mem.has(ev.id)) queue.push({ id: ev.id, peer, from: ev.pubkey, at: ev.created_at, ciphertext: ev.content });
+        }
+        return { queue, ids };
+    }
+    const [recv, sent] = await Promise.all([
+        s.pool.query(relays, { kinds: [KIND_LEGACY], '#p': [me], limit: 200 }).catch(() => [] as NostrEvent[]),
+        s.pool.query(relays, { kinds: [KIND_LEGACY], authors: [me], limit: 200 }).catch(() => [] as NostrEvent[]),
+    ]);
+    const latest = new Map<string, NostrEvent>(); // peer -> their newest kind-4
+    for (const ev of [...recv, ...sent]) {
+        const op = other(ev);
+        if (!op || op === me || muted.has(op)) continue;
+        const cur = latest.get(op);
+        if (!cur || ev.created_at > cur.created_at) latest.set(op, ev);
+    }
+    for (const [op, ev] of latest) {
+        ids.push(ev.id);
+        if (mem.has(ev.id)) continue; // already decrypted/deferred
+        if (follows.has(op)) queue.push({ id: ev.id, peer: op, from: ev.pubkey, at: ev.created_at, ciphertext: ev.content }); // in-network -> preview
+        else memSet(ev.id, { kind: 'request', peer: op, at: ev.created_at, legacy: true }); // stranger -> deferred Request
+    }
+    return { queue, ids };
+}
+
+// --- the sync chain (layer-1 -> triage -> layer-2 -> [legacy] -> render) ----------
+
+export interface DecryptItem { pubkey: string; ciphertext: string }
+
+/** Begin a mailbox sync: fetch a window of wraps, return the layer-1 decrypt batch (wrap
+ * content -> seal) for the UNCACHED ones plus a chainId. An empty `items` means every
+ * wrap is already cached - the caller finalizes straight from the cache. For a thread,
+ * `until` pages older (one THREAD_WINDOW slice, `created_at <= until`) and a paging cursor
+ * is computed; inbox/requests fetch the broad RECENT_WRAPS window. */
+export async function beginSync(s: Session, view: SyncChain['view'], peer?: string, until?: number, nip04 = false): Promise<{ chainId: string; items: DecryptItem[] }> {
+    const relays = await myDmReadRelays(s);
+    const thread = view === 'thread';
+    const filter: Filter = { kinds: [KIND_GIFTWRAP], '#p': [s.me!], limit: thread ? THREAD_WINDOW : RECENT_WRAPS };
+    if (until != null) filter.until = until;
+    const wraps = await s.pool.query(relays, filter).catch(() => [] as NostrEvent[]);
+    const allIds = wraps.map((w) => w.id);
+    const uncached = wraps.filter((w) => !mem.has(w.id));
+    // Only offer older paging when the window came back FULL (more likely exists); a
+    // short window = everything seen, so no sentinel and no wasted extra round-trip.
+    const cursor = thread && wraps.length >= THREAD_WINDOW ? Math.min(...wraps.map((w) => w.created_at)) - 1 : null;
+    // Legacy NIP-04: only when the client can decrypt it (nip04 cap) and not while paging older
+    // (kind-4 isn't windowed). The queue rides the chain to a 3rd batch step after the NIP-17 layers.
+    const lg = nip04 && until == null ? await fetchLegacy(s, view, peer) : { queue: [], ids: [] };
+    const chainId = putChain({
+        kind: 'sync', view, peer, older: until != null, cursor, allIds: [...allIds, ...lg.ids],
+        l1: uncached.map((w) => ({ id: w.id, at: w.created_at })),
+        l2: [], legacy: lg.queue, expires: Date.now() + CHAIN_TTL_MS,
+    });
+    return { chainId, items: uncached.map((w) => ({ pubkey: w.pubkey, ciphertext: w.content })) };
+}
+
+/** The pending legacy (kind-4) decrypt batch for a chain, or null if none. Peeks (doesn't drop)
+ * the chain - called at the NIP-17 terminal to decide whether a 3rd (nip04) step is needed. */
+export function legacyBatch(chainId: string): DecryptItem[] | null {
+    const chain = takeSync(chainId);
+    if (!chain || !chain.legacy.length) return null;
+    return chain.legacy.map((l) => ({ pubkey: l.peer, ciphertext: l.ciphertext }));
+}
+
+/** Apply the nip04 results: cache each decrypted kind-4 as a legacy message. Caller finalizes. */
+export function applyLegacy(s: Session, chainId: string, results: BatchResult[]): void {
+    const chain = takeSync(chainId);
+    if (!chain) return;
+    chain.legacy.forEach((l, i) => {
+        const r = results[i];
+        if (!r || !r.ok) { memSet(l.id, { kind: 'drop' }); return; }
+        memSet(l.id, { kind: 'msg', peer: l.peer, from: l.from, at: l.at, text: String(r.value), legacy: true });
+    });
+    chains.set(chainId, chain);
+}
+
+/** Apply the layer-1 seals: triage each (muted -> drop at 1 decrypt; you/follow/the
+ * opened peer -> needs layer-2; stranger -> deferred Request). Returns the layer-2
+ * decrypt batch (seal content -> rumor) for the known set, or null when there's none
+ * left to decrypt (caller finalizes). */
+export function applySeals(s: Session, chainId: string, seals: BatchResult[]): { items: DecryptItem[] } | null {
+    const chain = takeSync(chainId);
+    if (!chain) return null;
+    const me = s.me!;
+    const muted = mutedPubkeys(s);
+    const follows = new Set(s.followsRoute?.authors ?? []);
+    const items: DecryptItem[] = [];
+    chain.l2 = [];
+    chain.l1.forEach((w, i) => {
+        const r = seals[i];
+        if (!r || !r.ok) { memSet(w.id, { kind: 'drop' }); return; }
+        let seal: NostrEvent | null = null;
+        try { const j = JSON.parse(String(r.value)); if (j && typeof j.pubkey === 'string' && typeof j.content === 'string' && HEX64.test(j.pubkey)) seal = j; } catch { /* drop */ }
+        if (!seal) { memSet(w.id, { kind: 'drop' }); return; }
+        const sender = seal.pubkey;
+        if (sender !== me && muted.has(sender)) { memSet(w.id, { kind: 'drop' }); return; }
+        const known = sender === me || follows.has(sender) || (chain.peer != null && sender === chain.peer);
+        if (known) {
+            chain.l2.push({ id: w.id, sealPubkey: sender });
+            items.push({ pubkey: sender, ciphertext: seal.content });
+        } else {
+            memSet(w.id, { kind: 'request', peer: sender, at: w.at });
+        }
+    });
+    chains.set(chainId, chain); // keep alive for layer-2 / finalize
+    return items.length ? { items } : null;
+}
+
+/** Apply the layer-2 rumors: validate the sender can't be spoofed, then cache each
+ * decrypted message. The caller finalizes the render after this. */
+export function applyRumors(s: Session, chainId: string, rumors: BatchResult[]): void {
+    const chain = takeSync(chainId);
+    if (!chain) return;
+    const me = s.me!;
+    chain.l2.forEach((w, i) => {
+        const r = rumors[i];
+        if (!r || !r.ok) { memSet(w.id, { kind: 'drop' }); return; }
+        let rumor: Rumor | null = null;
+        try { rumor = rumorFromSeal(JSON.parse(String(r.value)), w.sealPubkey); } catch { /* drop */ }
+        if (!rumor) { memSet(w.id, { kind: 'drop' }); return; }
+        memSet(w.id, { kind: 'msg', peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content });
+    });
+    chains.set(chainId, chain);
+}
+
+/** Render payload from the cache for a completed sync, then drop the chain. For a thread
+ * it returns just this window's messages + the older-paging cursor and whether this was a
+ * scroll-up (prepend) page. */
+export function finalizeSync(s: Session, chainId: string): { view: SyncChain['view']; peer?: string; inbox?: DmInbox; messages?: DmMessage[]; cursor?: number | null; older?: boolean } | null {
+    const chain = takeSync(chainId);
+    if (!chain) return null;
+    const me = s.me!;
+    dropChain(chainId);
+    if (chain.view === 'thread' && chain.peer) return { view: 'thread', peer: chain.peer, messages: threadMessages(chain.allIds, chain.peer, me), cursor: chain.cursor, older: chain.older };
+    const inbox = aggregate(chain.allIds, me);
+    listMem.set(me, { inbox, at: Date.now() }); // cache the list so quick re-visits skip the chain
+    return { view: chain.view, inbox };
+}
+
+// --- the send chain (encrypt-batch -> sign-batch -> local wrap + publish) ---------
+
+/** Begin a send: build the kind-14 rumor, return the encrypt batch (rumor -> seal
+ * ciphertext, to the peer AND to self) plus a chainId. Null on empty text. */
+export function beginSend(s: Session, peer: string, text: string): { chainId: string; items: { pubkey: string; plaintext: string }[] } | null {
+    const body = text.trim();
+    if (!body) return null;
+    const rumor = buildRumor(s.me!, [peer], body);
+    const targets = [peer, s.me!];
+    const plaintext = JSON.stringify(rumor);
+    const chainId = putChain({ kind: 'send', peer, rumor, targets, text: body, expires: Date.now() + CHAIN_TTL_MS });
+    return { chainId, items: targets.map((t) => ({ pubkey: t, plaintext })) };
+}
+
+/** Apply the seal ciphertexts: build the two unsigned kind-13 seal templates for the
+ * sign batch. Null if either encrypt failed. */
+export function sealStep(s: Session, chainId: string, results: BatchResult[]): { templates: UnsignedEvent[] } | null {
+    const chain = takeSend(chainId);
+    if (!chain) return null;
+    const ciphers = chain.targets.map((_, i) => (results[i]?.ok ? String((results[i] as { value: unknown }).value) : null));
+    if (ciphers.some((c) => c == null)) { dropChain(chainId); return null; }
+    chains.set(chainId, chain);
+    return { templates: ciphers.map((c) => sealTemplate(s.me!, c!)) };
+}
+
+/** Apply the signed seals: wrap each locally with a throwaway ephemeral key, publish
+ * to the right inbox relays, cache our own copy, and return the optimistic bubble.
+ * Null if a seal didn't verify. */
+export async function wrapStep(s: Session, chainId: string, results: BatchResult[]): Promise<DmMessage | null> {
+    const chain = takeSend(chainId);
+    if (!chain) return null;
+    dropChain(chainId);
+    const me = s.me!;
+    const seals = chain.targets.map((_, i) => {
+        const r = results[i];
+        if (!r || !r.ok) return null;
+        const ev = coerceEvent(r.value);
+        return ev && ev.pubkey === me && ev.kind === KIND_SEAL ? ev : null;
+    });
+    const sealPeer = seals[0];
+    const sealSelf = seals[1];
+    if (!sealPeer || !sealSelf) return null;
+    try {
+        const toPeer = finalizeWrap(sealPeer, chain.peer);
+        const toSelf = finalizeWrap(sealSelf, me);
+        const [peerRelays, myRelays] = await Promise.all([dmRelaysOf(s, chain.peer), myDmReadRelays(s)]);
+        await Promise.all([s.pool.publish(peerRelays, toPeer), s.pool.publish(myRelays, toSelf)]);
+        memSet(toSelf.id, { kind: 'msg', peer: chain.peer, from: me, at: chain.rumor.created_at, text: chain.text });
+        listMem.delete(me); // the new message changes the conversation list
+        return { id: toSelf.id, from: me, at: chain.rumor.created_at, text: chain.text };
+    } catch (e) { console.warn('[dms-nip07] send failed:', (e as Error)?.message ?? e); return null; }
+}
+
+// --- the quiet unread dot (nip07) ------------------------------------------------
+
+/** Are there recent wraps `#p=me` we haven't decrypted yet? Query-only (no decrypt),
+ * so it's light enough to poll. Opening Messages decrypts+caches, clearing the dot. */
+export async function hasUnprocessedWrapsNip07(s: Session): Promise<boolean> {
+    if (s.mode !== 'nip07' || !s.me) return false;
+    const relays = await myDmReadRelays(s);
+    const wraps = await s.pool.query(relays, { kinds: [KIND_GIFTWRAP], '#p': [s.me], limit: 60 }).catch(() => [] as NostrEvent[]);
+    return wraps.some((w) => !mem.has(w.id));
+}

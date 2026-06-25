@@ -1,0 +1,109 @@
+// GET /notifications - replies, mentions, zaps, and poll-votes addressed to you,
+// newest first, paged by ?until (intersect-once infinite scroll, like the feed).
+// Opening it marks everything seen (the high-water that drives the unread dot).
+
+import { html, type SafeHtml } from '../html.ts';
+import { fetchMyPollIds, fetchNotifications, parseZapReceipt, type Notif } from '../data/notifications.ts';
+import { notifList, notifCaughtUp, seeOlder } from '../render/notifications.ts';
+import { pagerSentinel } from '../render/note.ts';
+import { notifBell } from '../render/layout.ts';
+import { ensureLists, mutedPubkeys } from '../actions.ts';
+import { ensureLikes } from '../likes.ts';
+import { ensureEngaged } from '../engaged.ts';
+import { ensureZaps } from '../zaps.ts';
+import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
+import { type Session } from '../session.ts';
+import { readReadState, advanceReadState } from '../read-state.ts';
+import { sendPage, sendFragment, redirect, type Ctx } from '../http.ts';
+
+const PAGE = 30;
+
+/** Who acted: the sender for a zap, the event author otherwise (null = unknown). */
+function actorOf(n: Notif): string | null {
+    return n.type === 'zap' ? parseZapReceipt(n.event).sender : n.event.pubkey;
+}
+
+/** Pubkeys to resolve (the actors). */
+function authorsOf(items: Notif[]): string[] {
+    return items.map(actorOf).filter((p): p is string => !!p);
+}
+
+/** Filter muted actors + hydrate (profiles, lists, likes, engagement, zaps). */
+async function prepareNotifs(s: Session & { me: string }, items: Notif[]): Promise<Notif[]> {
+    await ensureLists(s, ['mute']); // need the mute set before filtering
+    const muted = mutedPubkeys(s);
+    const visible = items.filter((n) => { const a = actorOf(n); return !a || !muted.has(a); });
+    const noteEvents = visible.filter((n) => n.type === 'reply' || n.type === 'mention').map((n) => n.event);
+    const noteIds = noteEvents.map((e) => e.id);
+    await Promise.all([ensureProfiles(s, [...authorsOf(visible), ...notePubkeys(noteEvents)]), ensureLists(s, ['bookmark', 'pin']), ensureLikes(s, noteIds), ensureEngaged(s, noteIds), ensureZaps(s)]);
+    return visible;
+}
+
+export async function getNotifications(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    if (!s.myPollIds) s.myPollIds = await fetchMyPollIds(s.pool, s.me, s.myRelays).catch(() => []);
+
+    const untilParam = ctx.query.get('until');
+    const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;
+    const seenMode = ctx.query.get('seen') === '1'; // "See older": the already-seen history below the boundary
+    // Only an in-page swap (the #more pager or the #see-older control) gets a bare fragment; a boosted
+    // navigation is also isPartial but needs the full page (chrome), so gate on the swap target.
+    const inPageSwap = ctx.isPartial && (ctx.hTarget === '#more' || ctx.hTarget === '#see-older');
+    const wrap = (frag: SafeHtml): void => {
+        if (inPageSwap) sendFragment(ctx, frag);
+        else sendPage(ctx, html`<ul class="feed" id="feed">${frag}</ul>`, chromeFor(ctx, s, { active: 'notifications', title: 'Notifications' }));
+    };
+
+    const items = await fetchNotifications(s.pool, s.me, s.myRelays, s.myPollIds, { until, limit: PAGE }, !!s.reactionNotifs);
+    const visible = await prepareNotifs(s, items);
+    // The pager cursor anchors on the OLDEST RAW item (not the muted-filtered `visible`), so
+    // filtering never shortens the window and skips events. A full page → there may be more.
+    const oldest = items.length ? items[items.length - 1]!.event.created_at : undefined;
+    const fullPage = items.length >= PAGE;
+
+    // SEEN history: one continuous, newest-first list paginated by `until`. No boundary logic.
+    if (seenMode) {
+        const more = fullPage && oldest ? pagerSentinel(`/notifications?seen=1&until=${String(oldest - 1)}`) : html``;
+        // The "See older" click reveals history below the boundary, so the "all caught up" clearing
+        // left above the button no longer belongs - OOB-clear it (only on that first reveal click).
+        const clearTop = ctx.hTarget === '#see-older' ? html`<li id="notif-clearing" h-oob="true"></li>` : html``;
+        wrap(html`${notifList(visible, s.profiles, s)}${more}${clearTop}`);
+        return;
+    }
+
+    // NEW set: everything since your last visit. The boundary is your read high-water - carried
+    // explicitly through pager URLs (`nb`) so it survives the high-water advancing on first load.
+    const nbParam = ctx.query.get('nb');
+    const boundary = nbParam && /^\d+$/.test(nbParam) ? Number(nbParam) : readReadState(ctx, s.me).notif;
+
+    // First page only: opening marks everything seen (raw newest, so muted ones still advance the
+    // high-water). MUST run before the response head (it sets a cookie). Captured `boundary` above.
+    if (until === undefined && items.length) advanceReadState(ctx, s.me, { notif: items[0]!.event.created_at });
+
+    const newVisible = visible.filter((n) => n.event.created_at > boundary);
+    const reachedBoundary = items.some((n) => n.event.created_at <= boundary); // seen history begins in this page
+
+    // Still all-new with more pages → keep paging the NEW set (carry the boundary forward). Otherwise
+    // close it: the "caught up" clearing, plus "See older" when there's already-seen history to reveal.
+    const tail = !reachedBoundary && fullPage && oldest
+        ? pagerSentinel(`/notifications?until=${String(oldest - 1)}&nb=${String(boundary)}`)
+        : html`${notifCaughtUp(newVisible.length > 0)}${reachedBoundary ? seeOlder(boundary) : html``}`;
+    wrap(html`${notifList(newVisible, s.profiles, s)}${tail}`);
+}
+
+/** GET /notifications/unread - the bell poller: lights the dot when anything is
+ * newer than your seen high-water. A full navigation here just goes to the page. */
+export async function getNotifUnread(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    if (!ctx.isPartial) { redirect(ctx, '/notifications'); return; }
+    if (!s.myPollIds) s.myPollIds = await fetchMyPollIds(s.pool, s.me, s.myRelays).catch(() => []);
+    const [items] = await Promise.all([
+        fetchNotifications(s.pool, s.me, s.myRelays, s.myPollIds, { since: readReadState(ctx, s.me).notif + 1, limit: 10 }, !!s.reactionNotifs),
+        ensureLists(s, ['mute']),
+    ]);
+    const muted = mutedPubkeys(s);
+    const hasUnread = items.some((n) => { const a = actorOf(n); return !a || !muted.has(a); });
+    sendFragment(ctx, notifBell(hasUnread));
+}

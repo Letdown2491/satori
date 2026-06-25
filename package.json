@@ -1,0 +1,26 @@
+{
+  "name": "satori-hateoas",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Satori, re-imagined as a server-rendered hypermedia (HATEOAS) NIP-46 nostr client. Zero-JS baseline, helmjs progressive enhancement, NIP-65 outbox model.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "dev": "node --experimental-strip-types --watch src/server.ts",
+    "dev:poll": "node dev-watch.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "nostr-tools": "^2.23.5",
+    "socks-proxy-agent": "^10.1.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
+    "typescript": "^6.0.3"
+  }
+}
