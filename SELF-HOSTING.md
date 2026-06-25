@@ -99,6 +99,6 @@ Self-hosting for yourself or a trusted group needs none of that.
   remove the `127.0.0.1:8787:8787` line and rely on Tor entirely.
 - **Tor version.** The `dperson/torproxy` image works but is dated; for a long-lived deployment
   consider a maintained Tor image with a hand-written `torrc` (same `HiddenServiceDir` +
-  `HiddenServicePort 80 satori-hateoas:8787`).
+  `HiddenServicePort 80 satori:8787`).
 - **HTTPS / clearnet.** If you expose over clearnet (a domain) instead of `.onion`, put it behind a
   TLS-terminating reverse proxy; cookies upgrade to `Secure` when it sees `X-Forwarded-Proto: https`.

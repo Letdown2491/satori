@@ -112,7 +112,7 @@ relays). Sign in with a `bunker://` string **or** a NIP-07 extension.
 
 ```bash
 docker compose up -d --build            # build + start (http://127.0.0.1:8787)
-docker compose logs -f satori-hateoas   # follow logs
+docker compose logs -f satori   # follow logs
 docker compose down                     # stop
 ```
 

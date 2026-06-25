@@ -11,9 +11,9 @@
 # Owner config, optional client-authorization, and accessing via Tor Browser: see SELF-HOSTING.md.
 
 services:
-  satori-hateoas:
+  satori:
     build: .
-    container_name: satori-hateoas
+    container_name: satori
     # No command override → the Dockerfile CMD (the real server). No src/ mounts → runs the built image.
     environment:
       - HOST=0.0.0.0
@@ -36,12 +36,12 @@ services:
     restart: unless-stopped
 
   # Tor sidecar: SOCKS5 on 9050 (the daemon's OUTBOUND, Privacy Mode) AND a v3 hidden service that
-  # bridges onion:80 -> satori-hateoas:8787 over the internal network. 8787 is never published to the
+  # bridges onion:80 -> satori:8787 over the internal network. 8787 is never published to the
   # internet; Tor is the only way in. The volume persists the .onion address + keys + client auth.
   tor:
     image: dperson/torproxy
     container_name: satori-tor
-    command: ["-s", "80;satori-hateoas:8787"]
+    command: ["-s", "80;satori:8787"]
     volumes:
       - tor-data:/var/lib/tor
     restart: unless-stopped

@@ -7,16 +7,16 @@
 #
 #   docker compose up -d --build            # build + start in the background
 #   docker compose up -d                    # apply compose changes (recreate)
-#   docker compose logs -f satori-hateoas   # follow logs
+#   docker compose logs -f satori   # follow logs
 #   docker compose down                     # stop
 #
 # Published only on 127.0.0.1 so it stays a local single-user daemon; inside the
 # container the server binds 0.0.0.0 (HOST) so the port map can reach it.
 
 services:
-  satori-hateoas:
+  satori:
     build: .
-    container_name: satori-hateoas
+    container_name: satori
     command: node dev-watch.mjs
     environment:
       - HOST=0.0.0.0
@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
 
   # Tor SOCKS5 proxy sidecar — reachable only on the internal compose network (no
-  # published port). satori-hateoas dials .onion relays through it. Swap the image
+  # published port). satori dials .onion relays through it. Swap the image
   # for any Tor proxy that serves SOCKS5 on 9050.
   tor:
     image: dperson/torproxy
