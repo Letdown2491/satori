@@ -14,7 +14,7 @@ import { getFilters, compileFilters } from '../data/filters.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
 import { profileHeader, noteCard, noteList, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
-import { renderEvent } from '../manifest/registry.ts';
+import { renderEvent, prepareEvents } from '../manifest/registry.ts';
 import { emptyItem } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
 import { type ProfileMap } from '../render/util.ts';
@@ -24,7 +24,7 @@ import { pendingPrivateKinds, listPrimer } from './feed.ts';
 import { ensureLikes } from '../likes.ts';
 import { ensureEngaged, engageTarget } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
-import { ensureReplies, ensureArticleReplies, replierPubkeys } from '../replies.ts';
+import { ensureArticleReplies, replierPubkeys } from '../replies.ts';
 import { sendPage, sendFragment, notFound, redirect, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 
@@ -69,9 +69,9 @@ export async function getProfile(ctx: Ctx): Promise<void> {
         if (page.length < PAGE) break;
     }
     await meta;
-    const replyKeys = notes.filter((n) => n.kind === 1).map((n) => n.id);
-    await Promise.all([ensureProfiles(s, notePubkeys(notes)), ensureLikes(s, notes.map((n) => n.id)), ensureEngaged(s, notes.map((n) => n.id)), ensureZaps(s), ensureReplies(s, replyKeys)]);
-    await ensureProfiles(s, replierPubkeys(replyKeys)); // real avatars for the reply faces
+    // prepareEvents warms reply-presence + replier avatars per kind (notes by id), so the profile
+    // feed needs no `kind === 1` branch here; poll/picture rows just don't warm, as before.
+    await Promise.all([ensureProfiles(s, notePubkeys(notes)), ensureLikes(s, notes.map((n) => n.id)), ensureEngaged(s, notes.map((n) => n.id)), ensureZaps(s), prepareEvents(notes, s)]);
 
     const more = lastRaw >= PAGE && oldest != null ? pagerSentinel(`/u/${entity}?until=${oldest - 1}`) : null;
 

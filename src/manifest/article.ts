@@ -4,13 +4,22 @@
 
 import type { KindHandler } from './registry.ts';
 import { type SatoriDeps, notWired } from './deps.ts';
-import { articleRow, articleReader, focusedNote, articleEmbedPreview, ARTICLE_ACTIONS } from '../render/note.ts';
+import { articleRow, articleReader, focusedNote, articleEmbedPreview, naddrFor, ARTICLE_ACTIONS } from '../render/note.ts';
+import { ensureArticleReplies, replierPubkeys } from '../replies.ts';
+import { ensureProfiles } from '../routes/common.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 
 export const articleHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_ARTICLE],
     actions: ARTICLE_ACTIONS,
     ref: { as: 'article', label: '↗ article', path: (bech) => `/a/${bech}` }, // inline naddr → the article reader
+
+    // Warm article reply-presence (keyed by naddr) + the replier avatars for a page of article rows.
+    async prepare(events, s, opts) {
+        const naddrs = events.map(naddrFor);
+        await ensureArticleReplies(s, naddrs, opts.full);
+        await ensureProfiles(s, replierPubkeys(naddrs));
+    },
 
     render(ev, surface, d) {
         if (surface === 'timeline') return articleRow(ev, d.profiles, d.s);

@@ -26,6 +26,10 @@ export type Surface = 'timeline' | 'focused' | 'reader' | 'embed';
  * event-card render surfaces - so the content tokenizer stays free of `kind === ...` branches too. */
 export interface RefDescriptor { as: string; label: string; path(bech: string): string; }
 
+/** Hints for a kind's prefetch. `full` = block fully on slow best-effort prefetch (cold / relay-slow
+ * surfaces like the Commons), vs returning as soon as the cache is warm enough for first paint. */
+export interface PrepareOpts { full?: boolean }
+
 export interface KindHandler<D = unknown> {
     /** The event kinds this handler claims (e.g. [1, 1068] for notes+polls, [30023] for articles). */
     kinds: readonly number[];
@@ -33,8 +37,10 @@ export interface KindHandler<D = unknown> {
     ref?: RefDescriptor;
     /** Render this event for a given surface. The SAME code Satori runs today, relocated not rewritten. */
     render(ev: NostrEvent, surface: Surface, deps: D): SafeHtml;
-    /** Optional kind-specific prefetch for a page of events (keeps routes from hardcoding hydration). */
-    prepare?(events: NostrEvent[], s: Session): Promise<void>;
+    /** Optional kind-specific prefetch for a page of events (keeps routes from hardcoding hydration).
+     * Called via prepareEvents, grouped by kind. Only fires for the logged-in user (prefetch warms
+     * their engagement/reply state), so `s.me` is present. */
+    prepare?(events: NostrEvent[], s: Session & { me: string }, opts: PrepareOpts): Promise<void>;
     /** Declared action ids (the control vocabulary). Wired to templates in Phase 4. */
     actions?: readonly string[];
 }
@@ -80,4 +86,19 @@ export function renderEvent<D>(ev: NostrEvent, surface: Surface, deps: D): SafeH
     const h = handlerFor(ev.kind);
     if (!h) throw new Error(`registry: no handler or fallback registered (kind ${ev.kind}, surface ${surface})`);
     return h.render(ev, surface, deps);
+}
+
+/** Run each kind's prefetch for a page of MIXED events: group by handler, await each group's prepare.
+ * Kinds whose handler declares no prepare are skipped (so poll/picture/unknown rows just don't warm
+ * reply-presence, exactly as the old `kind === 1` filter did) - the route stays generic, with no
+ * `kind === ...` to choose what to hydrate. The engine owns the grouping; handlers own the fetch. */
+export async function prepareEvents(events: NostrEvent[], s: Session & { me: string }, opts: PrepareOpts = {}): Promise<void> {
+    const groups = new Map<AnyHandler, NostrEvent[]>();
+    for (const ev of events) {
+        const h = handlers.get(ev.kind); // registered handler only; the fallback declares no prepare
+        if (!h?.prepare) continue;
+        const g = groups.get(h);
+        if (g) g.push(ev); else groups.set(h, [ev]);
+    }
+    await Promise.all([...groups].map(([h, evs]) => h.prepare!(evs, s, opts)));
 }

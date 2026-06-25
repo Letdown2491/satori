@@ -5,10 +5,18 @@
 import type { KindHandler } from './registry.ts';
 import { type SatoriDeps, notWired } from './deps.ts';
 import { noteRow, focusedNote, embedPreview, NOTE_ACTIONS } from '../render/note.ts';
+import { ensureReplies, replierPubkeys } from '../replies.ts';
+import { ensureProfiles } from '../routes/common.ts';
 
 export const noteHandler: KindHandler<SatoriDeps> = {
     kinds: [1],
     actions: NOTE_ACTIONS,
+    // Warm note reply-presence (keyed by event id) + the replier avatars for a page of note rows.
+    async prepare(events, s, opts) {
+        const ids = events.map((e) => e.id);
+        await ensureReplies(s, ids, opts.full);
+        await ensureProfiles(s, replierPubkeys(ids));
+    },
     render(ev, surface, d) {
         if (surface === 'timeline') return noteRow(ev, d.profiles, d.s, d.opts);
         if (surface === 'focused') return focusedNote(ev, d.profiles, d.s, d.inThread);

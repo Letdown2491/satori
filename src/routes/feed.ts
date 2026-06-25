@@ -8,7 +8,7 @@
 
 import { buildFollowsRoute, buildFollowersRoute, fetchRoutedPage, fetchTrendingPage } from '../data/feeds.ts';
 import { html, type SafeHtml } from '../html.ts';
-import { noteList, naddrFor, pagerSentinel } from '../render/note.ts';
+import { noteList, pagerSentinel } from '../render/note.ts';
 import { emptyItem } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
 import { page, notesHome } from '../render/layout.ts';
@@ -21,12 +21,12 @@ import { cachedFeed, putCachedFeed } from '../data/feed-cache.ts';
 import { ensureLikes } from '../likes.ts';
 import { ensureEngaged, engageTarget } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
-import { ensureReplies, ensureArticleReplies, replierPubkeys } from '../replies.ts';
 import { sendPage, sendFragment, sendSignRequest, redirect, type Ctx } from '../http.ts';
 import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
 import { FEED_KINDS } from '../manifest/feed-config.ts';
+import { prepareEvents } from '../manifest/registry.ts';
 import type { FeedTab } from '../render/layout.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
@@ -159,13 +159,11 @@ async function fillPage(s: Session & { me: string }, tab: FeedTab, until?: numbe
         }
         if (page.length < lim) { exhausted = true; break; } // short window → end of the feed
     }
-    // Enrich only what we render (not the filtered-out raw). `replyKeys` = note ids (or article
-    // naddrs on longform) for reply-presence; after it resolves, hydrate the replier avatars.
-    const replyKeys = tab === 'longform' ? visible.map(naddrFor) : visible.filter((e) => e.kind === 1).map((e) => e.id);
-    // The Commons is always uncached + relay-slow, so wait fully for its reply-faces (full=true) -
-    // else they reliably miss the bounded window on first load; the hot feeds stay snappy (bounded).
-    await Promise.all([ensureProfiles(s, [s.me, ...notePubkeys(visible)]), ensureLikes(s, visible.map((e) => e.id)), ensureEngaged(s, visible.map(engageTarget)), ensureZaps(s), tab === 'longform' ? ensureArticleReplies(s, replyKeys) : ensureReplies(s, replyKeys, tab === 'commons')]);
-    await ensureProfiles(s, replierPubkeys(replyKeys)); // real avatars for the reply faces (only un-cached repliers hit a relay)
+    // Enrich only what we render (not the filtered-out raw). prepareEvents fans the reply-presence
+    // prefetch out per kind (notes warm by id, articles by naddr) and hydrates the replier avatars,
+    // so this stays free of `kind ===` branching. The Commons is uncached + relay-slow, so it waits
+    // fully for its reply-faces (full=true), else they reliably miss the bounded window on first load.
+    await Promise.all([ensureProfiles(s, [s.me, ...notePubkeys(visible)]), ensureLikes(s, visible.map((e) => e.id)), ensureEngaged(s, visible.map(engageTarget)), ensureZaps(s), prepareEvents(visible, s, { full: tab === 'commons' })]);
     const more = anchorable && !exhausted ? sentinel(tab, cursor!) : null;
     return { visible, allRaw, more, newestRaw };
 }
