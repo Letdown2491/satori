@@ -7,8 +7,10 @@
 
 import type { Pool } from './pool.ts';
 import type { Filter } from 'nostr-tools';
-import type { NostrEvent } from '../nostr/types.ts';
+import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { parseProfile, type Profile } from './profiles.ts';
+import { fetchRelayLists } from './relays.ts';
+import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 
 // --- search operators (ants-style) -----------------------------------------
 // A query mixes free text (→ NIP-50 `search`) with operators. Relay-native ones become Filter
@@ -104,19 +106,48 @@ export async function searchNotes(pool: Pool, relays: string[], sq: SearchQuery,
     // dropping the constraint and falling through to an unfiltered text search (which would show
     // results NOT by the requested author). The user asked for a specific person; honor or empty.
     if ((sq.by.length && !authors.length) || (sq.p.length && !mentions.length)) return [];
+
+    // by:<author> → route to the author's OUTBOX (their NIP-65 write relays), not the NIP-50 search
+    // relays (which don't hold full timelines); free text + has:/site: post-filter locally.
+    if (authors.length) return searchByAuthors(pool, sq, authors, mentions, limit);
+
+    // Otherwise: full-text / tag / time search over the dedicated NIP-50 search relays.
     const postOnly = sq.has.length > 0 || sq.sites.length > 0;
     const filter: Filter = { kinds: [1], limit: postOnly ? limit * 4 : limit }; // over-fetch when we'll post-filter
     if (sq.text) filter.search = sq.text;
-    if (authors.length) filter.authors = authors;
     if (mentions.length) filter['#p'] = mentions;
     if (sq.tags.length) filter['#t'] = sq.tags;
     if (sq.since !== undefined) filter.since = sq.since;
     if (sq.until !== undefined) filter.until = sq.until;
-    const native = !!(filter.search || filter.authors || filter['#p'] || filter['#t'] || filter.since || filter.until);
+    const native = !!(filter.search || filter['#p'] || filter['#t'] || filter.since || filter.until);
     if (!native) return []; // has:/site: alone has nothing to query - we can't ask a relay for "all notes with an image"
     const events = await pool.query(relays, filter).catch(() => [] as NostrEvent[]);
     const byId = new Map<string, NostrEvent>();
     for (const ev of events) if (!byId.has(ev.id) && passesPostFilters(ev, sq)) byId.set(ev.id, ev);
+    return [...byId.values()].sort((a, b) => b.created_at - a.created_at).slice(0, limit);
+}
+
+/** by:<author> notes from the author's WRITE relays (outbox). Relay-native fields (#p / #t / since /
+ * until) ride the filter; the free text + has:/site: are matched LOCALLY (write relays are general
+ * relays without NIP-50 full-text), so we over-fetch the author's recent notes and filter down. */
+async function searchByAuthors(pool: Pool, sq: SearchQuery, authors: string[], mentions: string[], limit: number): Promise<NostrEvent[]> {
+    const lists = await fetchRelayLists(pool, INDEXER_RELAYS, authors).catch(() => new Map<string, RelayList>());
+    const writes = [...new Set(authors.flatMap((pk) => lists.get(pk)?.write ?? []))];
+    const relays = writes.length ? writes : INDEXER_RELAYS; // outbox; indexers only if the author has no kind:10002
+    const filter: Filter = { kinds: [1], authors, limit: Math.max(limit * 4, 120) }; // over-fetch for the local text filter
+    if (mentions.length) filter['#p'] = mentions;
+    if (sq.tags.length) filter['#t'] = sq.tags;
+    if (sq.since !== undefined) filter.since = sq.since;
+    if (sq.until !== undefined) filter.until = sq.until;
+    const events = await pool.query(relays, filter).catch(() => [] as NostrEvent[]);
+    const terms = sq.text ? sq.text.toLowerCase().split(/\s+/).filter(Boolean) : []; // free text → AND of terms
+    const byId = new Map<string, NostrEvent>();
+    for (const ev of events) {
+        if (byId.has(ev.id)) continue;
+        if (terms.length && !terms.every((t) => ev.content.toLowerCase().includes(t))) continue;
+        if (!passesPostFilters(ev, sq)) continue;
+        byId.set(ev.id, ev);
+    }
     return [...byId.values()].sort((a, b) => b.created_at - a.created_at).slice(0, limit);
 }
 
