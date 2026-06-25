@@ -45,9 +45,11 @@ export function handlerLinks(handlers: HandlerInfo[], bech: string, entity: stri
  * NIP-89-discovered handlers swap into the chips slot on intersect (poll-box lazy pattern). */
 function openInSlot(ev: NostrEvent, bech: string): SafeHtml {
     const id = `open-${ev.id.slice(0, 16)}`; // ev.id is hex → dom-safe
-    return html`<div class="event-open">
+    // The intersect trigger lives on the DIV, not the chips span: the span is display:contents (no
+    // layout box) so an IntersectionObserver can't watch it. Trigger on the box, swap into the span.
+    return html`<div class="event-open" h-get="/handlers/${bech}?k=${String(ev.kind)}" h-trigger="intersect once" h-target="#${id}" h-swap="inner" h-push-url="false">
           <span class="event-open-lead">Open in</span>
-          <span class="event-open-apps" id="${id}" h-get="/handlers/${bech}?k=${String(ev.kind)}" h-trigger="intersect once" h-target="#${id}" h-swap="inner" h-push-url="false">${njumpChip(bech)}</span>
+          <span class="event-open-apps" id="${id}">${njumpChip(bech)}</span>
         </div>`;
 }
 
