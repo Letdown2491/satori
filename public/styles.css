@@ -962,6 +962,7 @@
         .search-empty { padding: 40px 16px; }
         .search-quote { font-size: 15px; font-style: italic; color: var(--text); max-width: 34ch; margin: 0 auto; line-height: 1.5; }
         .search-noresults { font-size: 13px; color: var(--muted); margin-top: 12px; }
+        .search-ops { font-size: 12px; color: var(--muted); margin-top: 18px; opacity: 0.8; } /* operator hint on the seek state */
         /* Shared CSS-only tabs (radio hack): radios are off-screen but focusable
            (native arrow-key nav), labels are the visible tabs, :checked drives the
            panels. Visual is generic (.tab*); each instance adds id-specific show /

@@ -6,8 +6,82 @@
 // caps each query with maxWait, so a dead/slow source just contributes nothing.
 
 import type { Pool } from './pool.ts';
+import type { Filter } from 'nostr-tools';
 import type { NostrEvent } from '../nostr/types.ts';
 import { parseProfile, type Profile } from './profiles.ts';
+
+// --- search operators (ants-style) -----------------------------------------
+// A query mixes free text (→ NIP-50 `search`) with operators. Relay-native ones become Filter
+// fields (#t / authors / #p / since / until); `has:`/`site:` can't be expressed in a filter, so
+// they post-filter the fetched notes. `by:`/`p:` identifiers are resolved to pubkeys by the caller
+// (it has the profile cache). Unknown `word:` tokens fall back to free text. is:/OR are not (yet).
+
+export interface SearchQuery {
+    text: string;                            // free text → NIP-50 search
+    tags: string[];                          // #foo or t:foo → #t
+    by: string[];                            // by:<npub|hex|name> raw, caller resolves → authors
+    p: string[];                             // p:<npub|hex|name> raw, caller resolves → #p mentions
+    since?: number;                          // since:<date|Nd>
+    until?: number;                          // until:<date|Nd>
+    has: ('image' | 'video' | 'link')[];     // has:image|video|link → post-filter
+    sites: string[];                         // site:<domain> → post-filter
+}
+
+/** Parse "since:2024-01-01" (UTC midnight) or a relative "7d"/"24h"/"2w"/"30m" to unix seconds. */
+function parseWhen(v: string): number | undefined {
+    const rel = v.match(/^(\d+)([dwhm])$/i);
+    if (rel) {
+        const n = Number(rel[1]);
+        const per = rel[2]!.toLowerCase() === 'd' ? 86400 : rel[2]!.toLowerCase() === 'w' ? 604800 : rel[2]!.toLowerCase() === 'h' ? 3600 : 60;
+        return Math.floor(Date.now() / 1000) - n * per;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { const ms = Date.parse(`${v}T00:00:00Z`); return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined; }
+    return undefined;
+}
+
+/** Split a raw query into free text + operators. Pure + sync (no resolution). */
+export function parseSearchQuery(q: string): SearchQuery {
+    const out: SearchQuery = { text: '', tags: [], by: [], p: [], has: [], sites: [] };
+    const free: string[] = [];
+    for (const tok of q.split(/\s+/).filter(Boolean)) {
+        if (tok.length > 1 && tok.startsWith('#')) { out.tags.push(tok.slice(1).toLowerCase()); continue; }
+        const m = tok.match(/^([a-z]+):(.+)$/i);
+        if (m) {
+            const op = m[1]!.toLowerCase(), val = m[2]!;
+            if (op === 't') { out.tags.push(val.toLowerCase()); continue; }
+            if (op === 'by') { out.by.push(val); continue; }
+            if (op === 'p') { out.p.push(val); continue; }
+            if (op === 'has' && /^(image|video|link)$/i.test(val)) { out.has.push(val.toLowerCase() as 'image' | 'video' | 'link'); continue; }
+            if (op === 'site') { out.sites.push(val.toLowerCase().replace(/^www\./, '')); continue; }
+            if (op === 'since' || op === 'until') { const t = parseWhen(val); if (t !== undefined) { out[op] = t; continue; } }
+            // unknown operator → free text
+        }
+        free.push(tok);
+    }
+    out.text = free.join(' ');
+    return out;
+}
+
+const IMG_RE = /\.(?:jpe?g|png|gif|webp|avif|bmp|svg)(?:\?\S*)?(?=\s|$)/i;
+const VID_RE = /\.(?:mp4|webm|mov|m4v|ogv|mkv)(?:\?\S*)?(?=\s|$)/i;
+const URL_RE = /https?:\/\/\S+/i;
+const hasImeta = (ev: NostrEvent, kind: 'image' | 'video'): boolean =>
+    ev.tags.some((t) => t[0] === 'imeta' && t.slice(1).some((p) => p.startsWith(`m ${kind}`)));
+
+/** Apply the non-relay-native operators (has:/site:) to a fetched note. */
+function passesPostFilters(ev: NostrEvent, sq: SearchQuery): boolean {
+    const c = ev.content;
+    for (const h of sq.has) {
+        if (h === 'image' && !IMG_RE.test(c) && !hasImeta(ev, 'image')) return false;
+        if (h === 'video' && !VID_RE.test(c) && !hasImeta(ev, 'video')) return false;
+        if (h === 'link' && !URL_RE.test(c)) return false;
+    }
+    if (sq.sites.length) {
+        const hosts = (c.match(/https?:\/\/\S+/gi) ?? []).map((u) => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; } });
+        if (!sq.sites.some((site) => hosts.some((h) => h === site || h.endsWith(`.${site}`)))) return false;
+    }
+    return true;
+}
 
 export const SEARCH_NOTE_RELAYS = [
     'wss://search.nos.today',
@@ -21,11 +95,24 @@ export const SEARCH_PROFILE_RELAYS = [
     'wss://nostr.wine',
 ];
 
-/** Full-text note search: query the note relays, merge + dedupe by id, newest first. */
-export async function searchNotes(pool: Pool, relays: string[], q: string, limit = 30): Promise<NostrEvent[]> {
-    const events = await pool.query(relays, { kinds: [1], search: q, limit }).catch(() => [] as NostrEvent[]);
+/** Operator-aware note search: free text → NIP-50 `search`, operators → Filter fields (#t / authors
+ * / #p / since / until), then post-filter for has:/site:. `authors`/`mentions` are pre-resolved
+ * pubkeys (the caller resolves by:/p: against the profile cache). Merge + dedupe by id, newest first.
+ * Returns [] when there's no relay-native constraint (a pure has:/site: query can't be enumerated). */
+export async function searchNotes(pool: Pool, relays: string[], sq: SearchQuery, authors: string[], mentions: string[], limit = 30): Promise<NostrEvent[]> {
+    const postOnly = sq.has.length > 0 || sq.sites.length > 0;
+    const filter: Filter = { kinds: [1], limit: postOnly ? limit * 4 : limit }; // over-fetch when we'll post-filter
+    if (sq.text) filter.search = sq.text;
+    if (authors.length) filter.authors = authors;
+    if (mentions.length) filter['#p'] = mentions;
+    if (sq.tags.length) filter['#t'] = sq.tags;
+    if (sq.since !== undefined) filter.since = sq.since;
+    if (sq.until !== undefined) filter.until = sq.until;
+    const native = !!(filter.search || filter.authors || filter['#p'] || filter['#t'] || filter.since || filter.until);
+    if (!native) return []; // has:/site: alone has nothing to query - we can't ask a relay for "all notes with an image"
+    const events = await pool.query(relays, filter).catch(() => [] as NostrEvent[]);
     const byId = new Map<string, NostrEvent>();
-    for (const ev of events) if (!byId.has(ev.id)) byId.set(ev.id, ev);
+    for (const ev of events) if (!byId.has(ev.id) && passesPostFilters(ev, sq)) byId.set(ev.id, ev);
     return [...byId.values()].sort((a, b) => b.created_at - a.created_at).slice(0, limit);
 }
 
