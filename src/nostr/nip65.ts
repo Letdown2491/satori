@@ -21,7 +21,14 @@ export const INDEXER_RELAYS = [
 // connection cost is mild) AND uncovered authors now fall back to the indexers rather than
 // being dropped (see routeAuthorsToRelays). The persistent daemon makes this affordable.
 const MAX_RELAYS_PER_AUTHOR = 3;
-const MAX_RELAYS = 50;
+// 1x routing of a large follow list (~225) settles around 30 relays; 2x redundancy (below) needs more,
+// so the cap has headroom to avoid truncating real coverage back onto the indexer fallback. The
+// persistent daemon pools/reuses sockets (SimplePool), so the extra connections are mild.
+const MAX_RELAYS = 70;
+// Redundancy: route each author to up to this many of their write relays (not just one), so a note
+// they published to only ONE of their relays still surfaces. A note has to be absent from BOTH chosen
+// relays to vanish. Capped by the author's relay count and by MAX_RELAYS (the tail keeps 1x coverage).
+const RELAYS_PER_AUTHOR_TARGET = 2;
 export const MAX_AUTHORS_PER_FILTER = 200;
 
 /** Normalize a relay URL for dedup/grouping: lowercase, no trailing slash. */
@@ -56,8 +63,10 @@ export function parseRelayList(event: NostrEvent): RelayList {
 /**
  * Route authors to the relays they write to. Each author gets up to 3 write
  * relays; authors with none go to `fallbackRelays`. A greedy set-cover then
- * bounds the relay set (highest coverage first) to MAX_RELAYS. Any author still
- * uncovered when the cap is hit is NOT dropped - they're swept onto the fallback
+ * bounds the relay set (highest coverage first) to MAX_RELAYS, routing each author
+ * to up to RELAYS_PER_AUTHOR_TARGET (2) of their relays for redundancy - so a note
+ * they put on only one of their relays still surfaces. Any author with ZERO chosen
+ * relays when the cap is hit is NOT dropped - they're swept onto the fallback
  * (indexer) relays so their notes still surface. Returns Map<relayUrl, Set<pubkey>>.
  */
 export function routeAuthorsToRelays(
@@ -73,13 +82,24 @@ export function routeAuthorsToRelays(
         authorRelays.set(author, write.length > 0 ? write : fallback);
     }
 
-    const uncovered = new Set(authors.filter((a) => (authorRelays.get(a) ?? []).length > 0));
+    // `want` = how many MORE relays each author still wants (capped by how many they have). An author
+    // stays in the cover pool until they've been routed to RELAYS_PER_AUTHOR_TARGET relays, so the greedy
+    // keeps adding a 2nd relay per author after the 1st pass - not just one-and-done.
+    const want = new Map<string, number>();
+    for (const author of authors) {
+        const n = (authorRelays.get(author) ?? []).length;
+        if (n > 0) want.set(author, Math.min(RELAYS_PER_AUTHOR_TARGET, n));
+    }
+    const everCovered = new Set<string>(); // authors routed to >= 1 chosen relay (so they won't vanish)
     const chosen = new Map<string, Set<string>>();
 
-    while (uncovered.size > 0 && chosen.size < MAX_RELAYS) {
+    while (want.size > 0 && chosen.size < MAX_RELAYS) {
+        // Coverage counts only authors who still WANT another relay, and only over relays not yet chosen.
         const coverage = new Map<string, string[]>();
-        for (const author of uncovered) {
+        for (const [author, remaining] of want) {
+            if (remaining <= 0) continue;
             for (const relay of authorRelays.get(author) ?? []) {
+                if (chosen.has(relay)) continue; // this relay is already in the set
                 (coverage.get(relay) ?? coverage.set(relay, []).get(relay)!).push(author);
             }
         }
@@ -92,16 +112,21 @@ export function routeAuthorsToRelays(
         }
         if (!best) break;
         chosen.set(best, new Set(bestAuthors));
-        for (const author of bestAuthors) uncovered.delete(author);
+        for (const author of bestAuthors) {
+            everCovered.add(author);
+            const remaining = want.get(author)! - 1;
+            if (remaining <= 0) want.delete(author); else want.set(author, remaining);
+        }
     }
 
-    // Don't silently drop the tail: any author still uncovered (their write relays didn't
-    // make the MAX_RELAYS cut) is queried from the fallback (indexer) relays, which mirror
-    // most notes. Better an imperfect relay than the author vanishing from the feed.
-    if (uncovered.size > 0 && fallback.length > 0) {
+    // Don't silently drop the tail: any author with ZERO chosen relays (theirs didn't make the
+    // MAX_RELAYS cut) is queried from the fallback (indexer) relays, which mirror most notes.
+    // Better an imperfect relay than the author vanishing from the feed.
+    const orphaned = authors.filter((a) => (authorRelays.get(a)?.length ?? 0) > 0 && !everCovered.has(a));
+    if (orphaned.length > 0 && fallback.length > 0) {
         for (const relay of fallback) {
             const set = chosen.get(relay) ?? new Set<string>();
-            for (const author of uncovered) set.add(author);
+            for (const author of orphaned) set.add(author);
             chosen.set(relay, set);
         }
     }
