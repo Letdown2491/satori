@@ -18,7 +18,7 @@ import { adoptOwnerIfUnclaimed, accessMode } from './access.ts';
 import { getSession, isLoggedIn } from './session.ts';
 import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
-import { getProfile, getProfileExtras, getThread, getArticle, getEmbed } from './routes/read.ts';
+import { getProfile, getProfileExtras, getThread, getThreadPrivate, postThreadPrivateSeals, postThreadPrivateRumors, getArticle, getEmbed } from './routes/read.ts';
 import { getHandlers } from './routes/handlers.ts';
 import { getAvatar } from './routes/avatar.ts';
 import { getMedia, getVideoEmbed } from './routes/media.ts';
@@ -108,6 +108,9 @@ const ROUTES: Route[] = [
     route('GET', '/u/:npub', getProfile),
     route('GET', '/u/:npub/extras', getProfileExtras),
     route('GET', '/t/:id', getThread),
+    route('GET', '/t/:id/private', getThreadPrivate),
+    route('POST', '/t/:id/private/seals', postThreadPrivateSeals),
+    route('POST', '/t/:id/private/rumors', postThreadPrivateRumors),
     route('GET', '/a/:naddr', getArticle),
     route('GET', '/embed/:id', getEmbed),
     route('GET', '/handlers/:id', getHandlers),

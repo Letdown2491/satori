@@ -27,7 +27,8 @@ import { ensureZaps } from '../zaps.ts';
 import { ensureArticleReplies, replierPubkeys } from '../replies.ts';
 import { sendPage, sendFragment, notFound, redirect, type Ctx } from '../http.ts';
 import { privateRepliesFor, type PrivateReply } from '../data/dms.ts';
-import { privateRepliesForNip07 } from '../data/dms-nip07.ts';
+import { privateRepliesForNip07, beginSync, applySeals, applyRumors, finalizeSync } from '../data/dms-nip07.ts';
+import { hasBatchCaps, readBatchResults, sendSignRequest } from '../http.ts';
 import { signsOnClient, type Session } from '../session.ts';
 
 const PAGE = 30;
@@ -203,7 +204,10 @@ export async function getThread(ctx: Ctx): Promise<void> {
 
     // Private replies (gift-wrapped) you've received to this note, folded in as synthetic events so they
     // nest and render like public replies, badged with a lock. Self-copies of ones you sent show too.
-    const privates = privateRepliesTo(s, id).map(syntheticReply);
+    // Bunker's decrypt cache is disk-backed + pre-warmed, so fold them in now. nip07's cache is in-memory
+    // (nothing persists) and may be cold, so for it we render public-only here and WARM it asynchronously
+    // (the #thread-warm trigger below) - the warm step appends the private replies once decrypted.
+    const privates = signsOnClient(s) ? [] : privateRepliesTo(s, id).map(syntheticReply);
     const privateIds = new Set(privates.map((e) => e.id));
     const allReplies = [...replies, ...privates];
 
@@ -214,8 +218,69 @@ export async function getThread(ctx: Ctx): Promise<void> {
     // `inThread` (this thread's nevent) lets every reply button append back here.
     // The #thread <ul> is where an optimistic reply is appended (helmjs `append`).
     const tree = renderReplyTree(buildReplyTree(allReplies.filter((r) => !muted.has(r.pubkey)), id), 0, s.profiles, s, entity, privateIds);
-    const content = html`<ul class="feed" id="thread">${renderEvent(focused, 'focused', { profiles: s.profiles, s, inThread: entity })}${tree}</ul>`;
+    // nip07: an invisible load-trigger that decrypts gift-wraps and appends any private replies (once).
+    const warm = signsOnClient(s) ? html`<div id="thread-warm" h-get="/t/${entity}/private" h-trigger="load" h-swap="none" h-push-url="false"></div>` : null;
+    const content = html`<ul class="feed" id="thread">${renderEvent(focused, 'focused', { profiles: s.profiles, s, inThread: entity })}${tree}</ul>${warm}`;
     sendPage(ctx, content, chromeFor(ctx, s, { title: 'Thread' }));
+}
+
+// Append decrypted private replies into the open thread's #thread list (helmjs append override).
+const APPEND_THREAD = { 'H-Retarget': '#thread', 'H-Reswap': 'append' };
+
+/** Decode a thread entity (note/nevent) to its note id - shared by the warm-chain routes. */
+function threadNoteId(entity: string): string | null {
+    try { const d = decode(entity); if (d.type === 'note') return d.data; if (d.type === 'nevent') return d.data.id; } catch { /* */ }
+    return null;
+}
+
+/** Terminal of the nip07 thread-warm chain: the decrypt cache is now warm, so render this note's private
+ * replies (lock-badged) and append them into #thread. Empty fragment when there are none (clears the trigger). */
+async function appendThreadPrivates(ctx: Ctx, s: Session & { me: string }, chainId: string, noteId: string, entity: string): Promise<void> {
+    finalizeSync(s, chainId); // consume the chain; mem is warm (we ignore the inbox aggregate it returns)
+    const privates = privateRepliesForNip07(noteId);
+    if (!privates.length) { sendFragment(ctx, html``); return; }
+    await ensureProfiles(s, privates.map((p) => p.from));
+    const cards = privates.map((p) => noteCard(syntheticReply(p), s.profiles, s, { hideParent: true, depth: 0, inThread: entity, isPrivate: true }));
+    sendFragment(ctx, join(cards), APPEND_THREAD);
+}
+
+/** GET /t/:id/private - start the nip07 warm: decrypt recent gift-wraps so this note's private replies
+ * land in the in-memory cache, then append them. Reuses the DM decrypt chain (no plaintext persisted). */
+export async function getThreadPrivate(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const entity = ctx.params.id ?? '';
+    const noteId = threadNoteId(entity);
+    // Only nip07 needs warming (bunker already inlined). No batch caps => can't decrypt; skip silently.
+    if (!noteId || !signsOnClient(s) || !hasBatchCaps(ctx)) { sendFragment(ctx, html``); return; }
+    const { chainId, items } = await beginSync(s, 'inbox');
+    if (items.length === 0) { await appendThreadPrivates(ctx, s as Session & { me: string }, chainId, noteId, entity); return; }
+    sendSignRequest(ctx, { items }, `/t/${entity}/private/seals?chain=${chainId}`, 'nip44_decrypt_batch');
+}
+
+/** POST /t/:id/private/seals - layer-1 results in; emit layer-2 (seal->rumor) or finalize+append. */
+export async function postThreadPrivateSeals(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return; if (!signsOnClient(s)) { sendFragment(ctx, html``); return; }
+    const entity = ctx.params.id ?? '';
+    const noteId = threadNoteId(entity);
+    const chainId = ctx.query.get('chain') ?? '';
+    const results = await readBatchResults(ctx.req);
+    const next = results ? applySeals(s, chainId, results) : null;
+    if (next) { sendSignRequest(ctx, { items: next.items }, `/t/${entity}/private/rumors?chain=${chainId}`, 'nip44_decrypt_batch'); return; }
+    if (noteId) await appendThreadPrivates(ctx, s as Session & { me: string }, chainId, noteId, entity); else sendFragment(ctx, html``);
+}
+
+/** POST /t/:id/private/rumors - layer-2 results in; cache the rumors, then finalize+append. */
+export async function postThreadPrivateRumors(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return; if (!signsOnClient(s)) { sendFragment(ctx, html``); return; }
+    const entity = ctx.params.id ?? '';
+    const noteId = threadNoteId(entity);
+    const chainId = ctx.query.get('chain') ?? '';
+    const results = await readBatchResults(ctx.req);
+    if (results) applyRumors(s, chainId, results);
+    if (noteId) await appendThreadPrivates(ctx, s as Session & { me: string }, chainId, noteId, entity); else sendFragment(ctx, html``);
 }
 
 // --- GET /a/<naddr> --------------------------------------------------------
