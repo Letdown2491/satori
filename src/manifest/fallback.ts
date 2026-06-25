@@ -23,29 +23,32 @@ function bechFor(ev: NostrEvent, d: SatoriDeps): string {
     try { return neventEncode({ id: ev.id, author: ev.pubkey }); } catch { return ev.id; }
 }
 
-/** njump opens any entity in a browser - the universal fallback when no NIP-89 handler is found. */
-function njumpLink(bech: string): SafeHtml {
-    return html`<a class="event-open-link njump" href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer">Open in njump ↗</a>`;
+/** njump opens any entity in a browser - the universal fallback chip when no NIP-89 handler exists. */
+function njumpChip(bech: string): SafeHtml {
+    return html`<a class="event-chip njump" href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer">njump</a>`;
 }
 
-/** The discovery fragment (lazy /handlers response): NIP-89 web handlers as "Open in <app>" links,
- * then njump. Handler URLs are from STRANGERS' events, so each is safeUrl-gated (drop unsafe). */
+/** The discovery fragment (lazy /handlers response): NIP-89 web handlers as app chips, then njump.
+ * Handler URLs are from STRANGERS' events, so each is safeUrl-gated (drop unsafe). */
 export function handlerLinks(handlers: HandlerInfo[], bech: string, entity: string): SafeHtml {
-    const links: SafeHtml[] = [];
+    const chips: SafeHtml[] = [];
     for (const h of handlers.slice(0, 4)) {
         const href = safeUrl(handlerUrl(h, bech, entity) ?? '');
         if (href === '#') continue; // unsafe scheme / no template - never trust a stranger's URL blindly
-        links.push(html`<a class="event-open-link" href="${href}" target="_blank" rel="noopener noreferrer">Open in ${h.name || shortNpub(h.pubkey)} ↗</a>`);
+        chips.push(html`<a class="event-chip" href="${href}" target="_blank" rel="noopener noreferrer">${h.name || shortNpub(h.pubkey)}</a>`);
     }
-    links.push(njumpLink(bech));
-    return join(links);
+    chips.push(njumpChip(bech));
+    return join(chips);
 }
 
-/** The lazy "open in" slot: njump shows immediately (always works); NIP-89-discovered handlers swap
- * in on intersect. Mirrors the poll-box / embed-card lazy-hydration pattern. */
+/** The lazy "open in" row: a muted lead + app chips. njump shows immediately (always works);
+ * NIP-89-discovered handlers swap into the chips slot on intersect (poll-box lazy pattern). */
 function openInSlot(ev: NostrEvent, bech: string): SafeHtml {
     const id = `open-${ev.id.slice(0, 16)}`; // ev.id is hex → dom-safe
-    return html`<div class="event-open" id="${id}" h-get="/handlers/${bech}?k=${String(ev.kind)}" h-trigger="intersect once" h-target="#${id}" h-swap="inner" h-push-url="false">${njumpLink(bech)}</div>`;
+    return html`<div class="event-open">
+          <span class="event-open-lead">Open in</span>
+          <span class="event-open-apps" id="${id}" h-get="/handlers/${bech}?k=${String(ev.kind)}" h-trigger="intersect once" h-target="#${id}" h-swap="inner" h-push-url="false">${njumpChip(bech)}</span>
+        </div>`;
 }
 
 /** The honest unknown-event card. Embed = a compact quote-style card; timeline/focused = the note
@@ -55,7 +58,9 @@ function unsupportedCard(ev: NostrEvent, surface: Surface, d: SatoriDeps): SafeH
     const bech = bechFor(ev, d);
     const label = kindLabel(ev.kind);
     const raw = ev.content?.trim();
-    const preview = raw ? html`<div class="content event-raw">${raw.slice(0, RAW_CAP)}${raw.length > RAW_CAP ? '…' : ''}</div>` : null;
+    // Clamp + fade only when it's long enough to actually overflow; short content shows in full.
+    const long = !!raw && raw.length > 300;
+    const preview = raw ? html`<div class="content event-raw${long ? ' clamped' : ''}">${raw.slice(0, RAW_CAP)}</div>` : null;
 
     if (surface === 'embed') {
         return html`<a class="quote-label" href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer">↗ ${label}</a
