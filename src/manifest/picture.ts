@@ -6,18 +6,14 @@
 // content), so the note fallback would show only the caption - this handler renders the images.
 
 import type { KindHandler } from './registry.ts';
+import { type SatoriDeps, notWired } from './deps.ts';
 import { html, type SafeHtml } from '../html.ts';
-import { avatar, displayName, npub, timeAgo, type ProfileMap } from '../render/util.ts';
+import { avatar, displayName, npub, timeAgo } from '../render/util.ts';
 import { imgSrc } from '../render/content.ts';
 import { noteActions } from '../render/note.ts';
 import { neventEncode } from 'nostr-tools/nip19';
+import { KIND_PICTURE } from '../nostr/nip68.ts';
 import type { NostrEvent } from '../nostr/types.ts';
-import type { Session } from '../session.ts';
-
-const KIND_PICTURE = 20;
-
-// Deps the registry hands us (a structural subset of satori.ts's SatoriDeps - kept local to avoid coupling).
-interface PicDeps { profiles?: ProfileMap; s?: Session; }
 
 /** Pull image url + alt out of each NIP-92 imeta tag (space-delimited "key value" sub-fields). */
 function imetaImages(ev: NostrEvent): { url: string; alt: string }[] {
@@ -39,7 +35,7 @@ function imetaImages(ev: NostrEvent): { url: string; alt: string }[] {
 /** A picture card in Satori's `.note` shell, image-forward. Reuses only EXPORTED primitives + existing
  * styled classes (.note/.media/.content), so no core render or CSS change is needed. `compact` (embed)
  * drops the action row. Images route through imgSrc = the SSRF-guarded, Tor-aware /media proxy. */
-function pictureCard(ev: NostrEvent, d: PicDeps, compact: boolean): SafeHtml {
+function pictureCard(ev: NostrEvent, d: SatoriDeps, compact: boolean): SafeHtml {
     const { profiles, s } = d;
     const nevent = neventEncode({ id: ev.id });
     const title = ev.tags.find((t) => t[0] === 'title')?.[1] ?? '';
@@ -61,10 +57,11 @@ function pictureCard(ev: NostrEvent, d: PicDeps, compact: boolean): SafeHtml {
       </li>`;
 }
 
-export const pictureHandler: KindHandler<PicDeps> = {
+export const pictureHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_PICTURE],
     actions: ['reply', 'quote', 'like', 'zap', 'bookmark'], // declared control vocabulary
     render(ev, surface, d) {
+        if (surface === 'reader') return notWired(surface); // pictures have no reader page
         return pictureCard(ev, d, surface === 'embed');
     },
 };

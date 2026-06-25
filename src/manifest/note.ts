@@ -1,0 +1,18 @@
+// The note kind (kind 1) - Satori's fundamental kind. Renders the `.note` card (timeline), the focused
+// thread anchor, or a note embed. Render code lives in the shared render layer (noteRow/focusedNote/
+// embedPreview are reused by polls + the unknown-kind fallback too); this module is the handler.
+
+import type { KindHandler } from './registry.ts';
+import { type SatoriDeps, notWired } from './deps.ts';
+import { noteRow, focusedNote, embedPreview, NOTE_ACTIONS } from '../render/note.ts';
+
+export const noteHandler: KindHandler<SatoriDeps> = {
+    kinds: [1],
+    actions: NOTE_ACTIONS,
+    render(ev, surface, d) {
+        if (surface === 'timeline') return noteRow(ev, d.profiles, d.s, d.opts);
+        if (surface === 'focused') return focusedNote(ev, d.profiles, d.s, d.inThread);
+        if (surface === 'embed') return embedPreview(ev, d.bech ?? '', d.profiles, d.label);
+        return notWired(surface); // a note has no reader page
+    },
+};

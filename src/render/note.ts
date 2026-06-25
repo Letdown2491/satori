@@ -15,9 +15,7 @@ import { icon, enso } from './svg.ts';
 import { replyParent } from '../nostr/nip10.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
 import { parseArticle, readingMinutes, KIND_ARTICLE } from '../nostr/nip23.ts';
-import { KIND_POLL } from '../nostr/nip88.ts';
 import { renderEvent } from '../manifest/registry.ts';
-import { pollBox } from './poll.ts';
 import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
 import { isZapped } from '../zaps.ts';
 import { replyFaces } from '../replies.ts';
@@ -332,7 +330,7 @@ export function noteCard(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opt
 /** One note as a feed/thread <li>, in Satori's flex `.note` layout. `depth` indents nested replies
  * (with the thread line), matching the thread view. A `pending` note self-polls /note/tick (countdown
  * → confirm in place / undo). The note/poll timeline render - the registry's fallback handler. */
-export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts: NoteOpts = {}): SafeHtml {
+export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts: NoteOpts = {}, extra?: SafeHtml): SafeHtml {
     const nevent = neventFor(ev);
     const im = parseImeta(ev); // NIP-92 alt + dim for the note's media
     const p = opts.pending;
@@ -352,7 +350,7 @@ export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts
           </div>
           ${parent}
           ${noteContent(ev, profiles, true, s?.media, im)}
-          ${!p && ev.kind === KIND_POLL ? pollBox(ev) : null}
+          ${!p && extra ? extra : null}
           ${p ? pendingFooter(p.token, p.seconds) : noteActions(ev, nevent, s, opts.inThread, true, opts.mute)}
         </div>
       </li>${p ? html`` : mediaLightboxes(ev.content, s?.media?.autoLoad ?? true, im)}`;
@@ -411,7 +409,7 @@ export function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): 
 
 /** The focused note in a thread - an <li class="note focused"> in the feed list
  * (matching Satori), full content + the action row. */
-export function focusedNote(ev: NostrEvent, profiles?: ProfileMap, s?: Session, inThread?: string): SafeHtml {
+export function focusedNote(ev: NostrEvent, profiles?: ProfileMap, s?: Session, inThread?: string, extra?: SafeHtml): SafeHtml {
     const parent = replyContext(ev);
     const im = parseImeta(ev);
     return html`
@@ -424,7 +422,7 @@ export function focusedNote(ev: NostrEvent, profiles?: ProfileMap, s?: Session, 
           </div>
           ${parent}
           ${noteContent(ev, profiles, false, s?.media, im)}
-          ${ev.kind === KIND_POLL ? pollBox(ev) : null}
+          ${extra ?? null}
           ${noteActions(ev, neventFor(ev), s, inThread, false)}
         </div>
       </li>${mediaLightboxes(ev.content, s?.media?.autoLoad ?? true, im)}`;
