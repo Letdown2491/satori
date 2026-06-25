@@ -42,6 +42,17 @@ export function loadPersisted(sid: string): PersistedSession | undefined {
     return readAll()[sid];
 }
 
+/** Distinct pubkeys across all persisted sessions, most-recently-saved first. Read once at boot to
+ * adopt an already-logged-in user as the access-control owner (so adding the owner lock to an
+ * existing self-host deploy doesn't log them out). */
+export function persistedPubkeys(): string[] {
+    const all = Object.values(readAll()).sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0));
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const p of all) if (p.me && !seen.has(p.me)) { seen.add(p.me); out.push(p.me); }
+    return out;
+}
+
 export function savePersisted(sid: string, p: PersistedSession): void {
     const all = readAll();
     all[sid] = { ...p, savedAt: Date.now() };

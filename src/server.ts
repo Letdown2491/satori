@@ -13,7 +13,8 @@ import { Pool } from './data/pool.ts';
 import { resumeHolds } from './undo.ts';
 import { startScheduledSweep } from './data/scheduled.ts';
 import { getScheduled, postScheduledCancel } from './routes/scheduled.ts';
-import { prunePersisted } from './store.ts';
+import { prunePersisted, persistedPubkeys } from './store.ts';
+import { adoptOwnerIfUnclaimed, accessMode } from './access.ts';
 import { getSession } from './session.ts';
 import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
@@ -283,6 +284,10 @@ void installTorRouting().finally(() => {
         });
     }).listen(PORT, HOST, () => {
         console.log(`satori-hateoas → http://${HOST}:${PORT}  (local single-user daemon)`);
+        // Access control: adopt an already-logged-in user as owner if the policy is unclaimed (so
+        // adding the owner lock doesn't log out an existing self-host), then log the effective mode.
+        adoptOwnerIfUnclaimed(persistedPubkeys());
+        console.log(`[access] ${accessMode()}`);
         // Prune persisted sessions whose cookies (maxAge 7d) are long dead, so stale bunker
         // transport secrets don't linger at rest forever.
         const pruned = prunePersisted(30 * 24 * 60 * 60 * 1000);

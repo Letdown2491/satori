@@ -26,6 +26,13 @@ services:
       # disable Tor — onion relays then just fail to connect. Clearnet relays
       # always connect directly, never through Tor.
       - TOR_SOCKS=socks5h://tor:9050
+      # Access control - WHO may sign in. Default (nothing set): the first sign-in claims this
+      # instance as owner (an already-logged-in user is adopted on boot), and everyone else is
+      # rejected. For an EXPOSED instance, prefer setting the owner explicitly (race-free):
+      #   - SATORI_OWNER=npub1yourownnpub           # just you
+      #   - SATORI_ALLOWED_PUBKEYS=npub1a,npub1b    # a trusted group
+      #   - SATORI_OPEN=1                           # PUBLIC instance: anyone may sign in
+      #     (open also needs the multi-tenant hardening before real public use - see the README)
     ports:
       - "127.0.0.1:8787:8787"
     volumes:

@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { Pool } from './data/pool.ts';
 import { BunkerSigner } from './data/signer.ts';
 import { loadPersisted, savePersisted, removePersisted, type PersistedSession } from './store.ts';
+import { accessHas } from './access.ts';
 import { fetchProfiles } from './data/profiles.ts';
 import { INDEXER_RELAYS } from './nostr/nip65.ts';
 import type { RelayList, NostrEvent } from './nostr/types.ts';
@@ -134,6 +135,7 @@ export function persistSession(s: Session): void {
 function resume(sid: string): Session | undefined {
     const p = loadPersisted(sid);
     if (!p) return undefined;
+    if (!accessHas(p.me)) { removePersisted(sid); return undefined; } // access policy no longer allows this pubkey
     const pool = new Pool();
     let signer: BunkerSigner | null = null;
     if (p.mode === 'bunker' && p.bunker) {

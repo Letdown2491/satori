@@ -10,6 +10,7 @@ import { Pool } from '../data/pool.ts';
 import { BunkerSigner } from '../data/signer.ts';
 import { fetchMyRelays } from '../data/relays.ts';
 import { createSession, createNip07Session, destroySession, persistSession, type Session } from '../session.ts';
+import { accessAllows } from '../access.ts';
 import { clearDmCache, prewarmDms } from '../data/dms.ts';
 import { dmPrewarm } from '../render/dms.ts';
 import { clearNip07DmCache } from '../data/dms-nip07.ts';
@@ -27,8 +28,12 @@ const LOGIN_WAIT_MS = 1500;
 
 /** Once the bunker connect resolves: resolve the user pubkey + their NIP-65 relays
  * and arm the pool for NIP-42 AUTH on the user's own relays. */
+/** This instance's access policy denied the pubkey (private instance, not the owner / not allowlisted). */
+const NOT_AUTHORIZED = 'This Satori instance is private. Your account is not authorized to sign in here.';
+
 async function finishBunkerLogin(s: Session, signer: BunkerSigner): Promise<void> {
     const me = await signer.getUserPubkey();
+    if (!accessAllows(me)) { try { signer.logout(); } catch { /* best effort */ } throw new Error(NOT_AUTHORIZED); }
     s.me = me;
     const relays = await fetchMyRelays(s.pool, me);
     s.myRelays = relays;
@@ -150,6 +155,10 @@ export async function postLoginNip07Verify(ctx: Ctx): Promise<void> {
     const pubkey = verifyChallenge(signed);
     if (!pubkey) {
         sendFragment(ctx, html`<div class="notice error">Sign-in verification failed. Please try again.</div>`, {}, 401);
+        return;
+    }
+    if (!accessAllows(pubkey)) {
+        sendFragment(ctx, html`<div class="notice error">${NOT_AUTHORIZED}</div>`, {}, 403);
         return;
     }
 
