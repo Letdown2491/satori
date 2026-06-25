@@ -43,11 +43,24 @@ export async function fetchPinnedItems(pool: Pool, pubkey: string): Promise<{ no
  * (pins, bookmarks, …) into events, preserving list order for notes. Shared by the
  * pinned strip and the bookmarks view. */
 export async function resolveListItems(pool: Pool, tags: string[][], relays: string[]): Promise<{ notes: NostrEvent[]; articles: NostrEvent[] }> {
-    const noteIds = tags.filter((t) => t[0] === 'e' && t[1]).map((t) => t[1]!);
+    const noteTags = tags.filter((t) => t[0] === 'e' && t[1]);
+    const noteIds = noteTags.map((t) => t[1]!);
     const addresses = tags.filter((t) => t[0] === 'a' && t[1]).map((t) => t[1]!);
     if (noteIds.length === 0 && addresses.length === 0) return { notes: [], articles: [] };
 
-    const fetched = noteIds.length ? await fetchEventsByIds(pool, noteIds, relays).catch(() => []) : [];
+    // Outbox: bookmarked notes/articles are authored by OTHERS and live on THEIR write relays. Resolve
+    // those (batched) - note authors from the NIP-51 e-tag author field (t[3]), article authors from the
+    // `a` coordinate - and prefer them, with the e-tag relay hints (t[2]) and the caller's relays as
+    // fallback. The relay-list cache makes this cheap for anyone already routed.
+    const noteAuthors = noteTags.filter((t) => t[3]).map((t) => t[3]!);
+    const articleAuthors = addresses.map((a) => a.split(':')[1]).filter(Boolean) as string[];
+    const lists = (noteAuthors.length || articleAuthors.length)
+        ? await fetchRelayLists(pool, INDEXER_RELAYS, [...new Set([...noteAuthors, ...articleAuthors])]).catch(() => new Map<string, RelayList>())
+        : new Map<string, RelayList>();
+    const writesOf = (pk: string): string[] => lists.get(pk)?.write ?? [];
+
+    const noteRelays = [...new Set([...noteAuthors.flatMap(writesOf), ...noteTags.filter((t) => t[2]).map((t) => t[2]!), ...relays])];
+    const fetched = noteIds.length ? await fetchEventsByIds(pool, noteIds, noteRelays).catch(() => []) : [];
     const byId = new Map(fetched.map((n) => [n.id, n]));
     const notes = noteIds.map((id) => byId.get(id)).filter((n): n is NostrEvent => !!n); // keep list order
 
@@ -55,7 +68,8 @@ export async function resolveListItems(pool: Pool, tags: string[][], relays: str
     for (const a of addresses) {
         const [kind, pk, ident] = a.split(':');
         if (kind === String(KIND_ARTICLE) && pk && ident) {
-            const art = await pool.get(relays, { kinds: [KIND_ARTICLE], authors: [pk], '#d': [ident] }).catch(() => null);
+            const aRelays = [...new Set([...writesOf(pk), ...relays])]; // the article author's outbox first
+            const art = await pool.get(aRelays, { kinds: [KIND_ARTICLE], authors: [pk], '#d': [ident] }).catch(() => null);
             if (art) articles.push(art);
         }
     }

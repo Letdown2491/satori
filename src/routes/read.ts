@@ -5,6 +5,7 @@ import { decode, neventEncode, naddrEncode } from 'nostr-tools/nip19';
 import { fetchEvent, fetchReplies, fetchAuthorNotes } from '../data/feeds.ts';
 import { fetchPinnedItems, fetchAuthorArticles } from '../data/profile-extras.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { fetchRelayLists } from '../data/relays.ts';
 import { KIND_ARTICLE, articleAddress } from '../nostr/nip23.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { commentSection } from '../render/comments.ts';
@@ -210,7 +211,8 @@ export async function getArticle(ctx: Ctx): Promise<void> {
         ({ kind, pubkey, identifier, relays } = { ...d.data, relays: d.data.relays ?? [] });
     } catch { notFound(ctx, 'Bad naddr'); return; }
 
-    const queryRelays = [...new Set([...relays, ...INDEXER_RELAYS, ...(s.myRelays?.write ?? [])])];
+    const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
+    const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the article author's write relays first
     const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
 
     if (!ev || ev.kind !== KIND_ARTICLE) {
@@ -257,7 +259,8 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     // naddr → an article embed.
     if (decoded.type === 'naddr') {
         const { kind, pubkey, identifier, relays } = { ...decoded.data, relays: decoded.data.relays ?? [] };
-        const queryRelays = [...new Set([...relays, ...INDEXER_RELAYS, ...(s.myRelays?.write ?? [])])];
+        const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
+        const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the article author's write relays first
         const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
         if (!ev || ev.kind !== KIND_ARTICLE) { sendFragment(ctx, fb()); return; }
         await ensureProfiles(s, notePubkeys([ev]));
