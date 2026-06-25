@@ -1606,6 +1606,7 @@ html[data-webln] .webln-off { display: none; }
 .yt-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #000; display: block; }
 .yt-poster { position: absolute; inset: 0; display: block; cursor: pointer; }
 .yt-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.yt-thumb-blank { background: color-mix(in srgb, var(--text) 8%, transparent); } /* playlist with no oEmbed thumb */
 .yt-playbtn { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 68px; height: 48px; border-radius: 14px; background: rgba(18, 18, 18, 0.78); transition: background 0.15s ease, transform 0.15s ease; }
 .yt-playbtn::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-35%, -50%); border-style: solid; border-width: 9px 0 9px 16px; border-color: transparent transparent transparent #fff; }
 .yt-poster:hover .yt-playbtn, .yt-poster:focus-visible .yt-playbtn { background: #cc0000; transform: translate(-50%, -50%) scale(1.06); }

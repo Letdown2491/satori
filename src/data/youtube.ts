@@ -8,11 +8,15 @@
 import { torFetch } from './torfetch.ts';
 
 const ID = /^[A-Za-z0-9_-]{11}$/;
+const LIST = /^[A-Za-z0-9_-]{12,42}$/; // playlist ids (PL…/UU…/LL…/etc.), longer + variable vs the 11-char video id
 const YT_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be', 'www.youtu.be']);
 
-export interface YouTubeRef { id: string; start?: number }
+// A YouTube link is either a single VIDEO (id + optional start) or a PLAYLIST (list id). Both get the
+// privacy facade; a playlist plays via the nocookie `videoseries` embed and its poster comes from oEmbed.
+export type YouTubeRef = { kind: 'video'; id: string; start?: number } | { kind: 'playlist'; list: string };
 
 export const isYouTubeId = (id: string): boolean => ID.test(id);
+export const isYouTubePlaylist = (list: string): boolean => LIST.test(list);
 
 /** Parse a start time (?t= / &start=, e.g. "90", "90s", "1m30s", "1h2m3s") to whole
  * seconds. This is a convenience param, not a tracker, so we keep it. */
@@ -50,8 +54,12 @@ function parseYouTubeImpl(raw: string): YouTubeRef | null {
     if (host === 'youtu.be' || host === 'www.youtu.be') id = u.pathname.slice(1).split('/')[0] || null;
     else if (u.pathname === '/watch') id = u.searchParams.get('v');
     else { const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([^/?#]+)/); if (m) id = m[1]!; }
-    if (!id || !ID.test(id)) return null;
-    return { id, start: parseStart(u.searchParams.get('t') || u.searchParams.get('start')) };
+    if (id && ID.test(id)) return { kind: 'video', id, start: parseStart(u.searchParams.get('t') || u.searchParams.get('start')) };
+    // No video id, but a playlist link (/playlist?list=, /embed/videoseries?list=, or watch?list= with
+    // no v) → a playlist facade. A /watch?v=…&list=… stays a VIDEO (handled above; the list is dropped).
+    const list = u.searchParams.get('list');
+    if (list && LIST.test(list)) return { kind: 'playlist', list };
+    return null;
 }
 
 // --- Clean canonical URLs (always reconstructed, never the original) --------
@@ -63,6 +71,12 @@ export function youtubeThumbUrl(id: string): string {
 }
 export function youtubeEmbedUrl(id: string, start?: number): string {
     return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0${start ? `&start=${start}` : ''}`;
+}
+export function youtubePlaylistUrl(list: string): string {
+    return `https://www.youtube.com/playlist?list=${list}`;
+}
+export function youtubePlaylistEmbedUrl(list: string): string {
+    return `https://www.youtube-nocookie.com/embed/videoseries?list=${list}&autoplay=1&rel=0`;
 }
 
 // --- Title (oEmbed), cached process-wide (cross-user, public data) ----------
@@ -98,4 +112,40 @@ export async function fetchYouTubeTitle(id: string): Promise<string | null> {
     titles.set(id, { title, exp: Date.now() + TITLE_TTL });
     pruneTitles();
     return title;
+}
+
+// --- Playlist (oEmbed), same cache discipline as titles ---------------------
+const VIDEO_IN_THUMB = /\/vi\/([A-Za-z0-9_-]{11})\//; // oEmbed's thumbnail_url is a representative video thumb
+const playlists = new Map<string, { title: string | null; thumbId: string | null; exp: number }>();
+
+function prunePlaylists(): void {
+    const now = Date.now();
+    for (const [k, e] of playlists) if (e.exp <= now) playlists.delete(k);
+    if (playlists.size <= TITLE_CAP) return;
+    let over = playlists.size - TITLE_CAP;
+    for (const k of playlists.keys()) { if (over-- <= 0) break; playlists.delete(k); }
+}
+
+/** Best-effort playlist title + a representative thumbnail VIDEO id via oEmbed (server-side,
+ * Tor-with-fallback, cached). The id is pulled from oEmbed's i.ytimg thumbnail_url so the poster
+ * reuses the proxied /yt/thumb path. Both fields null when unavailable - the card still renders
+ * (the videoseries player works regardless of oEmbed). No API key needed. */
+export async function fetchYouTubePlaylist(list: string): Promise<{ title: string | null; thumbId: string | null }> {
+    if (!LIST.test(list)) return { title: null, thumbId: null };
+    const hit = playlists.get(list);
+    if (hit && hit.exp > Date.now()) return { title: hit.title, thumbId: hit.thumbId };
+    let title: string | null = null, thumbId: string | null = null;
+    try {
+        const url = `https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fplaylist%3Flist%3D${list}&format=json`;
+        const r = await torFetch(url, 6000, 256 * 1024);
+        if (r.status === 200) {
+            const j = JSON.parse(r.body.toString('utf8')) as { title?: string; thumbnail_url?: string };
+            if (typeof j.title === 'string') title = j.title;
+            const m = typeof j.thumbnail_url === 'string' ? j.thumbnail_url.match(VIDEO_IN_THUMB) : null;
+            if (m) thumbId = m[1]!;
+        }
+    } catch { /* leave null */ }
+    playlists.set(list, { title, thumbId, exp: Date.now() + TITLE_TTL });
+    prunePlaylists();
+    return { title, thumbId };
 }

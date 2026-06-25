@@ -10,7 +10,7 @@ import { parseBlocks, parseInline } from '../nostr/markdown.ts';
 import { html, raw, join, safeUrl, type SafeHtml } from '../html.ts';
 import { npub, displayName, shortHash, type ProfileMap } from './util.ts';
 import { icon } from './svg.ts';
-import { parseYouTube, youtubeWatchUrl } from '../data/youtube.ts';
+import { parseYouTube, youtubeWatchUrl, youtubePlaylistUrl } from '../data/youtube.ts';
 import type { MediaMeta, ImetaMap } from '../nostr/imeta.ts';
 import type { EmojiMap } from '../nostr/emoji30.ts';
 import { refFor } from '../manifest/registry.ts';
@@ -282,6 +282,12 @@ function youtubeCard(id: string, start?: number): SafeHtml {
     return html`<div class="yt-card" id="yt-${id}" h-get="/yt/card/${id}${t}" h-trigger="intersect once" h-target="#yt-${id}" h-swap="inner" h-push-url="false"><a class="yt-fallback" href="${youtubeWatchUrl(id, start)}" target="_blank" rel="noopener noreferrer">▶ Watch on YouTube</a></div>`;
 }
 
+/** A YouTube PLAYLIST facade card - same lazy /yt path as the video card, keyed by list id; the
+ * no-JS / pre-hydration state is a clean playlist link. */
+function youtubePlaylistCard(list: string): SafeHtml {
+    return html`<div class="yt-card" id="yt-pl-${list}" h-get="/yt/playlist/${list}" h-trigger="intersect once" h-target="#yt-pl-${list}" h-swap="inner" h-push-url="false"><a class="yt-fallback" href="${youtubePlaylistUrl(list)}" target="_blank" rel="noopener noreferrer">▶ Open playlist on YouTube</a></div>`;
+}
+
 /** Render note content to safe HTML. nostr entities resolve to in-app links;
  * with `embeds` (default) a quoted note / article becomes a lazy inline card.
  * Pass `embeds=false` inside an embed preview to keep one level deep (chips). */
@@ -331,8 +337,8 @@ export function renderContent(text: string, profiles?: ProfileMap, embeds = true
             // YouTube → a privacy facade card (top-level + media-on); otherwise (media
             // off, or inside an embed preview) still emit a CLEANED link (no si/utm).
             const yt = parseYouTube(tok.url);
-            if (yt && embeds && media.autoLoad) parts.push(youtubeCard(yt.id, yt.start));
-            else if (yt) { const w = youtubeWatchUrl(yt.id, yt.start); parts.push(extLink(w, w)); }
+            if (yt && embeds && media.autoLoad) parts.push(yt.kind === 'playlist' ? youtubePlaylistCard(yt.list) : youtubeCard(yt.id, yt.start));
+            else if (yt) { const w = yt.kind === 'playlist' ? youtubePlaylistUrl(yt.list) : youtubeWatchUrl(yt.id, yt.start); parts.push(extLink(w, w)); }
             else parts.push(extLink(tok.url, tok.url));
         }
         else if (tok.t === 'mention') parts.push(mentionLink(tok.pubkey, profiles));
@@ -370,7 +376,7 @@ function inlineEntities(text: string, profiles?: ProfileMap): SafeHtml {
     const parts: SafeHtml[] = [];
     for (const tok of tokenize(text, false)) {
         if (tok.t === 'text') parts.push(html`${tok.value}`);
-        else if (tok.t === 'url') { const yt = parseYouTube(tok.url); const w = yt ? youtubeWatchUrl(yt.id, yt.start) : tok.url; parts.push(extLink(w, w)); } // article body: clean the link (no card inline)
+        else if (tok.t === 'url') { const yt = parseYouTube(tok.url); const w = yt ? (yt.kind === 'playlist' ? youtubePlaylistUrl(yt.list) : youtubeWatchUrl(yt.id, yt.start)) : tok.url; parts.push(extLink(w, w)); } // article body: clean the link (no card inline)
         else if (tok.t === 'image' || tok.t === 'video') parts.push(extLink(tok.url, tok.url));
         else if (tok.t === 'mention') parts.push(mentionLink(tok.pubkey, profiles));
         else if (tok.t === 'quote') parts.push(html`<a class="mention" href="/t/${tok.bech}" h-scroll="top instant">↗ note</a>`);

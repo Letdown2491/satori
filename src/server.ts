@@ -21,7 +21,7 @@ import { getProfile, getProfileExtras, getThread, getArticle, getEmbed } from '.
 import { getHandlers } from './routes/handlers.ts';
 import { getAvatar } from './routes/avatar.ts';
 import { getMedia, getVideoEmbed } from './routes/media.ts';
-import { getYtCard, getYtThumb, getYtPlay } from './routes/youtube.ts';
+import { getYtCard, getYtThumb, getYtPlay, getYtPlaylistCard, getYtPlaylistPlay } from './routes/youtube.ts';
 import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
 import { postAppearance, getWallet, postWallet, getMetrics } from './routes/pages.ts';
 import { getBookmarks, getMuted, getListDecrypt, postListDecrypted } from './routes/saved.ts';
@@ -167,6 +167,8 @@ const ROUTES: Route[] = [
     route('GET', '/yt/card/:id', getYtCard),
     route('GET', '/yt/thumb/:id', getYtThumb),
     route('GET', '/yt/play/:id', getYtPlay),
+    route('GET', '/yt/playlist/:list', getYtPlaylistCard),
+    route('GET', '/yt/playlist/:list/play', getYtPlaylistPlay),
     route('GET', '/metrics', getMetrics),
     route('GET', '/wallet', getWallet),
     route('POST', '/wallet', postWallet),

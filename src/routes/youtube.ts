@@ -8,7 +8,7 @@
 // surface. Public (like /avatar) so <img>/<iframe> loads don't hit a login redirect.
 
 import { html } from '../html.ts';
-import { isYouTubeId, youtubeWatchUrl, youtubeThumbUrl, youtubeEmbedUrl, fetchYouTubeTitle } from '../data/youtube.ts';
+import { isYouTubeId, isYouTubePlaylist, youtubeWatchUrl, youtubeThumbUrl, youtubeEmbedUrl, youtubePlaylistUrl, youtubePlaylistEmbedUrl, fetchYouTubeTitle, fetchYouTubePlaylist } from '../data/youtube.ts';
 import { torFetch } from '../data/torfetch.ts';
 import { torStrict } from '../privacy.ts';
 import { getAvatarBytes, putAvatarBytes } from '../data/avatar-cache.ts';
@@ -20,6 +20,7 @@ const MAX_THUMB = 8 * 1024 * 1024;
 const BLANK = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 
 const ytId = (ctx: Ctx): string | null => { const id = ctx.params.id ?? ''; return isYouTubeId(id) ? id : null; };
+const ytList = (ctx: Ctx): string | null => { const list = ctx.params.list ?? ''; return isYouTubePlaylist(list) ? list : null; };
 const startOf = (ctx: Ctx): number | undefined => Number(ctx.query.get('t')) || undefined;
 
 function serveBlank(ctx: Ctx): void {
@@ -48,6 +49,37 @@ export async function getYtCard(ctx: Ctx): Promise<void> {
     sendFragment(ctx, html`
       <div class="yt-frame" id="yt-${id}-frame">${poster}</div>
       ${title ? html`<div class="yt-title">${title}</div>` : html``}`);
+}
+
+/** GET /yt/playlist/:list - the facade card for a YouTube playlist: oEmbed title + a representative
+ * proxied thumbnail (reusing /yt/thumb) + a play button that loads the nocookie videoseries player.
+ * Same zero-Google-on-render guarantee as the video card. */
+export async function getYtPlaylistCard(ctx: Ctx): Promise<void> {
+    const list = ytList(ctx);
+    if (!list) { redirect(ctx, '/'); return; }
+    const watch = youtubePlaylistUrl(list);
+    if (!ctx.isPartial) { redirect(ctx, watch); return; } // full nav → the clean YouTube playlist page
+    const { title, thumbId } = await fetchYouTubePlaylist(list);
+    const playUrl = `/yt/playlist/${list}/play`;
+    const thumb = thumbId
+        ? html`<img class="yt-thumb" src="/yt/thumb/${thumbId}" alt="" loading="lazy">`
+        : html`<span class="yt-thumb yt-thumb-blank" aria-hidden="true"></span>`; // oEmbed had no thumb; player still works
+    const inner = html`${thumb}<span class="yt-logo">Playlist</span><span class="yt-playbtn" aria-hidden="true"></span>`;
+    const poster = torStrict()
+        ? html`<a class="yt-poster" href="${watch}" target="_blank" rel="noopener noreferrer" aria-label="Open playlist on YouTube (Strict Privacy Mode: opens YouTube directly)">${inner}</a>`
+        : html`<a class="yt-poster" href="${playUrl}" h-target="#yt-pl-${list}-frame" h-swap="inner" h-push-url="false" aria-label="Play playlist">${inner}</a>`;
+    sendFragment(ctx, html`
+      <div class="yt-frame" id="yt-pl-${list}-frame">${poster}</div>
+      ${title ? html`<div class="yt-title">${title}</div>` : html``}`);
+}
+
+/** GET /yt/playlist/:list/play - the click-to-load nocookie `videoseries` player for a playlist. */
+export function getYtPlaylistPlay(ctx: Ctx): void {
+    const list = ytList(ctx);
+    if (!list) { redirect(ctx, '/'); return; }
+    if (!ctx.isPartial) { redirect(ctx, youtubePlaylistUrl(list)); return; } // no-JS → clean YouTube page
+    if (torStrict()) { sendFragment(ctx, html`<a class="yt-poster yt-strict-link" href="${youtubePlaylistUrl(list)}" target="_blank" rel="noopener noreferrer">▶ Open playlist on YouTube</a>`); return; }
+    sendFragment(ctx, html`<iframe class="yt-iframe" src="${youtubePlaylistEmbedUrl(list)}" title="YouTube playlist player" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen loading="lazy" referrerpolicy="origin"></iframe>`);
 }
 
 /** GET /yt/thumb/:id - the proxied thumbnail (Tor-with-fallback), disk-cached so the
