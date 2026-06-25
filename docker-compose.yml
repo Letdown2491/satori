@@ -1,3 +1,4 @@
+name: satori
 # Dev-oriented compose: bind-mounts src/ + public/ and runs the server under a
 # polling watcher (dev-watch.mjs), so editing a host file auto-restarts the daemon.
 # NOTE: `node --watch` was used here, but its inotify-based detection does NOT

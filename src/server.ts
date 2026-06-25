@@ -299,7 +299,7 @@ void installTorRouting().finally(() => {
             if (!res.headersSent) { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Internal error'); }
         });
     }).listen(PORT, HOST, () => {
-        console.log(`satori-hateoas → http://${HOST}:${PORT}  (local single-user daemon)`);
+        console.log(`satori → http://${HOST}:${PORT}  (local single-user daemon)`);
         // Access control: adopt an already-logged-in user as owner if the policy is unclaimed (so
         // adding the owner lock doesn't log out an existing self-host), then log the effective mode.
         adoptOwnerIfUnclaimed(persistedPubkeys());

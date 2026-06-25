@@ -36,7 +36,7 @@ async function socksAgent(host: string): Promise<unknown | null> {
 }
 
 // A plain, common browser UA so server-side fetches blend into the crowd instead of
-// branding every request as a satori-hateoas daemon (fingerprinting / Tor crowd-blending).
+// branding every request as a satori daemon (fingerprinting / Tor crowd-blending).
 const UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0';
 
 function get(url: string, agent: unknown, timeoutMs: number, maxBytes: number, redirects = 3): Promise<HttpResp> {

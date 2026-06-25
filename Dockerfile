@@ -1,4 +1,4 @@
-# satori-hateoas — a local single-user daemon. No build step: Node runs the
+# satori — a local single-user daemon. No build step: Node runs the
 # TypeScript directly via type-stripping (see package.json). Runtime needs only
 # nostr-tools; typescript/@types are devDependencies used for `npm run typecheck`.
 FROM node:24-alpine

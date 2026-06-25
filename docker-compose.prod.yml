@@ -1,3 +1,4 @@
+name: satori
 # Production compose: builds the image and runs the REAL server (no source bind-mounts, no
 # dev-watch), and exposes the daemon as a Tor v3 hidden service (a .onion) so you can reach your own
 # private client from anywhere over Tor. Sign-in stays locked to the owner (src/access.ts).
