@@ -80,18 +80,32 @@ export function clearDmCache(): void {
 
 // --- decrypt layers (through the bunker) ----------------------------------
 
-/** Layer 1: gift wrap (1059) → seal (13). One bunker decrypt; reveals the sender
- * (seal.pubkey) for triage before we pay for layer 2. */
+/** A decrypt failure that is TRANSIENT - the remote signer (bunker) was unreachable or slow, so
+ * the request timed out or couldn't be published. This is NOT a wrap we can't read: the bunker
+ * never answered. Callers must NOT cache 'drop' on this (that would hide a real DM forever over a
+ * hiccup); they leave the wrap uncached and retry it on the next refresh. A wrap genuinely not for
+ * us instead comes back as the remote signer's OWN error response (a different message), or decrypts
+ * to junk - both safe to drop. Markers match the signer's transient rejects (data/signer.ts). */
+function isSignerUnavailable(e: unknown): boolean {
+    return /timed out|timeout|Failed to publish/i.test((e as Error)?.message ?? '');
+}
+
+/** Layer 1: gift wrap (1059) → seal (13). One bunker decrypt; reveals the sender (seal.pubkey) for
+ * triage before we pay for layer 2. A signer error propagates (caller classifies transient vs junk);
+ * null means decrypted-but-not-a-seal = genuine junk. */
 async function unwrapToSeal(s: Signed, wrap: NostrEvent): Promise<NostrEvent | null> {
+    const plain = await s.signer.nip44Decrypt(wrap.pubkey, wrap.content); // throws on signer failure
     try {
-        const seal = JSON.parse(await s.signer.nip44Decrypt(wrap.pubkey, wrap.content)) as NostrEvent;
+        const seal = JSON.parse(plain) as NostrEvent;
         return (seal && seal.pubkey && typeof seal.content === 'string') ? seal : null;
     } catch { return null; }
 }
 
-/** Layer 2: seal (13) → rumor (kind 14). Validates the sender can't be spoofed. */
+/** Layer 2: seal (13) → rumor (kind 14). Validates the sender can't be spoofed. Signer error
+ * propagates (caller classifies); null means decrypted-but-malformed = junk. */
 async function unseal(s: Signed, seal: NostrEvent): Promise<Rumor | null> {
-    try { return rumorFromSeal(JSON.parse(await s.signer.nip44Decrypt(seal.pubkey, seal.content)), seal.pubkey); }
+    const plain = await s.signer.nip44Decrypt(seal.pubkey, seal.content); // throws on signer failure
+    try { return rumorFromSeal(JSON.parse(plain), seal.pubkey); }
     catch { return null; }
 }
 
@@ -241,13 +255,21 @@ async function refreshConversations(sg: Signed): Promise<DmInbox> {
     const relays = await myDmReadRelays(sg);
     const wraps = await sg.pool.query(relays, { kinds: [KIND_GIFTWRAP], '#p': [me], limit: RECENT_WRAPS }).catch(() => [] as NostrEvent[]);
 
+    // `down` short-circuits the rest of the batch once the bunker is detected unreachable: no point
+    // paying another 90s timeout per wrap, and those wraps stay UNCACHED so they retry (not poisoned).
+    let down = false;
     await pool(wraps.filter((w) => !cache.has(w.id)), 6, async (wrap) => {
-        const seal = await unwrapToSeal(sg, wrap);
+        if (down) return;
+        let seal: NostrEvent | null;
+        try { seal = await unwrapToSeal(sg, wrap); }
+        catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
         if (!seal) { cache.set(wrap.id, { kind: 'drop' }); return; }
         const sender = seal.pubkey;
         if (sender !== me && muted.has(sender)) { cache.set(wrap.id, { kind: 'drop' }); return; } // 1 decrypt, dropped
         if (sender === me || follows.has(sender)) {                                                // Inbox → 2nd decrypt
-            const rumor = await unseal(sg, seal);
+            let rumor: Rumor | null;
+            try { rumor = await unseal(sg, seal); }
+            catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
             if (!rumor) { cache.set(wrap.id, { kind: 'drop' }); return; }
             cache.set(wrap.id, { kind: 'msg', owner: me, peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content });
         } else {                                                                                   // Stranger → Requests (defer body)
@@ -391,15 +413,21 @@ export async function loadThread(s: Session, peer: string, until?: number): Prom
     const wraps = await sg.pool.query(relays, filter).catch(() => [] as NostrEvent[]);
     const msgs: DmMessage[] = [];
 
+    let down = false; // bunker unreachable → stop paying timeouts; leave the rest uncached to retry
     await pool(wraps, 6, async (wrap) => {
+        if (down) return;
         const cached = cache.get(wrap.id);
         if (cached?.kind === 'msg') { if (cached.peer === peer) msgs.push({ id: wrap.id, from: cached.from, at: cached.at, text: cached.text }); return; }
         if (cached?.kind === 'drop') return;
         // request (this peer) or uncached → decrypt fully now
-        const seal = await unwrapToSeal(sg, wrap);
+        let seal: NostrEvent | null;
+        try { seal = await unwrapToSeal(sg, wrap); }
+        catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
         if (!seal) { cache.set(wrap.id, { kind: 'drop' }); return; }
         if (seal.pubkey !== me && seal.pubkey !== peer) return; // a different conversation; leave its cache alone
-        const rumor = await unseal(sg, seal);
+        let rumor: Rumor | null;
+        try { rumor = await unseal(sg, seal); }
+        catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
         if (!rumor) { cache.set(wrap.id, { kind: 'drop' }); return; }
         const p = peerOf(rumor, me);
         cache.set(wrap.id, { kind: 'msg', owner: me, peer: p, from: rumor.pubkey, at: rumor.created_at, text: rumor.content });
