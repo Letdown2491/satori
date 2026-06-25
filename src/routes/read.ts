@@ -168,15 +168,16 @@ export async function getThread(ctx: Ctx): Promise<void> {
     const entity = ctx.params.id ?? '';
     let id: string;
     let relays: string[] = [];
+    let author: string | undefined; // from the nevent, so fetchEvent can use the author's outbox relays
     try {
         const d = decode(entity);
         if (d.type === 'note') id = d.data;
-        else if (d.type === 'nevent') { id = d.data.id; relays = d.data.relays ?? []; }
+        else if (d.type === 'nevent') { id = d.data.id; relays = d.data.relays ?? []; author = d.data.author; }
         else { notFound(ctx, 'Not a note'); return; }
     } catch { notFound(ctx, 'Bad note id'); return; }
 
     const [focused, replies] = await Promise.all([
-        fetchEvent(s.pool, id, relays),
+        fetchEvent(s.pool, id, relays, author),
         fetchReplies(s.pool, id, relays).catch(() => [] as NostrEvent[]),
     ]);
 
@@ -267,10 +268,11 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     // note / nevent → a note embed.
     let id: string;
     let relays: string[] = [];
+    let author: string | undefined;
     if (decoded.type === 'note') id = decoded.data;
-    else if (decoded.type === 'nevent') { id = decoded.data.id; relays = decoded.data.relays ?? []; }
+    else if (decoded.type === 'nevent') { id = decoded.data.id; relays = decoded.data.relays ?? []; author = decoded.data.author; }
     else { sendFragment(ctx, fb()); return; }
-    const ev = await fetchEvent(s.pool, id, relays).catch(() => null);
+    const ev = await fetchEvent(s.pool, id, relays, author).catch(() => null);
     if (!ev) { sendFragment(ctx, fb()); return; }
     // Hydrate the author AND any @mentioned pubkeys in the embed's content, so
     // in-content mentions resolve to @names instead of falling back to @npub.
