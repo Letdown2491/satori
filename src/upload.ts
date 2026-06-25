@@ -10,6 +10,7 @@ import type { Signer } from './data/signer.ts';
 import type { RelayList, NostrEvent, UnsignedEvent } from './nostr/types.ts';
 import { INDEXER_RELAYS } from './nostr/nip65.ts';
 import { torRequest } from './data/torfetch.ts';
+import { isPublicHttpUrl } from './ssrf.ts';
 
 const KIND_BLOSSOM_LIST = 10063;
 // Fallback when you haven't set a kind:10063 media-server list, so uploads work
@@ -84,7 +85,10 @@ async function blossomPut(server: string, bytes: Buffer, contentType: string, si
 
 /** Upload to all Blossom servers (first success wins, like Satori). */
 export async function blossomUploadAll(servers: string[], bytes: Buffer, contentType: string, hash: string, signed: NostrEvent): Promise<Upload> {
-    const results = await Promise.allSettled(servers.map((s) => blossomPut(s, bytes, contentType, signed)));
+    // SSRF symmetry with torFetch: the upload PUT is outbound traffic to a user-listed host,
+    // so drop any server that resolves to a private/loopback target before we connect.
+    const safe = servers.filter((s) => isPublicHttpUrl(`${trim(s)}/upload`));
+    const results = await Promise.allSettled(safe.map((s) => blossomPut(s, bytes, contentType, signed)));
     const ok = results.find((r) => r.status === 'fulfilled');
     if (!ok || ok.status !== 'fulfilled') throw new Error('no Blossom server accepted the upload');
     const blob = ok.value;

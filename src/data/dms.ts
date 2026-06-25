@@ -11,13 +11,15 @@ import { dirname, join } from 'node:path';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { mutedPubkeys } from '../actions.ts';
 import { dmUnread } from './dm-read.ts';
+import { myDmReadRelays, publishWrapPair } from './dm-routing.ts';
 import {
-    buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients, parseDmRelays,
+    buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
     KIND_GIFTWRAP, KIND_DM_RELAYS, type Rumor,
 } from '../nostr/nip17.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Filter } from 'nostr-tools';
 import type { Session } from '../session.ts';
+import { signsOnServer } from '../session.ts';
 
 type Signed = Session & { me: string; signer: NonNullable<Session['signer']> };
 
@@ -106,50 +108,13 @@ async function pool<T>(items: T[], n: number, fn: (t: T) => Promise<void>): Prom
     await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
 }
 
-// --- relay discovery (NIP-17 kind 10050) ----------------------------------
-
-// kind:10050 almost never changes, but this lookup runs on every DM op + the 90s dot poll.
-// Memoize per pubkey (with in-flight coalescing) so the poll stops re-querying - and, crucially,
-// so a never-published 10050 stops re-paying the full GET_MAX_WAIT timeout every cycle. The 10-min
-// TTL picks up out-of-band changes; the in-app DM-relay editor invalidates your own entry on save.
-const DM_RELAYS_TTL_MS = 10 * 60 * 1000;
-const dmRelaysCache = new Map<string, { relays: string[]; at: number }>();
-const dmRelaysInflight = new Map<string, Promise<string[]>>();
-
-/** Drop a cached DM-relay lookup (all, or one pubkey) so the next read re-fetches.
- * Called after the DM-relay editor publishes a new kind:10050. */
-export function clearDmRelaysCache(pubkey?: string): void {
-    if (pubkey) dmRelaysCache.delete(pubkey); else dmRelaysCache.clear();
-}
-
-async function dmRelaysOf(s: Signed, pubkey: string): Promise<string[]> {
-    const hit = dmRelaysCache.get(pubkey);
-    if (hit && Date.now() - hit.at < DM_RELAYS_TTL_MS) return hit.relays;
-    const inf = dmRelaysInflight.get(pubkey);
-    if (inf) return inf;
-    const p = (async (): Promise<string[]> => {
-        const ev = await s.pool.get([...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], { kinds: [KIND_DM_RELAYS], authors: [pubkey] }).catch(() => null);
-        const list = ev ? parseDmRelays(ev) : [];
-        const relays = list.length ? list : INDEXER_RELAYS;
-        dmRelaysCache.set(pubkey, { relays, at: Date.now() }); // cache the fallback too (negatives)
-        return relays;
-    })();
-    dmRelaysInflight.set(pubkey, p);
-    try { return await p; } finally { dmRelaysInflight.delete(pubkey); }
-}
-
-/** Where to READ your own incoming wraps: your DM relays ∪ your read relays ∪ indexers.
- * Spec says senders publish to your kind-10050 DM relays, but in practice wraps also land
- * on your read relays / indexers (and some clients ignore 10050), so we query all three to
- * actually find everything. The 30s list cache absorbs the cost on repeat visits. */
-async function myDmReadRelays(s: Signed): Promise<string[]> {
-    return [...new Set([...(await dmRelaysOf(s, s.me)), ...(s.myRelays?.read ?? []), ...INDEXER_RELAYS])];
-}
+// --- relay discovery + the two-target publish live in dm-routing.ts (shared with the nip07
+// path, so both resolve DM relays through one cache and publish wraps identically).
 
 /** Have you published a kind-10050 DM relay list? Drives the "publish so others can
  * reach you" nudge in the UI (decided: surface it). */
 export async function hasDmRelayList(s: Session): Promise<boolean> {
-    if (s.mode !== 'bunker' || !s.me) return false;
+    if (!signsOnServer(s) || !s.me) return false;
     const ev = await s.pool.get([...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], { kinds: [KIND_DM_RELAYS], authors: [s.me] }).catch(() => null);
     return !!ev;
 }
@@ -214,7 +179,7 @@ async function legacyPreview(sg: Signed, peer: string, ev: NostrEvent): Promise<
  * the uncached ones (triaged: strangers cost 1 decrypt, not 2), aggregates per peer,
  * then folds in legacy NIP-04 conversations (labelled, not decrypted for the preview). */
 export async function loadConversations(s: Session): Promise<DmInbox | null> {
-    if (s.mode !== 'bunker' || !s.signer || !s.me) return null;
+    if (!signsOnServer(s) || !s.me) return null;
     const sg = s as Signed;
     const me = sg.me;
     const hit = listCache.get(me);
@@ -344,7 +309,7 @@ async function refreshConversations(sg: Signed): Promise<DmInbox> {
  * (bodies deferred) and legacy/NIP-04 peers (kind-4 bodies aren't cached until a thread open),
  * so the caller falls back to the full loadThread, which never silently drops messages. */
 export function cachedThread(s: Session, peer: string): DmMessage[] | null {
-    if (s.mode !== 'bunker' || !s.me) return null;
+    if (!signsOnServer(s) || !s.me) return null;
     const me = s.me;
     // Render straight from the disk-backed decrypt cache (survives restarts, no TTL - so a
     // refresh stays warm, unlike the old in-memory listCache gate). We only do so when there's
@@ -367,7 +332,7 @@ export function cachedThread(s: Session, peer: string): DmMessage[] | null {
  * holds the signer, so this needs no browser involvement (nip07 can't be warmed this way -
  * its key is in the extension). Errors are swallowed; it's best-effort. */
 export function prewarmDms(s: Session): void {
-    if (s.mode !== 'bunker' || !s.signer || !s.me) return;
+    if (!signsOnServer(s) || !s.me) return;
     void loadConversations(s).catch(() => { /* best-effort; the next open will retry */ });
 }
 
@@ -375,7 +340,7 @@ export function prewarmDms(s: Session): void {
  * processed yet? Query only, NO decrypt - so it's light enough to poll. Opening Messages
  * decrypts+caches them, which clears the dot naturally. */
 export async function hasUnprocessedWraps(s: Session): Promise<boolean> {
-    if (s.mode !== 'bunker' || !s.signer || !s.me) return false;
+    if (!signsOnServer(s) || !s.me) return false;
     const sg = s as Signed;
     const relays = await myDmReadRelays(sg);
     const wraps = await sg.pool.query(relays, { kinds: [KIND_GIFTWRAP], '#p': [sg.me], limit: 60 }).catch(() => [] as NostrEvent[]);
@@ -417,7 +382,7 @@ async function legacyThread(sg: Signed, peer: string, relays: string[]): Promise
  * fetches one window of wraps `created_at <= until`. Legacy NIP-04 history is folded in
  * on the initial load only (it's a read-only nicety; gift-wrap paging is the main path). */
 export async function loadThread(s: Session, peer: string, until?: number): Promise<DmThread | null> {
-    if (s.mode !== 'bunker' || !s.signer || !s.me) return null;
+    if (!signsOnServer(s) || !s.me) return null;
     const sg = s as Signed;
     const me = sg.me;
     const relays = await myDmReadRelays(sg);
@@ -454,7 +419,7 @@ export async function loadThread(s: Session, peer: string, until?: number): Prom
 /** Send a NIP-17 DM: build the kind-14 rumor, seal+wrap it to the peer AND to yourself
  * (so you keep your own copy), publish each to the right inbox relays. ~4 bunker calls. */
 export async function sendDm(s: Session, peer: string, text: string): Promise<boolean> {
-    if (s.mode !== 'bunker' || !s.signer || !s.me) return false;
+    if (!signsOnServer(s) || !s.me) return false;
     const sg = s as Signed;
     const me = sg.me;
     const body = text.trim();
@@ -469,8 +434,7 @@ export async function sendDm(s: Session, peer: string, text: string): Promise<bo
 
     try {
         const [toPeer, toSelf] = await Promise.all([wrapFor(peer), wrapFor(me)]);
-        const [peerRelays, myRelays] = await Promise.all([dmRelaysOf(sg, peer), myDmReadRelays(sg)]);
-        await Promise.all([sg.pool.publish(peerRelays, toPeer), sg.pool.publish(myRelays, toSelf)]);
+        await publishWrapPair(sg, peer, toPeer, toSelf);
         // Optimistically cache our own message so it shows immediately.
         cache.set(toSelf.id, { kind: 'msg', owner: me, peer, from: me, at: rumor.created_at, text: body });
         listCache.delete(me); // the new message changes the conversation list

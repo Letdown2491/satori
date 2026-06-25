@@ -64,14 +64,14 @@ export async function resolveListItems(pool: Pool, tags: string[][], relays: str
     const byId = new Map(fetched.map((n) => [n.id, n]));
     const notes = noteIds.map((id) => byId.get(id)).filter((n): n is NostrEvent => !!n); // keep list order
 
-    const articles: NostrEvent[] = [];
-    for (const a of addresses) {
+    // Resolve every `a`-tag article concurrently (each from its author's outbox first); a
+    // sequential loop here serialized K relay round-trips, painful over Tor. Order preserved.
+    const resolved = await Promise.all(addresses.map((a) => {
         const [kind, pk, ident] = a.split(':');
-        if (kind === String(KIND_ARTICLE) && pk && ident) {
-            const aRelays = [...new Set([...writesOf(pk), ...relays])]; // the article author's outbox first
-            const art = await pool.get(aRelays, { kinds: [KIND_ARTICLE], authors: [pk], '#d': [ident] }).catch(() => null);
-            if (art) articles.push(art);
-        }
-    }
+        if (kind !== String(KIND_ARTICLE) || !pk || !ident) return Promise.resolve(null);
+        const aRelays = [...new Set([...writesOf(pk), ...relays])];
+        return pool.get(aRelays, { kinds: [KIND_ARTICLE], authors: [pk], '#d': [ident] }).catch(() => null);
+    }));
+    const articles = resolved.filter((a): a is NostrEvent => !!a);
     return { notes, articles };
 }

@@ -40,9 +40,39 @@ export function withEmoji(text: string, emoji?: EmojiMap): SafeHtml {
 }
 
 function extLink(url: string, label: string): SafeHtml {
-    const href = safeUrl(url);
-    if (href === '#') return html`${label}`; // unsafe scheme → inert text
-    return html`<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    // Privacy: strip tracking params from BOTH the click target and the shown text. When the
+    // label IS the url (the common case - a bare link), it gets cleaned too; a distinct label
+    // (rare) is left as-is. YouTube links are already canonicalized upstream, so this is for
+    // every other host's utm_*/fbclid/gclid cruft.
+    const clean = cleanTrackingParams(url);
+    const href = safeUrl(clean);
+    const text = label === url ? clean : label;
+    if (href === '#') return html`${text}`; // unsafe scheme → inert text
+    return html`<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
+
+// Tracking/analytics params we strip from displayed + clicked links. A conservative, well-known
+// set (ad/analytics click-ids + the utm_* family) that never changes page content, so removing
+// them can't break a link. Matches Satori's privacy stance: your clicks don't carry their tags.
+const TRACKING_PARAMS = new Set([
+    'fbclid', 'gclid', 'gbraid', 'wbraid', 'dclid', 'msclkid', 'yclid', 'twclid', 'igshid', 'ttclid',
+    'mc_eid', 'mc_cid', 'mkt_tok', 'oly_anon_id', 'oly_enc_id', 'vero_id', '_hsenc', '_hsmi',
+    'mibextid', 'fb_action_ids', 'fb_action_types', 's_cid', 'rb_clickid',
+]);
+const UTM_PREFIX = /^utm_/i;
+
+/** Strip known tracking params from a URL for display + click-through. Returns the input
+ * unchanged if it isn't a parseable http(s) URL, has no query, or carried no tracking params. */
+function cleanTrackingParams(url: string): string {
+    if (!url.includes('?')) return url;
+    let u: URL;
+    try { u = new URL(url); } catch { return url; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return url;
+    let changed = false;
+    for (const key of [...u.searchParams.keys()]) {
+        if (TRACKING_PARAMS.has(key.toLowerCase()) || UTM_PREFIX.test(key)) { u.searchParams.delete(key); changed = true; }
+    }
+    return changed ? u.toString() : url; // toString() drops the trailing '?' when the query empties
 }
 
 function mentionLink(pubkey: string, profiles?: ProfileMap): SafeHtml {

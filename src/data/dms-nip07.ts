@@ -13,18 +13,19 @@
 // one bit of server state, TTL'd and dropped on completion. See [[nip17-dms-plan]].
 
 import { randomUUID } from 'node:crypto';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { mutedPubkeys } from '../actions.ts';
 import { dmUnread } from './dm-read.ts';
+import { myDmReadRelays, publishWrapPair } from './dm-routing.ts';
 import { coerceEvent } from '../nip07.ts';
 import {
-    buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients, parseDmRelays,
-    KIND_GIFTWRAP, KIND_SEAL, KIND_DM_RELAYS, type Rumor,
+    buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
+    KIND_GIFTWRAP, KIND_SEAL, type Rumor,
 } from '../nostr/nip17.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import type { Filter } from 'nostr-tools';
 import type { BatchResult } from '../wire.ts';
 import type { Session } from '../session.ts';
+import { signsOnClient } from '../session.ts';
 import type { Conversation, DmMessage, DmInbox } from './dms.ts';
 
 const HEX64 = /^[0-9a-f]{64}$/i;
@@ -138,43 +139,8 @@ function takeSend(id: string): SendChain | null {
 }
 function dropChain(id: string): void { chains.delete(id); }
 
-// --- relay discovery (NIP-17 kind 10050), no signer needed -----------------------
-// Memoized per pubkey (TTL + in-flight coalescing): this runs on every DM op + the 90s dot
-// poll, but kind:10050 almost never changes - and a never-published 10050 would otherwise
-// re-pay the full GET_MAX_WAIT timeout every cycle. The 10-min TTL picks up out-of-band changes;
-// the in-app DM-relay editor invalidates your own entry on save.
-const DM_RELAYS_TTL_MS = 10 * 60 * 1000;
-const dmRelaysCache = new Map<string, { relays: string[]; at: number }>();
-const dmRelaysInflight = new Map<string, Promise<string[]>>();
-
-/** Drop a cached DM-relay lookup (all, or one pubkey) so the next read re-fetches.
- * Called after the DM-relay editor publishes a new kind:10050. */
-export function clearDmRelaysCache(pubkey?: string): void {
-    if (pubkey) dmRelaysCache.delete(pubkey); else dmRelaysCache.clear();
-}
-
-async function dmRelaysOf(s: Session, pubkey: string): Promise<string[]> {
-    const hit = dmRelaysCache.get(pubkey);
-    if (hit && Date.now() - hit.at < DM_RELAYS_TTL_MS) return hit.relays;
-    const inf = dmRelaysInflight.get(pubkey);
-    if (inf) return inf;
-    const p = (async (): Promise<string[]> => {
-        const ev = await s.pool.get([...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], { kinds: [KIND_DM_RELAYS], authors: [pubkey] }).catch(() => null);
-        const list = ev ? parseDmRelays(ev) : [];
-        const relays = list.length ? list : INDEXER_RELAYS;
-        dmRelaysCache.set(pubkey, { relays, at: Date.now() });
-        return relays;
-    })();
-    dmRelaysInflight.set(pubkey, p);
-    try { return await p; } finally { dmRelaysInflight.delete(pubkey); }
-}
-/** Where to READ your own incoming wraps: your DM relays ∪ your read relays ∪ indexers.
- * Spec says senders use your kind-10050 DM relays, but wraps also land on read relays /
- * indexers in practice, so we query all three to find everything. The 30s list cache
- * absorbs the cost on repeat visits. */
-async function myDmReadRelays(s: Session): Promise<string[]> {
-    return [...new Set([...(await dmRelaysOf(s, s.me!)), ...(s.myRelays?.read ?? []), ...INDEXER_RELAYS])];
-}
+// --- relay discovery + the two-target publish live in dm-routing.ts (shared with the bunker
+// path, so both resolve DM relays through one cache and publish wraps identically).
 
 // --- aggregation (reads the cache; no legacy NIP-04 - the lib has no nip04) -------
 function peerOf(rumor: Rumor, me: string): string {
@@ -410,8 +376,7 @@ export async function wrapStep(s: Session, chainId: string, results: BatchResult
     try {
         const toPeer = finalizeWrap(sealPeer, chain.peer);
         const toSelf = finalizeWrap(sealSelf, me);
-        const [peerRelays, myRelays] = await Promise.all([dmRelaysOf(s, chain.peer), myDmReadRelays(s)]);
-        await Promise.all([s.pool.publish(peerRelays, toPeer), s.pool.publish(myRelays, toSelf)]);
+        await publishWrapPair(s, chain.peer, toPeer, toSelf);
         memSet(toSelf.id, { kind: 'msg', peer: chain.peer, from: me, at: chain.rumor.created_at, text: chain.text });
         listMem.delete(me); // the new message changes the conversation list
         return { id: toSelf.id, from: me, at: chain.rumor.created_at, text: chain.text };
@@ -423,7 +388,7 @@ export async function wrapStep(s: Session, chainId: string, results: BatchResult
 /** Are there recent wraps `#p=me` we haven't decrypted yet? Query-only (no decrypt),
  * so it's light enough to poll. Opening Messages decrypts+caches, clearing the dot. */
 export async function hasUnprocessedWrapsNip07(s: Session): Promise<boolean> {
-    if (s.mode !== 'nip07' || !s.me) return false;
+    if (!signsOnClient(s) || !s.me) return false;
     const relays = await myDmReadRelays(s);
     const wraps = await s.pool.query(relays, { kinds: [KIND_GIFTWRAP], '#p': [s.me], limit: 60 }).catch(() => [] as NostrEvent[]);
     return wraps.some((w) => !mem.has(w.id));

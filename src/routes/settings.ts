@@ -13,8 +13,7 @@ import { html } from '../html.ts';
 import { fetchTrustScore } from '../data/trust.ts';
 import { relayListTemplate, publishRelayList, publishRelayListSigned, clearRelayListCache } from '../data/relays.ts';
 import { fetchMyDmRelays, dmRelayListTemplate, publishDmRelayList, publishDmRelayListSigned } from '../data/dm-relays.ts';
-import { clearDmRelaysCache } from '../data/dms.ts';
-import { clearDmRelaysCache as clearDmRelaysCacheNip07 } from '../data/dms-nip07.ts';
+import { clearDmRelaysCache } from '../data/dm-routing.ts';
 import { KIND_DM_RELAYS } from '../nostr/nip17.ts';
 import { fetchBlossomServers, serverListTemplate, publishServerList, publishServerListSigned } from '../upload.ts';
 import { readSignedEvent, verifySigned } from '../nip07.ts';
@@ -254,14 +253,13 @@ export async function postRelaysPublish(ctx: Ctx): Promise<void> {
 
 // --- DM relays (NIP-17 kind:10050) -----------------------------------------
 // Same form-as-state + publish flow as kind:10002, but a flat url list (no read/write)
-// and a different kind. A save invalidates the per-pubkey DM-relay caches in BOTH DM
-// engines so the next read/send/dot-poll uses the freshly published list.
+// and a different kind. A save invalidates the shared per-pubkey DM-relay cache (one cache
+// for both DM engines now) so the next read/send/dot-poll uses the freshly published list.
 
 const dmRelayDraftFromForm = (form: URLSearchParams): string[] => form.getAll('dmrelay').map(String);
 
 function applyNewDmRelays(s: Session & { me: string }): void {
     clearDmRelaysCache(s.me);
-    clearDmRelaysCacheNip07(s.me);
 }
 
 async function respondDmRelays(ctx: Ctx, s: Session & { me: string }, draft: string[], status?: string, err = false): Promise<void> {
@@ -346,7 +344,7 @@ function applyRestored(s: Session & { me: string }, signed: NostrEvent[]): void 
     for (const ev of signed) {
         if (ev.kind === KIND_RELAY_LIST) { s.myRelays = parseRelayListEvent(ev); clearRelayListCache(); s.followsRoute = null; s.followersRoute = null; }
         else if (ev.kind === 3) { s.followsRoute = null; s.followersRoute = null; }
-        else if (ev.kind === KIND_DM_RELAYS) { clearDmRelaysCache(s.me); clearDmRelaysCacheNip07(s.me); }
+        else if (ev.kind === KIND_DM_RELAYS) { clearDmRelaysCache(s.me); }
         if (ev.kind === 10000 || ev.kind === 10003) { s.lists.set(ev.kind, ev); s.privateTags.delete(ev.kind); }
     }
     persistSession(s);

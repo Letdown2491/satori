@@ -19,6 +19,7 @@ import { html } from '../html.ts';
 import { requireLogin, ensureProfiles, chromeFor } from './common.ts';
 import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, hasBatchCaps, hasCap, notFound, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
+import { signsOnClient, signsOnServer } from '../session.ts';
 import type { DmInbox, DmMessage } from '../data/dms.ts';
 
 type Session07 = Session & { me: string };
@@ -51,7 +52,7 @@ export async function getMessages(ctx: Ctx): Promise<void> {
     if (!s) return;
     ensureDmBaseline(s.me, Math.floor(Date.now() / 1000)); // forward-looking unread baseline
     const chrome = chromeFor(ctx, s, { title: 'Messages' });
-    if (s.mode === 'nip07') {
+    if (signsOnClient(s)) {
         const cached = cachedInboxNip07(s.me);
         if (cached) {
             await ensureProfiles(s, [...cached.conversations, ...cached.requests].map((c) => c.peer));
@@ -72,7 +73,7 @@ export async function getRequests(ctx: Ctx): Promise<void> {
     if (!s) return;
     ensureDmBaseline(s.me, Math.floor(Date.now() / 1000));
     const chrome = chromeFor(ctx, s, { title: 'Messages' });
-    if (s.mode === 'nip07') {
+    if (signsOnClient(s)) {
         const cached = cachedInboxNip07(s.me);
         if (cached) {
             await ensureProfiles(s, cached.requests.map((c) => c.peer));
@@ -91,7 +92,7 @@ export async function getMessagesDot(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     if (!ctx.isPartial) { redirect(ctx, '/messages'); return; }
-    const unread = s.mode === 'bunker' ? await hasUnprocessedWraps(s) : await hasUnprocessedWrapsNip07(s);
+    const unread = signsOnServer(s) ? await hasUnprocessedWraps(s) : await hasUnprocessedWrapsNip07(s);
     sendFragment(ctx, dmDotInner(unread, false));
 }
 
@@ -108,7 +109,7 @@ export async function getThread(ctx: Ctx): Promise<void> {
     markDmRead(s.me, peer, Math.floor(Date.now() / 1000)); // opening clears its unread dot
     const chrome = chromeFor(ctx, s, { title: 'Messages' });
 
-    if (s.mode === 'nip07') {
+    if (signsOnClient(s)) {
         const warm = cachedThreadNip07(s.me, peer);
         sendPage(ctx, dmThreadPage(peer, warm ?? [], s.profiles, s.me, warm ? { cursor: null } : { sync: true }), chrome); return;
     }
@@ -149,7 +150,7 @@ export async function postReadAll(ctx: Ctx): Promise<void> {
     if (!s) return;
     const form = await readForm(ctx.req);
     const view = (form.get('view') ?? '') === 'requests' ? 'requests' : 'messages';
-    const inbox = s.mode === 'nip07' ? cachedInboxNip07(s.me) : await loadConversations(s);
+    const inbox = signsOnClient(s) ? cachedInboxNip07(s.me) : await loadConversations(s);
     if (!inbox) { notFound(ctx); return; }
     const bucket = view === 'requests' ? inbox.requests : inbox.conversations;
     const now = Math.floor(Date.now() / 1000);
@@ -168,7 +169,7 @@ export async function getThreadOlder(ctx: Ctx): Promise<void> {
     if (!peer) { notFound(ctx); return; }
     const until = Number(ctx.query.get('until'));
     if (!Number.isFinite(until)) { notFound(ctx); return; }
-    if (s.mode === 'nip07') { await startSync(ctx, s, 'thread', peer, until); return; }
+    if (signsOnClient(s)) { await startSync(ctx, s, 'thread', peer, until); return; }
     const thread = await loadThread(s, peer, until);
     if (!thread) { notFound(ctx); return; }
     await ensureProfiles(s, [peer]);
@@ -198,14 +199,14 @@ async function continueOrFinalize(ctx: Ctx, s: Session07, chainId: string, view:
 /** GET /messages/sync - inbox (or ?view=requests) decrypt start. */
 export async function getDmSync(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
-    if (!s) return; if (s.mode !== 'nip07') { notFound(ctx); return; }
+    if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     await startSync(ctx, s, ctx.query.get('view') === 'requests' ? 'requests' : 'inbox');
 }
 
 /** GET /messages/:peer/sync - thread decrypt start. */
 export async function getThreadSync(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
-    if (!s) return; if (s.mode !== 'nip07') { notFound(ctx); return; }
+    if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const peer = resolvePeer(ctx.params.peer ?? '');
     if (!peer) { notFound(ctx); return; }
     await startSync(ctx, s, 'thread', peer);
@@ -214,7 +215,7 @@ export async function getThreadSync(ctx: Ctx): Promise<void> {
 /** POST /messages/sync/seals - layer-1 results in; triage and emit layer-2, or finalize. */
 export async function postDmSeals(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
-    if (!s) return; if (s.mode !== 'nip07') { notFound(ctx); return; }
+    if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const view = chainView(chainId) ?? 'inbox'; // capture before finalize consumes the chain
     const results = await readBatchResults(ctx.req);
@@ -227,7 +228,7 @@ export async function postDmSeals(ctx: Ctx): Promise<void> {
 /** POST /messages/sync/rumors - layer-2 results in; cache, then the legacy step or finalize. */
 export async function postDmRumors(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
-    if (!s) return; if (s.mode !== 'nip07') { notFound(ctx); return; }
+    if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const view = chainView(chainId) ?? 'inbox';
     const results = await readBatchResults(ctx.req);
@@ -240,7 +241,7 @@ export async function postDmRumors(ctx: Ctx): Promise<void> {
  * The optional 3rd step in the chain (NIP-04 read), reached only when legacy was queued. */
 export async function postDmLegacy(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
-    if (!s) return; if (s.mode !== 'nip07') { notFound(ctx); return; }
+    if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const view = chainView(chainId) ?? 'inbox';
     const results = await readBatchResults(ctx.req);
@@ -293,7 +294,7 @@ export async function postSend(ctx: Ctx): Promise<void> {
     const text = (form.get('text') ?? '').trim();
     if (!text) { notFound(ctx); return; }
 
-    if (s.mode === 'nip07') {
+    if (signsOnClient(s)) {
         const r = beginSend(s, peer, text);
         if (!r) { notFound(ctx); return; }
         sendSignRequest(ctx, { items: r.items }, `/messages/${ctx.params.peer}/seal?chain=${r.chainId}`, 'nip44_encrypt_batch');
@@ -314,7 +315,7 @@ export async function postSend(ctx: Ctx): Promise<void> {
 /** POST /messages/:peer/seal - encrypt results in; build the seal templates, sign-batch. */
 export async function postSendSeal(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
-    if (!s) return; if (s.mode !== 'nip07') { notFound(ctx); return; }
+    if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const results = await readBatchResults(ctx.req);
     const next = results ? sealStep(s, chainId, results) : null;
@@ -325,7 +326,7 @@ export async function postSendSeal(ctx: Ctx): Promise<void> {
 /** POST /messages/:peer/wrap - signed seals in; wrap locally, publish, append the bubble. */
 export async function postSendWrap(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
-    if (!s) return; if (s.mode !== 'nip07') { notFound(ctx); return; }
+    if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const results = await readBatchResults(ctx.req);
     const msg = results ? await wrapStep(s, chainId, results) : null;
