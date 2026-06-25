@@ -352,7 +352,7 @@ export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts
           <div class="note-head">
             ${authorName(ev.pubkey, profiles)}
             ${opts.isPrivate ? html`<span class="private-mark" title="Private reply - only you and the author can see it">${icon('lock')}<span class="sr-only">Private reply</span></span>` : null}
-            ${p ? html`<span class="time">now</span>` : html`<a class="time time-thread" href="/t/${nevent}" aria-label="View thread" h-get h-prefetch="hover" h-scroll="top instant">${timeAgo(ev.created_at)}${icon('thread')}</a>`}
+            ${p || opts.isPrivate ? html`<span class="time">${p ? html`now` : timeAgo(ev.created_at)}</span>` : html`<a class="time time-thread" href="/t/${nevent}" aria-label="View thread" h-get h-prefetch="hover" h-scroll="top instant">${timeAgo(ev.created_at)}${icon('thread')}</a>`}
           </div>
           ${parent}
           ${noteContent(ev, profiles, true, s?.media, im)}
