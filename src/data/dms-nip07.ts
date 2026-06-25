@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { mutedPubkeys } from '../actions.ts';
 import { dmUnread } from './dm-read.ts';
 import { myDmReadRelays, publishWrapPair } from './dm-routing.ts';
+import { recordScan } from './dm-metrics.ts';
 import { coerceEvent } from '../nip07.ts';
 import {
     buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
@@ -67,7 +68,9 @@ export function cachedInboxNip07(me: string): DmInbox | null {
     const hit = listMem.get(me);
     if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit.inbox;
     if (mem.size === 0) return null;
+    const t0 = performance.now();
     const inbox = aggregate(mem.keys(), me); // iterate the keys directly - no full-array allocation
+    recordScan('cachedInboxNip07', mem.size, performance.now() - t0);
     listMem.set(me, { inbox, at: Date.now() });
     return inbox;
 }
@@ -78,7 +81,9 @@ export function cachedInboxNip07(me: string): DmInbox | null {
  * during inbox triage), so the caller falls back to the decrypt-chain shell. */
 export function cachedThreadNip07(me: string, peer: string): DmMessage[] | null {
     if (mem.size === 0) return null; // truly cold -> decrypt-chain shell
+    const t0 = performance.now();
     const msgs = threadMessages(mem.keys(), peer, me); // iterate the keys directly - no full-array allocation
+    recordScan('cachedThreadNip07', mem.size, performance.now() - t0);
     // Only serve from cache when an incoming message is present (the peer's side was decrypted);
     // a your-side-only set means a stranger thread not yet fully decrypted -> let the chain run.
     return msgs.some((m) => m.from !== me) ? msgs : null;

@@ -12,6 +12,7 @@ import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { mutedPubkeys } from '../actions.ts';
 import { dmUnread } from './dm-read.ts';
 import { myDmReadRelays, publishWrapPair } from './dm-routing.ts';
+import { recordScan } from './dm-metrics.ts';
 import {
     buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
     KIND_GIFTWRAP, KIND_DM_RELAYS, type Rumor,
@@ -227,6 +228,7 @@ function aggregateCached(me: string): DmInbox {
     // Single pass: build the `secure` peer set AND byPeer together. The secure flag can't be set
     // inline (a peer's securing msg may come later in iteration), so apply it once at the end -
     // an O(peers) loop, not a second full-cache scan.
+    const t0 = performance.now();
     const secure = new Set<string>(); // peers with at least one NIP-17 (non-legacy) message
     const byPeer = new Map<string, Conversation>();
     for (const e of cache.values()) {
@@ -242,6 +244,7 @@ function aggregateCached(me: string): DmInbox {
     }
     for (const c of byPeer.values()) c.secure = secure.has(c.peer);
     const all = [...byPeer.values()].sort((a, b) => b.lastAt - a.lastAt);
+    recordScan('aggregateCached', cache.size, performance.now() - t0);
     return { conversations: all.filter((c) => c.bucket === 'inbox'), requests: all.filter((c) => c.bucket === 'request') };
 }
 
@@ -338,6 +341,7 @@ export function cachedThread(s: Session, peer: string): DmMessage[] | null {
     // an INCOMING decrypted message: that means the peer's side was fully decrypted (a follow,
     // or a thread opened before - which also caches its legacy bodies). Otherwise return null so
     // loadThread decrypts the deferred-stranger / legacy parts and caches them (warm next time).
+    const t0 = performance.now();
     const out: DmMessage[] = [];
     let incoming = false;
     for (const [id, e] of cache) {
@@ -346,6 +350,7 @@ export function cachedThread(s: Session, peer: string): DmMessage[] | null {
             if (e.from !== me) incoming = true;
         }
     }
+    recordScan('cachedThread', cache.size, performance.now() - t0);
     return incoming ? out.sort((a, b) => a.at - b.at) : null;
 }
 
