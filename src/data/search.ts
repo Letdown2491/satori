@@ -100,6 +100,10 @@ export const SEARCH_PROFILE_RELAYS = [
  * pubkeys (the caller resolves by:/p: against the profile cache). Merge + dedupe by id, newest first.
  * Returns [] when there's no relay-native constraint (a pure has:/site: query can't be enumerated). */
 export async function searchNotes(pool: Pool, relays: string[], sq: SearchQuery, authors: string[], mentions: string[], limit = 30): Promise<NostrEvent[]> {
+    // A by:/p: the caller couldn't resolve to ANY pubkey → return nothing, rather than silently
+    // dropping the constraint and falling through to an unfiltered text search (which would show
+    // results NOT by the requested author). The user asked for a specific person; honor or empty.
+    if ((sq.by.length && !authors.length) || (sq.p.length && !mentions.length)) return [];
     const postOnly = sq.has.length > 0 || sq.sites.length > 0;
     const filter: Filter = { kinds: [1], limit: postOnly ? limit * 4 : limit }; // over-fetch when we'll post-filter
     if (sq.text) filter.search = sq.text;

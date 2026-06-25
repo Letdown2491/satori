@@ -15,9 +15,10 @@ import { sendPage, sendFragment, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import type { Profile } from '../data/profiles.ts';
 
-/** Resolve a by:/p: identifier to a pubkey: hex / npub / nprofile decode (sync), else a match in the
- * profile cache (exact name/nip05, then a name substring). No network - a stranger needs their npub. */
-function resolvePubkey(s: Session & { me: string }, raw: string): string | null {
+/** Resolve a by:/p: identifier to a pubkey: hex / npub / nprofile decode, else an exact-ish match in
+ * the profile cache, else a NIP-50 people search (top match) so a bare NAME resolves even for someone
+ * you don't follow. Null only when nothing matches at all. */
+async function resolvePubkey(s: Session & { me: string }, relays: string[], raw: string): Promise<string | null> {
     if (/^[0-9a-f]{64}$/i.test(raw)) return raw.toLowerCase();
     try { const d = decode(raw); if (d.type === 'npub') return d.data; if (d.type === 'nprofile') return d.data.pubkey; } catch { /* not bech32 */ }
     const q = raw.toLowerCase();
@@ -28,7 +29,10 @@ function resolvePubkey(s: Session & { me: string }, raw: string): string | null 
         if (name === q || nip05 === q || nip05.split('@')[0] === q) return pk;
         if (!sub && name.includes(q)) sub = pk;
     }
-    return sub;
+    if (sub) return sub;
+    const found = await searchPeople(s.pool, relays, raw, 1).catch(() => []); // network: resolve a stranger by name
+    if (found[0]) { s.profiles.set(found[0].pubkey, found[0].profile); return found[0].pubkey; }
+    return null;
 }
 
 export async function getSearch(ctx: Ctx): Promise<void> {
@@ -45,9 +49,11 @@ export async function getSearch(ctx: Ctx): Promise<void> {
     // Parse operators (by:/p:/#tag/has:/site:/since:/until:); resolve by:/p: → pubkeys. People
     // search uses only the FREE text (operators are note-scoped); a pure-operator query skips it.
     const sq = parseSearchQuery(q);
-    const authors = sq.by.map((r) => resolvePubkey(s, r)).filter((x): x is string => !!x);
-    const mentions = sq.p.map((r) => resolvePubkey(s, r)).filter((x): x is string => !!x);
     const a = readAppearance(ctx);
+    const [authors, mentions] = await Promise.all([
+        Promise.all(sq.by.map((r) => resolvePubkey(s, a.searchProfileRelays, r))).then((xs) => xs.filter((x): x is string => !!x)),
+        Promise.all(sq.p.map((r) => resolvePubkey(s, a.searchProfileRelays, r))).then((xs) => xs.filter((x): x is string => !!x)),
+    ]);
     const [people, notesRaw] = await Promise.all([
         sq.text ? searchPeople(s.pool, a.searchProfileRelays, sq.text) : Promise.resolve([] as { pubkey: string; profile: Profile }[]),
         searchNotes(s.pool, a.searchNoteRelays, sq, authors, mentions),
