@@ -15,9 +15,17 @@ import { sendPage, sendFragment, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import type { Profile } from '../data/profiles.ts';
 
+/** How well a profile matches the typed name: exact name/display_name (4) + nip05 local-part (2) +
+ * verified (1). Used to pick the RIGHT "jack" out of many accounts named jack. */
+function nameScore(p: Profile, q: string): number {
+    const name = (p.name ?? '').toLowerCase(), disp = (p.display_name ?? '').toLowerCase();
+    const local = (p.nip05 ?? '').toLowerCase().split('@')[0];
+    return (name === q || disp === q ? 4 : 0) + (local === q ? 2 : 0) + (p.nip05Verified ? 1 : 0);
+}
+
 /** Resolve a by:/p: identifier to a pubkey: hex / npub / nprofile decode, else an exact-ish match in
- * the profile cache, else a NIP-50 people search (top match) so a bare NAME resolves even for someone
- * you don't follow. Null only when nothing matches at all. */
+ * the profile cache, else a NIP-50 people search RANKED by name match (so a bare NAME resolves to the
+ * right person even when unfollowed). Null only when nothing matches at all. */
 async function resolvePubkey(s: Session & { me: string }, relays: string[], raw: string): Promise<string | null> {
     if (/^[0-9a-f]{64}$/i.test(raw)) return raw.toLowerCase();
     try { const d = decode(raw); if (d.type === 'npub') return d.data; if (d.type === 'nprofile') return d.data.pubkey; } catch { /* not bech32 */ }
@@ -30,8 +38,11 @@ async function resolvePubkey(s: Session & { me: string }, relays: string[], raw:
         if (!sub && name.includes(q)) sub = pk;
     }
     if (sub) return sub;
-    const found = await searchPeople(s.pool, relays, raw, 1).catch(() => []); // network: resolve a stranger by name
-    if (found[0]) { s.profiles.set(found[0].pubkey, found[0].profile); return found[0].pubkey; }
+    // Network: fetch a candidate pool and pick the BEST match (a stable sort keeps the relays'
+    // relevance order as the tiebreaker), so "jack" → the prominent jack, not a random one.
+    const found = await searchPeople(s.pool, relays, raw, 20).catch(() => []);
+    const best = found.map((r) => ({ r, score: nameScore(r.profile, q) })).sort((a, b) => b.score - a.score)[0]?.r;
+    if (best) { s.profiles.set(best.pubkey, best.profile); return best.pubkey; }
     return null;
 }
 
