@@ -1,0 +1,51 @@
+# Production compose: builds the image and runs the REAL server (no source bind-mounts, no
+# dev-watch), and exposes the daemon as a Tor v3 hidden service (a .onion) so you can reach your own
+# private client from anywhere over Tor. Sign-in stays locked to the owner (src/access.ts).
+#
+# Quick start:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   # claim ownership: sign in once at http://127.0.0.1:8787  (or set SATORI_OWNER below first)
+#   # then read your .onion address:
+#   docker compose -f docker-compose.prod.yml exec tor cat /var/lib/tor/hidden_service/hostname
+#
+# Owner config, optional client-authorization, and accessing via Tor Browser: see SELF-HOSTING.md.
+
+services:
+  satori-hateoas:
+    build: .
+    container_name: satori-hateoas
+    # No command override → the Dockerfile CMD (the real server). No src/ mounts → runs the built image.
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8787
+      - TOR_SOCKS=socks5h://tor:9050
+      # Lock sign-in. For an exposed instance set the owner EXPLICITLY (else the first sign-in claims
+      # it - fine as long as you sign in locally before exposing). Uncomment one:
+      #   - SATORI_OWNER=npub1yourownnpub
+      #   - SATORI_ALLOWED_PUBKEYS=npub1a,npub1b
+      #   - SATORI_OPEN=1     # PUBLIC instance (also needs the multi-tenant hardening; see SELF-HOSTING.md)
+    ports:
+      # Local bootstrap/admin only. The world reaches the daemon via the .onion, NOT this port - you
+      # can delete this line once you've claimed ownership and only want .onion access.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - satori-data:/app/.data            # sessions, owner claim, caches, drafts, scheduled posts
+      - /etc/localtime:/etc/localtime:ro   # track host tz (scheduled posts parse local datetime)
+    depends_on:
+      - tor
+    restart: unless-stopped
+
+  # Tor sidecar: SOCKS5 on 9050 (the daemon's OUTBOUND, Privacy Mode) AND a v3 hidden service that
+  # bridges onion:80 -> satori-hateoas:8787 over the internal network. 8787 is never published to the
+  # internet; Tor is the only way in. The volume persists the .onion address + keys + client auth.
+  tor:
+    image: dperson/torproxy
+    container_name: satori-tor
+    command: ["-s", "80;satori-hateoas:8787"]
+    volumes:
+      - tor-data:/var/lib/tor
+    restart: unless-stopped
+
+volumes:
+  satori-data:
+  tor-data:
