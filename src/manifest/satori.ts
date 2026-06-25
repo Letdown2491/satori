@@ -7,36 +7,40 @@
 //   Phase 2: timeline, Phase 3: focused, Phase 4: declared action vocabulary.
 
 import { registerKind, registerFallback, type KindHandler, type Surface } from './registry.ts';
-import { embedPreview, articleEmbedPreview } from '../render/note.ts';
+import { embedPreview, articleEmbedPreview, articleRow, noteRow, type NoteOpts } from '../render/note.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import type { ProfileMap } from '../render/util.ts';
+import type { Session } from '../session.ts';
 
-// Per-surface render inputs. Accretes as later phases wire more surfaces; for Phase 1 only the embed
-// fields are used (the bech/naddr identifier + the note-embed label).
+// Per-surface render inputs. Accretes as later phases wire more surfaces.
 export interface SatoriDeps {
     profiles?: ProfileMap;
-    bech?: string;   // the embedded entity's bech32 (note/nevent/naddr) - the link + lazy-load key
-    naddr?: string;  // an article's addressable form (article embed links via this)
-    label?: string;  // note-embed label ("↗ quoted note" / "↩ in reply to")
+    s?: Session;     // timeline/focused need the session (media prefs, signing mode, etc.)
+    opts?: NoteOpts; // timeline note-render options (pending, depth, mute, hideParent, inThread)
+    bech?: string;   // embed: the embedded entity's bech32 (note/nevent/naddr) - link + lazy-load key
+    naddr?: string;  // embed: an article's addressable form (article embed links via this)
+    label?: string;  // embed: the note-embed label ("↗ quoted note" / "↩ in reply to")
 }
 
-const notWired = (surface: Surface): never => { throw new Error(`satori handler: surface '${surface}' not wired yet (Phase 1 is embed-only)`); };
+const notWired = (surface: Surface): never => { throw new Error(`satori handler: surface '${surface}' not wired yet`); };
 
-// Long-form articles render as the clean article card.
+// Long-form articles: clean article card in the timeline, article preview when embedded.
 const articleHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_ARTICLE],
     render(ev, surface, d) {
+        if (surface === 'timeline') return articleRow(ev, d.profiles, d.s);
         if (surface === 'embed') return articleEmbedPreview(ev, d.naddr ?? d.bech ?? '', d.profiles);
-        return notWired(surface);
+        return notWired(surface); // focused → Phase 3
     },
 };
 
-// Everything else embeds as a note card - exactly the old `else` branch in getEmbed, so a quoted note,
-// poll, repost, or any non-article kind renders identically. This is the unknown-kind path (the NATEOAS
-// frontier): today a generic note preview, a declarative/manifest renderer later.
+// Everything else renders as a note: the `.note` card in the timeline (exactly the old noteCard body,
+// now `noteRow`), a note preview when embedded. This is the catch-all the old code used (any non-article
+// kind → note), and the unknown-kind path (the NATEOAS frontier): a generic note today, declarative later.
 const fallbackHandler: KindHandler<SatoriDeps> = {
     kinds: [],
     render(ev, surface, d) {
+        if (surface === 'timeline') return noteRow(ev, d.profiles, d.s, d.opts);
         if (surface === 'embed') return embedPreview(ev, d.bech ?? '', d.profiles, d.label);
         return notWired(surface);
     },

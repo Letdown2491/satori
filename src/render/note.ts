@@ -16,6 +16,7 @@ import { replyParent } from '../nostr/nip10.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
 import { parseArticle, readingMinutes, KIND_ARTICLE } from '../nostr/nip23.ts';
 import { KIND_POLL } from '../nostr/nip88.ts';
+import { renderEvent } from '../manifest/registry.ts';
 import { pollBox } from './poll.ts';
 import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
 import { isZapped } from '../zaps.ts';
@@ -307,11 +308,17 @@ function pendingFooter(token: string, seconds: number): SafeHtml {
     return html`<div class="post-pending"><span>Posting in ${String(seconds)}s…</span> <button type="button" class="toast-action" h-post="/note/undo?token=${t}" h-target="#opt-${raw(token)}" h-swap="outer">Undo</button></div>`;
 }
 
-/** One note as a feed/thread <li>, in Satori's flex `.note` layout. `depth`
- * indents nested replies (with the thread line), matching the thread view. A
- * `pending` note self-polls /note/tick (countdown → confirm in place / undo). */
+/** Timeline entry point for ANY event: dispatch to the kind's handler via the manifest registry
+ * (article → articleRow, every other kind → noteRow). Byte-identical to the old `if kind===ARTICLE`
+ * branch, now manifest-driven so adding a kind is a registration, not an edit here. */
 export function noteCard(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts: NoteOpts = {}): SafeHtml {
-    if (ev.kind === KIND_ARTICLE) return articleRow(ev, profiles, s);
+    return renderEvent(ev, 'timeline', { profiles, s, opts });
+}
+
+/** One note as a feed/thread <li>, in Satori's flex `.note` layout. `depth` indents nested replies
+ * (with the thread line), matching the thread view. A `pending` note self-polls /note/tick (countdown
+ * → confirm in place / undo). The note/poll timeline render - the registry's fallback handler. */
+export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts: NoteOpts = {}): SafeHtml {
     const nevent = neventFor(ev);
     const im = parseImeta(ev); // NIP-92 alt + dim for the note's media
     const p = opts.pending;
@@ -372,7 +379,7 @@ export function naddrFor(ev: NostrEvent): string {
 }
 
 /** An article as a feed row (Satori's ArticleRow): author head + card + actions. */
-function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+export function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
     const a = parseArticle(ev);
     return html`
       <li class="note article-row">
