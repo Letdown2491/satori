@@ -7,7 +7,7 @@
 //   Phase 2: timeline, Phase 3: focused, Phase 4: declared action vocabulary.
 
 import { registerKind, registerFallback, type KindHandler, type Surface } from './registry.ts';
-import { embedPreview, articleEmbedPreview, articleRow, noteRow, focusedNote, articleReader, type NoteOpts } from '../render/note.ts';
+import { embedPreview, articleEmbedPreview, articleRow, noteRow, focusedNote, articleReader, NOTE_ACTIONS, ARTICLE_ACTIONS, type NoteOpts } from '../render/note.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import type { ProfileMap } from '../render/util.ts';
 import type { Session } from '../session.ts';
@@ -28,6 +28,7 @@ const notWired = (surface: Surface): never => { throw new Error(`satori handler:
 // Long-form articles: clean article card in the timeline, article preview when embedded.
 const articleHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_ARTICLE],
+    actions: ARTICLE_ACTIONS, // declared control vocabulary (the articleActions row consumes the same list)
     render(ev, surface, d) {
         if (surface === 'timeline') return articleRow(ev, d.profiles, d.s);
         if (surface === 'reader') return articleReader(ev, d.profiles, d.s);
@@ -44,6 +45,7 @@ const articleHandler: KindHandler<SatoriDeps> = {
 // kind → note), and the unknown-kind path (the NATEOAS frontier): a generic note today, declarative later.
 const fallbackHandler: KindHandler<SatoriDeps> = {
     kinds: [],
+    actions: NOTE_ACTIONS, // the default action vocabulary (the noteActions row consumes the same list)
     render(ev, surface, d) {
         if (surface === 'timeline') return noteRow(ev, d.profiles, d.s, d.opts);
         if (surface === 'focused') return focusedNote(ev, d.profiles, d.s, d.inThread);
