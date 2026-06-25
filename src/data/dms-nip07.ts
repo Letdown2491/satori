@@ -20,8 +20,9 @@ import { recordScan } from './dm-metrics.ts';
 import { coerceEvent } from '../nip07.ts';
 import {
     buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
-    KIND_GIFTWRAP, KIND_SEAL, type Rumor,
+    KIND_GIFTWRAP, KIND_SEAL, KIND_DM, KIND_PRIVATE_REPLY, type Rumor,
 } from '../nostr/nip17.ts';
+import { replyParent } from '../nostr/nip10.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import type { Filter } from 'nostr-tools';
 import type { BatchResult } from '../wire.ts';
@@ -39,7 +40,13 @@ const KIND_LEGACY = 4; // NIP-04 (read-only; we never SEND this metadata-leaky f
 type Entry =
     | { kind: 'msg'; peer: string; from: string; at: number; text: string; legacy?: boolean }
     | { kind: 'request'; peer: string; at: number; legacy?: boolean }
+    // A NIP-59-wrapped private reply (inner kind:1) to a public note - keyed by the parent note id,
+    // carries the rumor id + tags (to render in-thread), excluded from conversation aggregation.
+    | { kind: 'reply'; parentId: string; id: string; from: string; at: number; text: string; tags: string[][] }
     | { kind: 'drop' };
+
+/** A decrypted private reply, shaped to render as a synthetic note event in a thread. */
+export interface PrivateReply { id: string; parent: string; from: string; at: number; content: string; tags: string[][] }
 
 /** A legacy (kind-4) message queued for nip04 decryption through the browser. */
 interface LegacyItem { id: string; peer: string; from: string; at: number; ciphertext: string }
@@ -156,7 +163,7 @@ function aggregate(ids: Iterable<string>, me: string): DmInbox {
     const byPeer = new Map<string, Conversation>();
     for (const id of ids) {
         const e = mem.get(id);
-        if (!e || e.kind === 'drop') continue;
+        if (!e || e.kind === 'drop' || e.kind === 'reply') continue; // replies aren't conversations
         const peer = e.peer;
         const prev = byPeer.get(peer);
         if (e.kind === 'msg') {
@@ -177,6 +184,26 @@ function threadMessages(ids: Iterable<string>, peer: string, _me: string): DmMes
         if (e?.kind === 'msg' && e.peer === peer) out.push({ id, from: e.from, at: e.at, text: e.text, legacy: e.legacy });
     }
     return out.sort((a, b) => a.at - b.at);
+}
+
+/** All decrypted private replies (in-memory) to `noteId`, oldest-first - shown inline in the note's
+ * thread, badged private (replies others sent to your note + self-copies of ones you sent). */
+export function privateRepliesForNip07(noteId: string): PrivateReply[] {
+    const out: PrivateReply[] = [];
+    for (const e of mem.values()) {
+        if (e.kind === 'reply' && e.parentId === noteId) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
+    }
+    return out.sort((a, b) => a.at - b.at);
+}
+
+/** Every private reply OTHERS sent you (in-memory), newest-first - the notifications source. Self-copies
+ * of replies you sent (from === me) are excluded, mirroring how notifications skip your own actions. */
+export function allPrivateRepliesNip07(me: string): PrivateReply[] {
+    const out: PrivateReply[] = [];
+    for (const e of mem.values()) {
+        if (e.kind === 'reply' && e.from !== me) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
+    }
+    return out.sort((a, b) => b.at - a.at);
 }
 
 // --- legacy NIP-04 discovery (kind-4; participants public, so query without decrypting) ----
@@ -282,7 +309,6 @@ export function applySeals(s: Session, chainId: string, seals: BatchResult[]): {
     if (!chain) return null;
     const me = s.me!;
     const muted = mutedPubkeys(s);
-    const follows = new Set(s.followsRoute?.authors ?? []);
     const items: DecryptItem[] = [];
     chain.l2 = [];
     chain.l1.forEach((w, i) => {
@@ -293,13 +319,11 @@ export function applySeals(s: Session, chainId: string, seals: BatchResult[]): {
         if (!seal) { memSet(w.id, { kind: 'drop' }); return; }
         const sender = seal.pubkey;
         if (sender !== me && muted.has(sender)) { memSet(w.id, { kind: 'drop' }); return; }
-        const known = sender === me || follows.has(sender) || (chain.peer != null && sender === chain.peer);
-        if (known) {
-            chain.l2.push({ id: w.id, sealPubkey: sender });
-            items.push({ pubkey: sender, ciphertext: seal.content });
-        } else {
-            memSet(w.id, { kind: 'request', peer: sender, at: w.at });
-        }
+        // Queue EVERYONE (non-muted) for layer-2 - not just follows. A private reply is
+        // indistinguishable from a DM until the rumor is decrypted, and strangers reply privately to
+        // public notes, so we can't defer them; applyRumors triages by the decrypted inner kind.
+        chain.l2.push({ id: w.id, sealPubkey: sender });
+        items.push({ pubkey: sender, ciphertext: seal.content });
     });
     chains.set(chainId, chain); // keep alive for layer-2 / finalize
     return items.length ? { items } : null;
@@ -311,13 +335,24 @@ export function applyRumors(s: Session, chainId: string, rumors: BatchResult[]):
     const chain = takeSync(chainId);
     if (!chain) return;
     const me = s.me!;
+    const follows = new Set(s.followsRoute?.authors ?? []);
     chain.l2.forEach((w, i) => {
         const r = rumors[i];
         if (!r || !r.ok) { memSet(w.id, { kind: 'drop' }); return; }
         let rumor: Rumor | null = null;
         try { rumor = rumorFromSeal(JSON.parse(String(r.value)), w.sealPubkey); } catch { /* drop */ }
         if (!rumor) { memSet(w.id, { kind: 'drop' }); return; }
-        memSet(w.id, { kind: 'msg', peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content });
+        if (rumor.kind === KIND_PRIVATE_REPLY) { // private reply → keyed by parent note, shown from anyone
+            const parent = replyParent({ tags: rumor.tags } as NostrEvent)?.id;
+            memSet(w.id, parent ? { kind: 'reply', parentId: parent, id: rumor.id, from: rumor.pubkey, at: rumor.created_at, text: rumor.content, tags: rumor.tags } : { kind: 'drop' });
+            return;
+        }
+        if (rumor.kind === KIND_DM) { // DM: you/a follow/the open peer → message, else a deferred request
+            const known = rumor.pubkey === me || follows.has(rumor.pubkey) || rumor.pubkey === chain.peer;
+            memSet(w.id, known ? { kind: 'msg', peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content } : { kind: 'request', peer: rumor.pubkey, at: rumor.created_at });
+            return;
+        }
+        memSet(w.id, { kind: 'drop' }); // kind 7 reactions etc. - not handled yet
     });
     chains.set(chainId, chain);
 }

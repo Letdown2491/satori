@@ -15,8 +15,9 @@ import { myDmReadRelays, publishWrapPair } from './dm-routing.ts';
 import { recordScan } from './dm-metrics.ts';
 import {
     buildRumor, finalizeWrap, sealTemplate, rumorFromSeal, rumorRecipients,
-    KIND_GIFTWRAP, KIND_DM_RELAYS, type Rumor,
+    KIND_GIFTWRAP, KIND_DM, KIND_DM_RELAYS, KIND_PRIVATE_REPLY, type Rumor,
 } from '../nostr/nip17.ts';
+import { replyParent } from '../nostr/nip10.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Filter } from 'nostr-tools';
 import type { Session } from '../session.ts';
@@ -44,7 +45,14 @@ const KIND_LEGACY = 4; // NIP-04 (read-only; we never SEND this metadata-leaky f
 type Entry =
     | { kind: 'msg'; owner: string; peer: string; from: string; at: number; text: string; legacy?: boolean }
     | { kind: 'request'; owner: string; peer: string; at: number }
+    // A NIP-59-wrapped PRIVATE REPLY (inner kind:1) to a public note - NOT a peer conversation, so
+    // it's keyed by the parent note id, carries the rumor id + tags (to render as a note in-thread),
+    // and is EXCLUDED from the conversation-list aggregation (it has no `peer`).
+    | { kind: 'reply'; owner: string; parent: string; id: string; from: string; at: number; text: string; tags: string[][] }
     | { kind: 'drop' };
+
+/** A decrypted private reply, shaped to render as a synthetic note event in a thread. */
+export interface PrivateReply { id: string; parent: string; from: string; at: number; content: string; tags: string[][] }
 
 const FILE = process.env.SATORI_DM_CACHE || join(process.cwd(), '.data', 'dms.json');
 const cache = new Map<string, Entry>();
@@ -114,6 +122,23 @@ async function unseal(s: Signed, seal: NostrEvent): Promise<Rumor | null> {
  * recipient; an incoming wrap's peer is the sender). */
 function peerOf(rumor: Rumor, me: string): string {
     return rumor.pubkey === me ? (rumorRecipients(rumor).find((p) => p !== me) ?? me) : rumor.pubkey;
+}
+
+/** Route a decrypted rumor to its cache entry by INNER kind: a private reply (kind 1) → a reply
+ * entry keyed by the parent note (shown to anyone, since strangers can reply to your public note);
+ * a DM (kind 14) → a msg for you/a follow, else a deferred request (body discarded); anything else
+ * (e.g. kind 7 reactions, not handled yet) → drop. */
+function triageRumor(rumor: Rumor, me: string, follows: Set<string>): Entry {
+    if (rumor.kind === KIND_PRIVATE_REPLY) {
+        const parent = replyParent({ tags: rumor.tags } as NostrEvent)?.id;
+        if (!parent) return { kind: 'drop' }; // a kind-1 with no reply target isn't a placeable private reply
+        return { kind: 'reply', owner: me, parent, id: rumor.id, from: rumor.pubkey, at: rumor.created_at, text: rumor.content, tags: rumor.tags };
+    }
+    if (rumor.kind === KIND_DM) {
+        if (rumor.pubkey === me || follows.has(rumor.pubkey)) return { kind: 'msg', owner: me, peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content };
+        return { kind: 'request', owner: me, peer: rumor.pubkey, at: rumor.created_at }; // stranger DM → deferred, body discarded
+    }
+    return { kind: 'drop' };
 }
 
 // --- a tiny async concurrency pool ----------------------------------------
@@ -232,7 +257,7 @@ function aggregateCached(me: string): DmInbox {
     const secure = new Set<string>(); // peers with at least one NIP-17 (non-legacy) message
     const byPeer = new Map<string, Conversation>();
     for (const e of cache.values()) {
-        if (e.kind === 'drop' || e.owner !== me) continue;
+        if (e.kind === 'drop' || e.kind === 'reply' || e.owner !== me) continue; // replies aren't conversations
         if (e.kind === 'msg' && !e.legacy) secure.add(e.peer);
         const prev = byPeer.get(e.peer);
         if (e.kind === 'msg') {
@@ -268,23 +293,22 @@ async function refreshConversations(sg: Signed): Promise<DmInbox> {
         catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
         if (!seal) { cache.set(wrap.id, { kind: 'drop' }); return; }
         const sender = seal.pubkey;
-        if (sender !== me && muted.has(sender)) { cache.set(wrap.id, { kind: 'drop' }); return; } // 1 decrypt, dropped
-        if (sender === me || follows.has(sender)) {                                                // Inbox → 2nd decrypt
-            let rumor: Rumor | null;
-            try { rumor = await unseal(sg, seal); }
-            catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
-            if (!rumor) { cache.set(wrap.id, { kind: 'drop' }); return; }
-            cache.set(wrap.id, { kind: 'msg', owner: me, peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content });
-        } else {                                                                                   // Stranger → Requests (defer body)
-            cache.set(wrap.id, { kind: 'request', owner: me, peer: sender, at: wrap.created_at });
-        }
+        if (sender !== me && muted.has(sender)) { cache.set(wrap.id, { kind: 'drop' }); return; } // muted → drop at 1 decrypt
+        // 2nd decrypt for EVERYONE (not just follows): a private reply is indistinguishable from a DM
+        // until unsealed, and strangers can reply privately to your public note - so we must read the
+        // inner kind to catch those. triageRumor then routes by kind (DM vs private reply).
+        let rumor: Rumor | null;
+        try { rumor = await unseal(sg, seal); }
+        catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
+        if (!rumor) { cache.set(wrap.id, { kind: 'drop' }); return; }
+        cache.set(wrap.id, triageRumor(rumor, me, follows));
     });
     scheduleFlush();
 
     // Aggregate this user's NIP-17 entries into one conversation per peer. (legacy folded below)
     const byPeer = new Map<string, Conversation>();
     const fold = (e: Entry | undefined): void => {
-        if (!e || e.kind === 'drop' || e.owner !== me) return;
+        if (!e || e.kind === 'drop' || e.kind === 'reply' || e.owner !== me) return; // replies aren't conversations
         const peer = e.peer;
         const prev = byPeer.get(peer);
         if (e.kind === 'msg') {
@@ -352,6 +376,35 @@ export function cachedThread(s: Session, peer: string): DmMessage[] | null {
     }
     recordScan('cachedThread', cache.size, performance.now() - t0);
     return incoming ? out.sort((a, b) => a.at - b.at) : null;
+}
+
+/** All decrypted private replies to `noteId` (from the disk cache), oldest-first - shown inline in
+ * the note's thread, badged private. Covers both replies others sent to your note AND self-copies of
+ * private replies you sent to any note. */
+export function privateRepliesFor(s: Session, noteId: string): PrivateReply[] {
+    if (!signsOnServer(s) || !s.me) return [];
+    const me = s.me;
+    const t0 = performance.now();
+    const out: PrivateReply[] = [];
+    for (const e of cache.values()) {
+        if (e.kind === 'reply' && e.owner === me && e.parent === noteId) out.push({ id: e.id, parent: e.parent, from: e.from, at: e.at, content: e.text, tags: e.tags });
+    }
+    recordScan('privateRepliesFor', cache.size, performance.now() - t0);
+    return out.sort((a, b) => a.at - b.at);
+}
+
+/** Every private reply OTHERS sent you (in-memory), newest-first - the notifications source. Self-copies
+ * of replies you sent (from === me) are excluded, mirroring how notifications skip your own actions. */
+export function allPrivateReplies(s: Session): PrivateReply[] {
+    if (!signsOnServer(s) || !s.me) return [];
+    const me = s.me;
+    const t0 = performance.now();
+    const out: PrivateReply[] = [];
+    for (const e of cache.values()) {
+        if (e.kind === 'reply' && e.owner === me && e.from !== me) out.push({ id: e.id, parent: e.parent, from: e.from, at: e.at, content: e.text, tags: e.tags });
+    }
+    recordScan('allPrivateReplies', cache.size, performance.now() - t0);
+    return out.sort((a, b) => b.at - a.at);
 }
 
 /** Fire-and-forget background pre-warm (bunker only): decrypt recent wraps into the cache
@@ -434,6 +487,7 @@ export async function loadThread(s: Session, peer: string, until?: number): Prom
         try { rumor = await unseal(sg, seal); }
         catch (e) { if (isSignerUnavailable(e)) { down = true; return; } cache.set(wrap.id, { kind: 'drop' }); return; }
         if (!rumor) { cache.set(wrap.id, { kind: 'drop' }); return; }
+        if (rumor.kind !== KIND_DM) { cache.set(wrap.id, triageRumor(rumor, me, new Set())); return; } // private reply etc. → not a DM message
         const p = peerOf(rumor, me);
         cache.set(wrap.id, { kind: 'msg', owner: me, peer: p, from: rumor.pubkey, at: rumor.created_at, text: rumor.content });
         if (p === peer) msgs.push({ id: wrap.id, from: rumor.pubkey, at: rumor.created_at, text: rumor.content });

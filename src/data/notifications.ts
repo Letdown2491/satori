@@ -9,7 +9,7 @@ import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { KIND_POLL, KIND_POLL_RESPONSE } from '../nostr/nip88.ts';
 
-export type NotifType = 'reply' | 'mention' | 'pollvote' | 'zap' | 'reaction';
+export type NotifType = 'reply' | 'mention' | 'pollvote' | 'zap' | 'reaction' | 'privateReply';
 export interface Notif { type: NotifType; event: NostrEvent }
 export interface NotifWindow { since?: number; until?: number; limit: number }
 

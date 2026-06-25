@@ -186,6 +186,10 @@
         .notif-row { display: flex; align-items: flex-start; gap: 10px; padding: 14px 4px; border-bottom: 1px solid var(--border); }
         .notif-row.clickable { cursor: pointer; }
         .notif-text { font-size: 14px; color: var(--muted); padding-top: 3px; }
+        /* A private reply notification quotes the reply text under the "replied privately" line,
+           set off by a quiet accent rule so it reads as a confidential aside. */
+        .notif-private .private-mark { vertical-align: -1px; }
+        .notif-quote { margin-top: 5px; padding: 4px 0 4px 10px; border-left: 2px solid var(--accent); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; opacity: 0.85; }
         /* Bookmarks: flag only the exceptions - public (visible) saves. A small
            muted globe (= visible to others) before the time; private stay clean. */
         .bm-public { width: 13px; height: 13px; color: var(--muted); align-self: center; }
@@ -945,6 +949,10 @@
             vertical-align: middle; line-height: 1; cursor: default;
         }
         .time { color: var(--muted); white-space: nowrap; flex: none; }
+        /* A gift-wrapped private reply: a quiet lock by the timestamp. Accent-tinted so it reads as
+           "only you and the author see this", not as a warning. */
+        .private-mark { display: inline-flex; align-items: center; flex: none; color: var(--accent); opacity: 0.7; }
+        .private-mark .icon { width: 13px; height: 13px; }
         /* Timestamp doubles as the "open thread" affordance: a muted conversation
            glyph rides after the time; the whole thing is one link to /t/<nevent>. */
         .time-thread { display: inline-flex; align-items: center; gap: 5px; text-decoration: none; }

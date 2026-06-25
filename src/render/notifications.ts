@@ -9,6 +9,8 @@ import { quote } from './quotes.ts';
 import { avatar, displayName, timeAgo, type ProfileMap } from './util.ts';
 import { withEmoji } from './content.ts';
 import { emojiFromTags } from '../nostr/emoji30.ts';
+import { icon } from './svg.ts';
+import { replyParent } from '../nostr/nip10.ts';
 import { parseZapReceipt, type Notif } from '../data/notifications.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
@@ -61,10 +63,23 @@ function reactionRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
         <div class="notif-text">${profileLink(ev.pubkey, profiles)} reacted ${react} to ${note} <span class="time">· ${timeAgo(ev.created_at)}</span></div></li>`;
 }
 
+/** A private (gift-wrapped) reply to one of your notes: author + a lock + the reply text, linking to the
+ * PARENT note's thread (where it shows inline). The reply itself has no public thread of its own, so we
+ * never link to it - we point back to the note it answers. */
+function privateReplyRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
+    const parentId = replyParent(ev)?.id;
+    let note: SafeHtml = html`your note`;
+    if (parentId) { try { note = html`<a href="/t/${neventEncode({ id: parentId })}" h-scroll="top instant">your note</a>`; } catch { /* keep text */ } }
+    return html`<li class="notif-row notif-private">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'sm')}
+        <div class="notif-text">${profileLink(ev.pubkey, profiles)} replied privately <span class="private-mark">${icon('lock')}<span class="sr-only">private</span></span> to ${note} <span class="time">· ${timeAgo(ev.created_at)}</span>
+        <div class="notif-quote">${ev.content}</div></div></li>`;
+}
+
 function notifRow(n: Notif, profiles: ProfileMap, s: Session): SafeHtml {
     if (n.type === 'reply' || n.type === 'mention') return noteCard(n.event, profiles, s, { mute: true });
     if (n.type === 'zap') return zapRow(n.event, profiles);
     if (n.type === 'reaction') return reactionRow(n.event, profiles);
+    if (n.type === 'privateReply') return privateReplyRow(n.event, profiles);
     return pollvoteRow(n.event, profiles);
 }
 

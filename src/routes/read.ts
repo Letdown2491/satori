@@ -26,7 +26,9 @@ import { ensureEngaged, engageTarget } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
 import { ensureArticleReplies, replierPubkeys } from '../replies.ts';
 import { sendPage, sendFragment, notFound, redirect, type Ctx } from '../http.ts';
-import type { Session } from '../session.ts';
+import { privateRepliesFor, type PrivateReply } from '../data/dms.ts';
+import { privateRepliesForNip07 } from '../data/dms-nip07.ts';
+import { signsOnClient, type Session } from '../session.ts';
 
 const PAGE = 30;
 const PROFILE_FILL = 4; // cap loop-fill fetches on a profile (mirrors the feed's MAX_FILL)
@@ -152,15 +154,27 @@ function continueLink(parent: NostrEvent, depth: number): SafeHtml {
     return html`<li class="continue-thread depth-${Math.min(depth, MAX_DEPTH)}"><a href="/t/${bech}" h-scroll="top instant">continue this thread →</a></li>`;
 }
 
-function renderReplyTree(nodes: RNode[], depth: number, profiles: ProfileMap, s: Session, inThread: string): SafeHtml {
+function renderReplyTree(nodes: RNode[], depth: number, profiles: ProfileMap, s: Session, inThread: string, privateIds: Set<string>): SafeHtml {
     const out: SafeHtml[] = [];
     for (const node of nodes) {
-        out.push(noteCard(node.event, profiles, s, { hideParent: true, depth, inThread }));
+        out.push(noteCard(node.event, profiles, s, { hideParent: true, depth, inThread, isPrivate: privateIds.has(node.event.id) }));
         if (node.children.length === 0) continue;
         if (depth >= MAX_DEPTH) out.push(continueLink(node.event, depth + 1));
-        else out.push(renderReplyTree(node.children, depth + 1, profiles, s, inThread));
+        else out.push(renderReplyTree(node.children, depth + 1, profiles, s, inThread, privateIds));
     }
     return join(out);
+}
+
+/** Decrypted private replies (NIP-59 gift-wrapped kind:1) to `noteId`, from whichever DM engine the
+ * signing family uses. Surfaces what's already in the in-memory DM cache - warmed when the inbox syncs. */
+function privateRepliesTo(s: Session, noteId: string): PrivateReply[] {
+    return signsOnClient(s) ? privateRepliesForNip07(noteId) : privateRepliesFor(s, noteId);
+}
+
+/** Turn a decrypted private reply into a synthetic kind:1 event so it threads (NIP-10 tags) and renders
+ * exactly like a public reply. Never published - `sig` is empty; the lock badge marks it private. */
+function syntheticReply(r: PrivateReply): NostrEvent {
+    return { id: r.id, pubkey: r.from, created_at: r.at, kind: 1, tags: r.tags, content: r.content, sig: '' };
 }
 
 export async function getThread(ctx: Ctx): Promise<void> {
@@ -187,13 +201,19 @@ export async function getThread(ctx: Ctx): Promise<void> {
         return;
     }
 
-    await Promise.all([ensureProfiles(s, notePubkeys([focused, ...replies])), ensureLists(s, ['bookmark', 'pin', 'mute']), ensureLikes(s, [focused.id, ...replies.map((r) => r.id)]), ensureEngaged(s, [focused.id, ...replies.map((r) => r.id)]), ensureZaps(s)]);
+    // Private replies (gift-wrapped) you've received to this note, folded in as synthetic events so they
+    // nest and render like public replies, badged with a lock. Self-copies of ones you sent show too.
+    const privates = privateRepliesTo(s, id).map(syntheticReply);
+    const privateIds = new Set(privates.map((e) => e.id));
+    const allReplies = [...replies, ...privates];
+
+    await Promise.all([ensureProfiles(s, notePubkeys([focused, ...allReplies])), ensureLists(s, ['bookmark', 'pin', 'mute']), ensureLikes(s, [focused.id, ...replies.map((r) => r.id)]), ensureEngaged(s, [focused.id, ...replies.map((r) => r.id)]), ensureZaps(s)]);
 
     // Hide muted authors' replies (the focused note itself stays - you navigated to it).
     const muted = mutedPubkeys(s);
     // `inThread` (this thread's nevent) lets every reply button append back here.
     // The #thread <ul> is where an optimistic reply is appended (helmjs `append`).
-    const tree = renderReplyTree(buildReplyTree(replies.filter((r) => !muted.has(r.pubkey)), id), 0, s.profiles, s, entity);
+    const tree = renderReplyTree(buildReplyTree(allReplies.filter((r) => !muted.has(r.pubkey)), id), 0, s.profiles, s, entity, privateIds);
     const content = html`<ul class="feed" id="thread">${renderEvent(focused, 'focused', { profiles: s.profiles, s, inThread: entity })}${tree}</ul>`;
     sendPage(ctx, content, chromeFor(ctx, s, { title: 'Thread' }));
 }

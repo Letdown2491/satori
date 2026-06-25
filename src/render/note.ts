@@ -315,6 +315,7 @@ export interface NoteOpts {
     inThread?: string;                          // the thread's nevent → reply appends here
     pending?: { token: string; seconds: number }; // an optimistic (not-yet-published) reply
     mute?: boolean;                             // stranger-facing rows (notifications, Commons): add a mute glyph that dismisses the card
+    isPrivate?: boolean;                         // a gift-wrapped private reply (NIP-59): badge it with a lock
 }
 
 /** The footer of a pending optimistic note: countdown + Undo (the whole note removes
@@ -350,6 +351,7 @@ export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts
         <div class="note-body">
           <div class="note-head">
             ${authorName(ev.pubkey, profiles)}
+            ${opts.isPrivate ? html`<span class="private-mark" title="Private reply - only you and the author can see it">${icon('lock')}<span class="sr-only">Private reply</span></span>` : null}
             ${p ? html`<span class="time">now</span>` : html`<a class="time time-thread" href="/t/${nevent}" aria-label="View thread" h-get h-prefetch="hover" h-scroll="top instant">${timeAgo(ev.created_at)}${icon('thread')}</a>`}
           </div>
           ${parent}

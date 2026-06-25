@@ -21,12 +21,16 @@ const now = () => Math.floor(Date.now() / 1000);
  * was really created - the true time lives in the kind-14 rumor inside. */
 export const fuzzedTime = (): number => Math.round(now() - Math.random() * TWO_DAYS);
 
-/** The decrypted chat message (a kind-14 rumor: unsigned, but id-bearing). */
+export const KIND_PRIVATE_REPLY = 1; // a NIP-59-wrapped kind:1 reply to a PUBLIC note (not a DM)
+
+/** A decrypted gift-wrapped rumor (unsigned, but id-bearing). kind 14 = DM (NIP-17); kind 1 = a
+ * private reply to a public note (same wrap machinery, inner kind differs); kind 7 = a private
+ * reaction (later). Callers branch on `kind`. */
 export interface Rumor {
     id: string;
     pubkey: string;     // the sender
     created_at: number; // the REAL send time (not fuzzed)
-    kind: number;       // 14
+    kind: number;       // 14 (DM) | 1 (private reply) | 7 (private reaction)
     tags: string[][];
     content: string;
 }
@@ -57,14 +61,24 @@ export function sealTemplate(sender: string, encryptedRumor: string): UnsignedEv
     return { kind: KIND_SEAL, pubkey: sender, created_at: fuzzedTime(), tags: [], content: encryptedRumor };
 }
 
-/** Validate an unwrapped rumor: it must actually come from the seal's signer (the
- * sender can't be spoofed). NIP-59's core integrity check. */
+/** Validate an unwrapped rumor: it must actually come from the seal's signer (the sender can't be
+ * spoofed) - NIP-59's core integrity check. Returns the rumor with its REAL kind (14/1/7); the
+ * caller branches (DM vs private reply vs reaction). Kind is NOT gated here so private replies aren't
+ * silently dropped as "not a DM". */
 export function rumorFromSeal(rumor: unknown, sealPubkey: string): Rumor | null {
     if (!rumor || typeof rumor !== 'object') return null;
     const r = rumor as Partial<Rumor>;
-    if (r.kind !== KIND_DM || typeof r.content !== 'string' || typeof r.created_at !== 'number') return null;
+    if (typeof r.kind !== 'number' || typeof r.content !== 'string' || typeof r.created_at !== 'number') return null;
     if (r.pubkey !== sealPubkey) return null; // sender spoofing guard
     return { id: String(r.id ?? ''), pubkey: r.pubkey, created_at: r.created_at, kind: r.kind, tags: Array.isArray(r.tags) ? r.tags : [], content: r.content };
+}
+
+/** Build the unsigned kind:1 reply RUMOR for a private reply to a public note: a normal NIP-10
+ * reply (e root/reply + p tags), gift-wrapped instead of published. `baseTags` is the public-reply
+ * tag set (built the same way a public reply is), so the recipient renders it as an ordinary reply. */
+export function buildPrivateReplyRumor(sender: string, baseTags: string[][], text: string): Rumor {
+    const base = { pubkey: sender, created_at: now(), kind: KIND_PRIVATE_REPLY, tags: baseTags, content: text };
+    return { id: getEventHash(base), ...base };
 }
 
 /** The recipients a rumor was addressed to (its `p` tags). */

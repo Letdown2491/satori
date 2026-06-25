@@ -12,7 +12,9 @@ import { ensureLikes } from '../likes.ts';
 import { ensureEngaged } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
 import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
-import { type Session } from '../session.ts';
+import { allPrivateReplies } from '../data/dms.ts';
+import { allPrivateRepliesNip07 } from '../data/dms-nip07.ts';
+import { signsOnClient, type Session } from '../session.ts';
 import { readReadState, advanceReadState } from '../read-state.ts';
 import { sendPage, sendFragment, redirect, type Ctx } from '../http.ts';
 
@@ -21,6 +23,15 @@ const PAGE = 30;
 /** Who acted: the sender for a zap, the event author otherwise (null = unknown). */
 function actorOf(n: Notif): string | null {
     return n.type === 'zap' ? parseZapReceipt(n.event).sender : n.event.pubkey;
+}
+
+/** Private (gift-wrapped) replies to your notes, from the local DM cache, as Notif rows within `win`.
+ * Not on relays, so they're merged client-side; the same time bounds keep pagination consistent. */
+function cachedPrivateReplyNotifs(s: Session & { me: string }, win: { since?: number; until?: number }): Notif[] {
+    const raw = signsOnClient(s) ? allPrivateRepliesNip07(s.me) : allPrivateReplies(s);
+    return raw
+        .filter((r) => (win.until === undefined || r.at < win.until) && (win.since === undefined || r.at > win.since))
+        .map((r) => ({ type: 'privateReply' as const, event: { id: r.id, pubkey: r.from, created_at: r.at, kind: 1, tags: r.tags, content: r.content, sig: '' } }));
 }
 
 /** Pubkeys to resolve (the actors). */
@@ -55,7 +66,10 @@ export async function getNotifications(ctx: Ctx): Promise<void> {
         else sendPage(ctx, html`<ul class="feed" id="feed">${frag}</ul>`, chromeFor(ctx, s, { active: 'notifications', title: 'Notifications' }));
     };
 
-    const items = await fetchNotifications(s.pool, s.me, s.myRelays, s.myPollIds, { until, limit: PAGE }, !!s.reactionNotifs);
+    const fetched = await fetchNotifications(s.pool, s.me, s.myRelays, s.myPollIds, { until, limit: PAGE }, !!s.reactionNotifs);
+    // Fold in private replies from the local DM cache (not on relays), re-sort, and re-slice to a page so
+    // the `oldest` cursor and pager stay consistent across the merged stream.
+    const items = [...fetched, ...cachedPrivateReplyNotifs(s, { until })].sort((a, b) => b.event.created_at - a.event.created_at).slice(0, PAGE);
     const visible = await prepareNotifs(s, items);
     // The pager cursor anchors on the OLDEST RAW item (not the muted-filtered `visible`), so
     // filtering never shortens the window and skips events. A full page → there may be more.
@@ -104,6 +118,8 @@ export async function getNotifUnread(ctx: Ctx): Promise<void> {
         ensureLists(s, ['mute']),
     ]);
     const muted = mutedPubkeys(s);
-    const hasUnread = items.some((n) => { const a = actorOf(n); return !a || !muted.has(a); });
+    const since = readReadState(ctx, s.me).notif;
+    const merged = [...items, ...cachedPrivateReplyNotifs(s, { since })];
+    const hasUnread = merged.some((n) => { const a = actorOf(n); return !a || !muted.has(a); });
     sendFragment(ctx, notifBell(hasUnread));
 }
