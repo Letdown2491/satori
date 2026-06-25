@@ -42,7 +42,6 @@ export function parseDraft(decrypted: string): UnsignedEvent | null {
 
 /** Read a wrap's identifier / wrapped-kind / deleted-state WITHOUT decrypting (cheap listing). */
 export const draftId = (ev: NostrEvent): string => ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
-export const draftKind = (ev: NostrEvent): number => Number(ev.tags.find((t) => t[0] === 'k')?.[1]) || 0;
 export const isDeletedDraft = (ev: NostrEvent): boolean => ev.content.trim() === '';
 
 /** Parse a kind:10013 draft-relay list into relay urls (`relay` tags), capped. */

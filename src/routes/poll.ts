@@ -16,7 +16,7 @@ import { readSignedEvent } from '../nip07.ts';
 import { decode } from 'nostr-tools/nip19';
 import type { Signer } from '../data/signer.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
-import { html, type SafeHtml } from '../html.ts';
+import { html } from '../html.ts';
 import { requireLogin, LAND_ON_FEED } from './common.ts';
 import { feedDocument } from './feed.ts';
 import { tryUndoWindow } from './undo-window.ts';

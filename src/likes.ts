@@ -10,11 +10,6 @@ export function isLiked(s: Session, noteId: string): boolean {
     return !!s.me && cachedLikeId(s.me, noteId) !== undefined;
 }
 
-/** Your reaction event id for a note (needed to unlike), or null. */
-export function reactionIdOf(s: Session, noteId: string): string | null {
-    return (s.me && cachedLikeId(s.me, noteId)) || null;
-}
-
 /** Ensure the engagement cache is syncing (background, idempotent). No per-note query. */
 export async function ensureLikes(s: Session & { me: string }, _noteIds: string[]): Promise<void> {
     ensureEngagementSynced(s);

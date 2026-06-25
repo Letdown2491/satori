@@ -220,11 +220,6 @@ export function notFound(ctx: Ctx, message = 'Not found'): void {
 
 // --- NIP-07 sign-and-resubmit (the nip07-hateoas wire contract) ------------
 
-/** True when the request advertises in-browser signing capability (window.nostr). */
-export function isNostrCapable(ctx: Ctx): boolean {
-    return ctx.req.headers['h-nostr'] === '1';
-}
-
 /** Capability tokens the client advertised in H-Nostr-Caps. Tolerant of comma OR whitespace
  * separators (HTTP token-lists vary; the plugin currently joins with commas), so the contract
  * never hinges on the delimiter. */

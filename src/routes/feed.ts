@@ -22,7 +22,7 @@ import { ensureLikes } from '../likes.ts';
 import { ensureEngaged, engageTarget } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
 import { ensureReplies, ensureArticleReplies, replierPubkeys } from '../replies.ts';
-import { sendPage, sendFragment, sendSignRequest, notFound, redirect, type Ctx } from '../http.ts';
+import { sendPage, sendFragment, sendSignRequest, redirect, type Ctx } from '../http.ts';
 import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';

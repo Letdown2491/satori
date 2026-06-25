@@ -1,7 +1,6 @@
 // Profile (kind:0) fetching + publishing. Caching lives in the app store.
 
 import type { Pool } from './pool.ts';
-import type { Signer } from './signer.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { emojiFromTags, type EmojiMap } from '../nostr/emoji30.ts';
 
@@ -69,12 +68,4 @@ export async function fetchProfileContent(pool: Pool, relays: string[], pubkey: 
         const c = JSON.parse(newest.content);
         return (c && typeof c === 'object') ? c as Record<string, unknown> : {};
     } catch { return {}; }
-}
-
-/** Publish an updated kind:0 profile (the full, merged content). */
-export async function publishProfile(signer: Signer, pool: Pool, pubkey: string, relays: string[], content: Record<string, unknown>): Promise<NostrEvent> {
-    const signed = await signer.signEvent({ kind: 0, created_at: Math.floor(Date.now() / 1000), pubkey, content: JSON.stringify(content), tags: [] });
-    const results = await pool.publish(relays, signed);
-    if (!results.some((r) => r.status === 'fulfilled')) throw new Error('no relay accepted the profile update');
-    return signed;
 }

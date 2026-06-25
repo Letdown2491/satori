@@ -6,7 +6,7 @@
 // -> local-wrap chain. See [[nip17-dms-plan]].
 
 import { decode } from 'nostr-tools/nip19';
-import { loadConversations, loadRequests, loadThread, sendDm, hasDmRelayList, hasUnprocessedWraps, cachedThread } from '../data/dms.ts';
+import { loadConversations, loadThread, sendDm, hasDmRelayList, hasUnprocessedWraps, cachedThread } from '../data/dms.ts';
 import {
     beginSync, applySeals, applyRumors, finalizeSync, beginSend, sealStep, wrapStep, hasUnprocessedWrapsNip07, cachedInboxNip07, cachedThreadNip07, legacyBatch, applyLegacy, chainView,
 } from '../data/dms-nip07.ts';
@@ -15,7 +15,7 @@ import { dmDotInner } from '../render/layout.ts';
 import { searchPeople } from '../data/search.ts';
 import { ensureDmBaseline, markDmRead } from '../data/dm-read.ts';
 import { readAppearance } from '../theme.ts';
-import { html, type SafeHtml } from '../html.ts';
+import { html } from '../html.ts';
 import { requireLogin, ensureProfiles, chromeFor } from './common.ts';
 import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, hasBatchCaps, hasCap, notFound, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';

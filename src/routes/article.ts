@@ -17,7 +17,7 @@ import { page } from '../render/layout.ts';
 import { html, type SafeHtml } from '../html.ts';
 import { readSignedEvent, readSignResult, verifySigned } from '../nip07.ts';
 import { requireLogin, ensureProfiles, chromeFor } from './common.ts';
-import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, notFound, type Ctx } from '../http.ts';
+import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
 import type { Signer } from '../data/signer.ts';

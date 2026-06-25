@@ -31,7 +31,6 @@ export interface FeedFilters {
 }
 
 const noFlags = (): SurfaceFlags => ({ hideReplies: false, hideQuotes: false, hideLinkOnly: false });
-const EMPTY: FeedFilters = { patterns: [], feed: noFlags(), profile: noFlags() };
 const MAX_PATTERNS = 50, MAX_LEN = 200;
 const MAX_MATCH_LEN = 8192; // cap note content fed to user regexes (ReDoS: bound the input)
 

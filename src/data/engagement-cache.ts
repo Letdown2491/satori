@@ -91,8 +91,6 @@ export function cachedZapped(me: string, key: string): boolean { return ue(me).z
 
 export function setLike(me: string, noteId: string, reactionId: string): void { ue(me).liked.set(noteId, reactionId); scheduleFlush(); }
 export function clearLike(me: string, noteId: string): void { ue(me).liked.delete(noteId); scheduleFlush(); }
-export function addReposted(me: string, key: string): void { ue(me).reposted.add(key); scheduleFlush(); }
-export function addReplied(me: string, key: string): void { ue(me).replied.add(key); scheduleFlush(); }
 export function addZapped(me: string, key: string): void { ue(me).zapped.add(key); scheduleFlush(); }
 
 // --- sync ------------------------------------------------------------------

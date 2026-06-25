@@ -4,7 +4,6 @@
 // Restore is REPLACE-ONLY: re-sign the backed-up event with a fresh created_at (the
 // ciphertext rides along verbatim, no decryption) so relays accept it over any newer copy.
 
-import type { Pool } from './pool.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
 import { INDEXER_RELAYS, normalizeRelayUrl } from '../nostr/nip65.ts';
@@ -21,7 +20,6 @@ export const BACKUP_LISTS: BackupListDef[] = [
     { kind: 10063, label: 'Media servers' },
 ];
 export const BACKUP_KINDS = BACKUP_LISTS.map((l) => l.kind);
-export const labelForKind = (kind: number): string => BACKUP_LISTS.find((l) => l.kind === kind)?.label ?? `kind ${kind}`;
 
 /** The shape of an exported backup file. */
 export interface BackupFile {

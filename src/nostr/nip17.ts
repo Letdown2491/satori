@@ -6,7 +6,7 @@
 // bunker, not in this process. The wrap layer uses a throwaway ephemeral key (local),
 // so it stays pure crypto. Structure mirrors nostr-tools' nip59 exactly.
 
-import { generateSecretKey, getPublicKey, getEventHash, finalizeEvent } from 'nostr-tools/pure';
+import { generateSecretKey, getEventHash, finalizeEvent } from 'nostr-tools/pure';
 import { getConversationKey, encrypt as nip44encrypt } from 'nostr-tools/nip44';
 import type { NostrEvent, UnsignedEvent } from './types.ts';
 

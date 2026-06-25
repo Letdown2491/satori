@@ -199,7 +199,7 @@ function aggregate(ids: Iterable<string>, me: string): DmInbox {
     return { conversations: all.filter((c) => c.bucket === 'inbox'), requests: all.filter((c) => c.bucket === 'request') };
 }
 
-function threadMessages(ids: Iterable<string>, peer: string, me: string): DmMessage[] {
+function threadMessages(ids: Iterable<string>, peer: string, _me: string): DmMessage[] {
     const out: DmMessage[] = [];
     for (const id of ids) {
         const e = mem.get(id);
@@ -291,7 +291,7 @@ export function legacyBatch(chainId: string): DecryptItem[] | null {
 }
 
 /** Apply the nip04 results: cache each decrypted kind-4 as a legacy message. Caller finalizes. */
-export function applyLegacy(s: Session, chainId: string, results: BatchResult[]): void {
+export function applyLegacy(_s: Session, chainId: string, results: BatchResult[]): void {
     const chain = takeSync(chainId);
     if (!chain) return;
     chain.legacy.forEach((l, i) => {

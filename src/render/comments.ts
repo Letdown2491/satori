@@ -75,7 +75,7 @@ function commentItems(comments: NostrEvent[], profiles: ProfileMap, ra: string, 
     return join(buildTree(comments).map((n) => renderNode(n, profiles, ra, rp)));
 }
 
-export function commentSection(s: Session, ra: string, rp: string, comments: NostrEvent[], profiles: ProfileMap): SafeHtml {
+export function commentSection(_s: Session, ra: string, rp: string, comments: NostrEvent[], profiles: ProfileMap): SafeHtml {
     return html`
       <section id="comment-section" class="comments">
         ${commentTitle(comments.length)}

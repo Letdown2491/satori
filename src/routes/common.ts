@@ -1,6 +1,6 @@
 // Shared route helpers: a login guard and a profile-cache primer.
 
-import { fetchProfiles, type Profile } from '../data/profiles.ts';
+import { fetchProfiles } from '../data/profiles.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { getCachedProfile, isProfileStale, putProfile, inflightProfile, registerInflight } from '../data/profile-cache.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
@@ -10,11 +10,6 @@ import { npub, displayName } from '../render/util.ts';
 import { mentionPubkeys } from '../render/content.ts';
 import { readAppearance } from '../theme.ts';
 import type { ChromeOpts, Me, ActiveView, FeedTab } from '../render/layout.ts';
-
-/** The npub for the logged-in user, for the layout chrome. */
-export function meNpub(s: Session | undefined): string | undefined {
-    return s?.me ? npub(s.me) : undefined;
-}
 
 /** Build the chrome (Sumi-e bar + theme) for a logged-in view. */
 /** The chrome's Me (avatar/name) from the session - shared by chromeFor and the

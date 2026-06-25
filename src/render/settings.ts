@@ -398,7 +398,7 @@ export function dmRelaySection(draft: string[], status?: string, statusErr = fal
 }
 
 /** The media-servers section (kind:10063 Blossom BUD-03). Same form-as-state. */
-export function mediaSection(draft: string[], a: Appearance, status?: string, statusErr = false): SafeHtml {
+export function mediaSection(draft: string[], _a: Appearance, status?: string, statusErr = false): SafeHtml {
     const rows = draft.length === 0
         ? html`<li class="relay-empty">No media servers set. Uploads use ${DEFAULT_BLOSSOM_SERVER.replace(/^https?:\/\//, '')} by default. Add your own below.</li>`
         : draft.map((url) => html`

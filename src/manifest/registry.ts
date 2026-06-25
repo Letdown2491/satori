@@ -60,10 +60,6 @@ export function handlerFor(kind: number): AnyHandler | undefined {
     return handlers.get(kind) ?? fallback ?? undefined;
 }
 
-export function hasHandler(kind: number): boolean {
-    return handlers.has(kind);
-}
-
 /** The inline-reference descriptor for a kind, or undefined (→ a generic external link). Uses the
  * REGISTERED handler only (not the fallback): a clean in-app reference link is opt-in per kind. */
 export function refFor(kind: number): RefDescriptor | undefined {
