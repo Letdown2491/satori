@@ -64,8 +64,11 @@ export function parseSearchQuery(q: string): SearchQuery {
     return out;
 }
 
-const IMG_RE = /\.(?:jpe?g|png|gif|webp|avif|bmp|svg)(?:\?\S*)?(?=\s|$)/i;
-const VID_RE = /\.(?:mp4|webm|mov|m4v|ogv|mkv)(?:\?\S*)?(?=\s|$)/i;
+// `(?![a-z0-9])` (not `(?=\s|$)`): the extension can be followed by punctuation - a URL wrapped in
+// parens "(…a.png)" or trailed by a comma "a.gif," is still an image - but NOT by another letter
+// (so "file.jpglkj" doesn't false-match). The optional ?query is consumed first.
+const IMG_RE = /\.(?:jpe?g|png|gif|webp|avif|bmp|svg)(?:\?\S*)?(?![a-z0-9])/i;
+const VID_RE = /\.(?:mp4|webm|mov|m4v|ogv|mkv)(?:\?\S*)?(?![a-z0-9])/i;
 const URL_RE = /https?:\/\/\S+/i;
 const hasImeta = (ev: NostrEvent, kind: 'image' | 'video'): boolean =>
     ev.tags.some((t) => t[0] === 'imeta' && t.slice(1).some((p) => p.startsWith(`m ${kind}`)));
