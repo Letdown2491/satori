@@ -5,6 +5,7 @@ import { decode, neventEncode, naddrEncode } from 'nostr-tools/nip19';
 import { fetchEvent, fetchReplies, fetchAuthorNotes } from '../data/feeds.ts';
 import { fetchPinnedItems, fetchAuthorArticles } from '../data/profile-extras.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { fetchRelayLists } from '../data/relays.ts';
 import { KIND_ARTICLE, articleAddress } from '../nostr/nip23.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { commentSection } from '../render/comments.ts';
@@ -12,7 +13,8 @@ import { replyParent } from '../nostr/nip10.ts';
 import { getFilters, compileFilters } from '../data/filters.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
-import { profileHeader, focusedNote, noteCard, noteList, articleReader, naddrFor, pagerSentinel, embedPreview, articleEmbedPreview, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
+import { profileHeader, noteCard, noteList, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
+import { renderEvent } from '../manifest/registry.ts';
 import { emptyItem } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
 import { type ProfileMap } from '../render/util.ts';
@@ -167,15 +169,16 @@ export async function getThread(ctx: Ctx): Promise<void> {
     const entity = ctx.params.id ?? '';
     let id: string;
     let relays: string[] = [];
+    let author: string | undefined; // from the nevent, so fetchEvent can use the author's outbox relays
     try {
         const d = decode(entity);
         if (d.type === 'note') id = d.data;
-        else if (d.type === 'nevent') { id = d.data.id; relays = d.data.relays ?? []; }
+        else if (d.type === 'nevent') { id = d.data.id; relays = d.data.relays ?? []; author = d.data.author; }
         else { notFound(ctx, 'Not a note'); return; }
     } catch { notFound(ctx, 'Bad note id'); return; }
 
     const [focused, replies] = await Promise.all([
-        fetchEvent(s.pool, id, relays),
+        fetchEvent(s.pool, id, relays, author),
         fetchReplies(s.pool, id, relays).catch(() => [] as NostrEvent[]),
     ]);
 
@@ -191,7 +194,7 @@ export async function getThread(ctx: Ctx): Promise<void> {
     // `inThread` (this thread's nevent) lets every reply button append back here.
     // The #thread <ul> is where an optimistic reply is appended (helmjs `append`).
     const tree = renderReplyTree(buildReplyTree(replies.filter((r) => !muted.has(r.pubkey)), id), 0, s.profiles, s, entity);
-    const content = html`<ul class="feed" id="thread">${focusedNote(focused, s.profiles, s, entity)}${tree}</ul>`;
+    const content = html`<ul class="feed" id="thread">${renderEvent(focused, 'focused', { profiles: s.profiles, s, inThread: entity })}${tree}</ul>`;
     sendPage(ctx, content, chromeFor(ctx, s, { title: 'Thread' }));
 }
 
@@ -208,7 +211,8 @@ export async function getArticle(ctx: Ctx): Promise<void> {
         ({ kind, pubkey, identifier, relays } = { ...d.data, relays: d.data.relays ?? [] });
     } catch { notFound(ctx, 'Bad naddr'); return; }
 
-    const queryRelays = [...new Set([...relays, ...INDEXER_RELAYS, ...(s.myRelays?.write ?? [])])];
+    const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
+    const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the article author's write relays first
     const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
 
     if (!ev || ev.kind !== KIND_ARTICLE) {
@@ -231,7 +235,7 @@ export async function getArticle(ctx: Ctx): Promise<void> {
     // nip07 cold-decrypt of private lists (bookmark/mute) so the bookmark heart reflects saved
     // state - the article page was missing the primer that the feed/profile already have.
     const primer = pendingPrivateKinds(s).length ? listPrimer({ ret: `/a/${entity}` }) : html``;
-    sendPage(ctx, html`${articleReader(ev, s.profiles, s)}${commentSection(s, ra, ev.pubkey, comments, s.profiles)}${primer}`,
+    sendPage(ctx, html`${renderEvent(ev, 'reader', { profiles: s.profiles, s })}${commentSection(s, ra, ev.pubkey, comments, s.profiles)}${primer}`,
         chromeFor(ctx, s, { title: 'Article', contentH1: true })); // article-title is the page <h1>
 }
 
@@ -255,33 +259,35 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     // naddr → an article embed.
     if (decoded.type === 'naddr') {
         const { kind, pubkey, identifier, relays } = { ...decoded.data, relays: decoded.data.relays ?? [] };
-        const queryRelays = [...new Set([...relays, ...INDEXER_RELAYS, ...(s.myRelays?.write ?? [])])];
+        const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
+        const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the article author's write relays first
         const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
         if (!ev || ev.kind !== KIND_ARTICLE) { sendFragment(ctx, fb()); return; }
         await ensureProfiles(s, notePubkeys([ev]));
-        sendFragment(ctx, articleEmbedPreview(ev, entity, s.profiles));
+        sendFragment(ctx, renderEvent(ev, 'embed', { profiles: s.profiles, bech: entity, naddr: entity }));
         return;
     }
 
     // note / nevent → a note embed.
     let id: string;
     let relays: string[] = [];
+    let author: string | undefined;
     if (decoded.type === 'note') id = decoded.data;
-    else if (decoded.type === 'nevent') { id = decoded.data.id; relays = decoded.data.relays ?? []; }
+    else if (decoded.type === 'nevent') { id = decoded.data.id; relays = decoded.data.relays ?? []; author = decoded.data.author; }
     else { sendFragment(ctx, fb()); return; }
-    const ev = await fetchEvent(s.pool, id, relays).catch(() => null);
+    const ev = await fetchEvent(s.pool, id, relays, author).catch(() => null);
     if (!ev) { sendFragment(ctx, fb()); return; }
     // Hydrate the author AND any @mentioned pubkeys in the embed's content, so
     // in-content mentions resolve to @names instead of falling back to @npub.
     await ensureProfiles(s, notePubkeys([ev]));
-    // A long-form article can be quoted by event-id (nevent), not just naddr. Render it as
-    // the clean article card (title + cover + summary), NOT a raw-markdown note body. Link via
-    // a freshly-encoded naddr (its addressable form) so the card opens the article reader.
+    // A long-form article can be quoted by event-id (nevent), not just naddr. The article handler
+    // renders the clean article card (title + cover + summary), NOT a raw-markdown note body, linking
+    // via a freshly-encoded naddr (its addressable form). Any other kind falls through to the note
+    // embed (the registry fallback) - exactly the old article-vs-everything-else branch, now dispatched.
+    let naddr: string | undefined;
     if (ev.kind === KIND_ARTICLE) {
         const identifier = ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
-        const naddr = naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier, relays });
-        sendFragment(ctx, articleEmbedPreview(ev, naddr, s.profiles));
-        return;
+        naddr = naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier, relays });
     }
-    sendFragment(ctx, embedPreview(ev, entity, s.profiles, as === 'quote' ? '↗ quoted note' : '↩ in reply to'));
+    sendFragment(ctx, renderEvent(ev, 'embed', { profiles: s.profiles, bech: entity, naddr, label: as === 'quote' ? '↗ quoted note' : '↩ in reply to' }));
 }

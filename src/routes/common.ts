@@ -1,6 +1,7 @@
 // Shared route helpers: a login guard and a profile-cache primer.
 
 import { fetchProfiles, type Profile } from '../data/profiles.ts';
+import { fetchRelayLists } from '../data/relays.ts';
 import { getCachedProfile, isProfileStale, putProfile, inflightProfile, registerInflight } from '../data/profile-cache.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { isLoggedIn, type Session } from '../session.ts';
@@ -76,7 +77,14 @@ export async function ensureProfiles(s: Session, pubkeys: Iterable<string>): Pro
         if (cached) { s.profiles.set(pk, cached); if (isProfileStale(pk)) stale.push(pk); }
         else missing.push(pk);
     }
-    const relays = [...new Set([...INDEXER_RELAYS, ...(s.myRelays?.read ?? [])])];
+    // Outbox: a profile (kind:0) lives on its OWNER's write relays, so resolve those for the pubkeys we're
+    // about to fetch and prefer them (indexers + your inbox as fallback). The relay-list cache makes this
+    // free for anyone already routed (your follows); strangers cost one batched kind:10002 lookup.
+    const relaysFor = async (pks: string[]): Promise<string[]> => {
+        const lists = pks.length ? await fetchRelayLists(s.pool, INDEXER_RELAYS, pks).catch(() => null) : null;
+        const writes = lists ? [...new Set(pks.flatMap((pk) => lists.get(pk)?.write ?? []))] : [];
+        return [...new Set([...writes, ...INDEXER_RELAYS, ...(s.myRelays?.read ?? [])])];
+    };
     if (missing.length) {
         // Coalesce against concurrent renders: pubkeys already being fetched -> await that
         // shared promise; only the rest hit relays now (still one batched query), registered
@@ -84,7 +92,8 @@ export async function ensureProfiles(s: Session, pubkeys: Iterable<string>): Pro
         const already = missing.filter((pk) => inflightProfile(pk));
         const fresh = missing.filter((pk) => !inflightProfile(pk));
         if (fresh.length) {
-            const p = fetchProfiles(s.pool, relays, fresh)
+            const p = relaysFor(fresh)
+                .then((relays) => fetchProfiles(s.pool, relays, fresh))
                 .then((m) => { for (const [pk, prof] of m) putProfile(pk, prof); })
                 .catch(() => { /* relays failed; leave as npub */ });
             registerInflight(fresh, p);
@@ -96,7 +105,8 @@ export async function ensureProfiles(s: Session, pubkeys: Iterable<string>): Pro
     if (stale.length) {
         // Fire-and-forget refresh; update both the shared cache and this session so a
         // later render in the same session also sees the fresh data.
-        void fetchProfiles(s.pool, relays, stale)
+        void relaysFor(stale)
+            .then((relays) => fetchProfiles(s.pool, relays, stale))
             .then((m) => { for (const [pk, prof] of m) { putProfile(pk, prof); s.profiles.set(pk, prof); } })
             .catch(() => { /* keep serving the stale copy */ });
     }

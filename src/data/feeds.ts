@@ -103,7 +103,18 @@ export async function fetchTrendingPage(pool: Pool): Promise<NostrEvent[]> {
 }
 
 /** Fetch a single event by id (for embedded reply parents / quoted notes). */
-export async function fetchEvent(pool: Pool, id: string, relayHints: string[] = []): Promise<NostrEvent | null> {
+export async function fetchEvent(pool: Pool, id: string, relayHints: string[] = [], author?: string): Promise<NostrEvent | null> {
+    // Outbox model (NIP-65): the author's OWN write relays are the canonical home of their events, so
+    // query those (+ any nevent relay hints) FIRST - the big indexers are a best-effort aggregator that
+    // can miss. The relay list is cached per pubkey, so for a followed author this adds no round-trip.
+    if (author) {
+        const writes = (await fetchRelayLists(pool, INDEXER_RELAYS, [author]).catch(() => null))?.get(author)?.write ?? [];
+        const primary = [...new Set([...relayHints, ...writes])].filter(Boolean);
+        if (primary.length) {
+            const ev = await pool.get(primary, { ids: [id] }).catch(() => null);
+            if (ev) return ev;
+        }
+    }
     const relays = [...new Set([...relayHints, ...INDEXER_RELAYS])].filter(Boolean);
     return pool.get(relays, { ids: [id] }).catch(() => null);
 }

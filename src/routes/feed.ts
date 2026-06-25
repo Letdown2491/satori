@@ -26,6 +26,7 @@ import { sendPage, sendFragment, sendSignRequest, notFound, redirect, type Ctx }
 import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
+import { FEED_KINDS } from '../manifest/feed-config.ts';
 import type { FeedTab } from '../render/layout.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
@@ -34,8 +35,7 @@ const LONGFORM_PAGE = 20;
 // The new-notes indicators (both the off-feed dot and the on-feed mark) stay quiet
 // until the user's newNotesThreshold (readAppearance) new notes have gathered - a
 // calm nudge, not a live counter.
-const NOTE_KINDS = [1, 1068];
-const LONGFORM_KINDS = [30023];
+// Feed fetch-kinds now live in the local manifest's IA config (manifest/feed-config.ts).
 
 const TABS: FeedTab[] = ['following', 'followers', 'commons', 'longform'];
 
@@ -79,7 +79,7 @@ function privKindParam(ctx: Ctx): number | null {
 const PATHS: Record<FeedTab, string> = { following: '/', followers: '/followers', commons: '/commons', longform: '/longform' };
 const paginates = (tab: FeedTab) => tab !== 'commons';
 const pageSize = (tab: FeedTab) => (tab === 'longform' ? LONGFORM_PAGE : PAGE);
-const kindsFor = (tab: FeedTab) => (tab === 'longform' ? LONGFORM_KINDS : NOTE_KINDS);
+const kindsFor = (tab: FeedTab) => (tab === 'longform' ? FEED_KINDS.longform : FEED_KINDS.note);
 
 /** The outbox route for a tab (cached on the session). Beyond has no route. */
 async function routeFor(s: Session & { me: string }, tab: FeedTab): Promise<Map<string, Set<string>>> {

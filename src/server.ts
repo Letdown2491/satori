@@ -8,6 +8,7 @@ import { dirname, join as pathJoin } from 'node:path';
 import { parseCookies, notFound, setPageRenderer, type Ctx } from './http.ts';
 import { page } from './render/layout.ts';
 import { installTorRouting } from './data/ws-tor.ts';
+import { registerSatoriKinds } from './manifest/satori.ts';
 import { Pool } from './data/pool.ts';
 import { resumeHolds } from './undo.ts';
 import { startScheduledSweep } from './data/scheduled.ts';
@@ -40,6 +41,9 @@ import { getPoll, getPollOption, postPoll, postPollPublish, postPollVote, postPo
 // Inject the app's full-page shell into the HTTP kernel (the one place engine and app fuse).
 // The kernel's sendPage() calls this; with it the kernel no longer imports the app's layout.
 setPageRenderer(page);
+// Register Satori's kinds with the manifest registry (the "local manifest"). Render/route layers
+// dispatch event rendering through the registry (renderEvent) instead of branching on ev.kind.
+registerSatoriKinds();
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = pathJoin(ROOT, '..', 'public');

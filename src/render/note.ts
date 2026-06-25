@@ -15,8 +15,7 @@ import { icon, enso } from './svg.ts';
 import { replyParent } from '../nostr/nip10.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
 import { parseArticle, readingMinutes, KIND_ARTICLE } from '../nostr/nip23.ts';
-import { KIND_POLL } from '../nostr/nip88.ts';
-import { pollBox } from './poll.ts';
+import { renderEvent } from '../manifest/registry.ts';
 import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
 import { isZapped } from '../zaps.ts';
 import { replyFaces } from '../replies.ts';
@@ -229,7 +228,12 @@ function replyFacesEl(key: string, href: string, s?: Session): SafeHtml {
     return html`<a class="reply-faces" href="${href}" h-get h-prefetch="hover" h-scroll="top instant" title="${label}" aria-label="${label}">${f.repliers.map((pk) => avatar(pk, pic(pk, s.profiles), 'xs'))}${f.more ? html`<span class="reply-faces-more">+</span>` : null}</a>`;
 }
 
-function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThread?: string, faces = true, mute = false): SafeHtml {
+/** A note's action vocabulary, in render order. Declared DATA (also exposed on the kind handler's
+ * `actions`), so the row is assembled from this list - the seam where a manifest's declared actions
+ * slot in. Each id maps to its button below; the list decides which appear and in what order. */
+export const NOTE_ACTIONS = ['reply', 'quote', 'like', 'zap', 'bookmark', 'mute', 'pin'] as const;
+
+export function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThread?: string, faces = true, mute = false): SafeHtml {
     const mine = !!s && ev.pubkey === s.me;
     // In a thread, the reply carries the thread context so it appends back here
     // (optimistic reply) instead of landing on the feed.
@@ -237,16 +241,21 @@ function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThread?: str
     const replied = !!s && hasReplied(s, engageTarget(ev));   // fill the glyph if you've replied
     const reposted = !!s && hasReposted(s, engageTarget(ev));  // …or reposted (kind:6 / quote)
     const { cls: convo, label } = replyPresence(ev.id, replied, faces); // dot + tooltip ("You replied" / "People are discussing" / …)
+    // Each declared action → its button, or null when it doesn't apply here. Same markup + conditions
+    // as before, just keyed; NOTE_ACTIONS drives the set + order. (.note-acts is flex, so the inline
+    // whitespace the old template carried between buttons is irrelevant - identical layout.)
+    const acts: Record<string, SafeHtml | null> = {
+        reply: html`<a class="note-act reply ${replied ? 'engaged' : ''}${convo}" href="${replyHref}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`,
+        quote: html`<a class="note-act quote-act ${reposted ? 'engaged' : ''}" href="/compose?quote=${nevent}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="Quote" aria-label="Quote">${icon('quote', reposted)}</a>`,
+        like: !mine && s?.reactions ? likeButton(s, ev.id, ev.pubkey) : null,
+        zap: !mine ? zapAct(ev, s) : null,
+        bookmark: s ? bookmarkButton(s, ev.id) : null,
+        mute: mute && s && !mine ? muteAct(s, ev.pubkey, ev.id) : null,
+        pin: mine && s ? pinButton(s, ev.id) : null,
+    };
     return html`
       <div class="note-actions">
-        <div class="note-acts">
-          <a class="note-act reply ${replied ? 'engaged' : ''}${convo}" href="${replyHref}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>
-          <a class="note-act quote-act ${reposted ? 'engaged' : ''}" href="/compose?quote=${nevent}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="Quote" aria-label="Quote">${icon('quote', reposted)}</a>
-          ${!mine ? html`${s?.reactions ? likeButton(s, ev.id, ev.pubkey) : null}${zapAct(ev, s)}` : null}
-          ${s ? bookmarkButton(s, ev.id) : null}
-          ${mute && s && !mine ? muteAct(s, ev.pubkey, ev.id) : null}
-          ${mine && s ? pinButton(s, ev.id) : null}
-        </div>
+        <div class="note-acts">${NOTE_ACTIONS.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
         ${faces ? replyFacesEl(ev.id, `/t/${nevent}`, s) : null}
       </div>`;
 }
@@ -268,6 +277,9 @@ export function articleZapButton(naddr: string, recipient: string, active: boole
 /** The article action row (Satori's articleActions): reply · quote · [like · zap]
  * · bookmark · [pin], keyed by the article's naddr (like/zap/bookmark/pin → `a`-tag).
  * `onPage` (the full reader) jumps Reply to the comment box; a feed row opens the article. */
+/** An article's action vocabulary, in render order (no mute - articles aren't muted from the row). */
+export const ARTICLE_ACTIONS = ['reply', 'quote', 'like', 'zap', 'bookmark', 'pin'] as const;
+
 function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPage = false): SafeHtml {
     const mine = !!s && ev.pubkey === s.me;
     const replied = !!s && hasReplied(s, engageTarget(ev));
@@ -275,18 +287,19 @@ function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPage = fal
     // Reply = a NIP-22 comment. On the article page the comment box is right here, so jump to it;
     // in a feed row there's no box, so open the article (where the box lives).
     const { cls: convo, label } = replyPresence(naddr, replied, !onPage, 'comment'); // articles → "comment" wording; no dot on the reader
-    const reply = onPage
-        ? html`<a class="note-act reply ${replied ? 'engaged' : ''}" href="#comment-form" h-boost="false" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`
-        : html`<a class="note-act reply ${replied ? 'engaged' : ''}${convo}" href="/a/${naddr}" h-scroll="top instant" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`;
+    const acts: Record<string, SafeHtml | null> = {
+        reply: onPage
+            ? html`<a class="note-act reply ${replied ? 'engaged' : ''}" href="#comment-form" h-boost="false" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`
+            : html`<a class="note-act reply ${replied ? 'engaged' : ''}${convo}" href="/a/${naddr}" h-scroll="top instant" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`,
+        quote: html`<a class="note-act quote-act ${reposted ? 'engaged' : ''}" href="/compose?quote=${naddr}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="Quote" aria-label="Quote">${icon('quote', reposted)}</a>`,
+        like: !mine && s?.reactions ? likeButton(s, naddr, ev.pubkey) : null,
+        zap: !mine ? articleZapAct(ev, naddr, s) : null,
+        bookmark: s && naddr ? bookmarkButton(s, naddr) : null,
+        pin: mine && s && naddr ? pinButton(s, naddr) : null,
+    };
     return html`
       <div class="note-actions article-actions">
-        <div class="note-acts">
-          ${reply}
-          <a class="note-act quote-act ${reposted ? 'engaged' : ''}" href="/compose?quote=${naddr}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="Quote" aria-label="Quote">${icon('quote', reposted)}</a>
-          ${!mine ? html`${s?.reactions ? likeButton(s, naddr, ev.pubkey) : null}${articleZapAct(ev, naddr, s)}` : null}
-          ${s && naddr ? bookmarkButton(s, naddr) : null}
-          ${mine && s && naddr ? pinButton(s, naddr) : null}
-        </div>
+        <div class="note-acts">${ARTICLE_ACTIONS.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
         ${!onPage ? replyFacesEl(naddr, `/a/${naddr}`, s) : null}
       </div>`;
 }
@@ -307,11 +320,17 @@ function pendingFooter(token: string, seconds: number): SafeHtml {
     return html`<div class="post-pending"><span>Posting in ${String(seconds)}s…</span> <button type="button" class="toast-action" h-post="/note/undo?token=${t}" h-target="#opt-${raw(token)}" h-swap="outer">Undo</button></div>`;
 }
 
-/** One note as a feed/thread <li>, in Satori's flex `.note` layout. `depth`
- * indents nested replies (with the thread line), matching the thread view. A
- * `pending` note self-polls /note/tick (countdown → confirm in place / undo). */
+/** Timeline entry point for ANY event: dispatch to the kind's handler via the manifest registry
+ * (article → articleRow, every other kind → noteRow). Byte-identical to the old `if kind===ARTICLE`
+ * branch, now manifest-driven so adding a kind is a registration, not an edit here. */
 export function noteCard(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts: NoteOpts = {}): SafeHtml {
-    if (ev.kind === KIND_ARTICLE) return articleRow(ev, profiles, s);
+    return renderEvent(ev, 'timeline', { profiles, s, opts });
+}
+
+/** One note as a feed/thread <li>, in Satori's flex `.note` layout. `depth` indents nested replies
+ * (with the thread line), matching the thread view. A `pending` note self-polls /note/tick (countdown
+ * → confirm in place / undo). The note/poll timeline render - the registry's fallback handler. */
+export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts: NoteOpts = {}, extra?: SafeHtml): SafeHtml {
     const nevent = neventFor(ev);
     const im = parseImeta(ev); // NIP-92 alt + dim for the note's media
     const p = opts.pending;
@@ -331,7 +350,7 @@ export function noteCard(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opt
           </div>
           ${parent}
           ${noteContent(ev, profiles, true, s?.media, im)}
-          ${!p && ev.kind === KIND_POLL ? pollBox(ev) : null}
+          ${!p && extra ? extra : null}
           ${p ? pendingFooter(p.token, p.seconds) : noteActions(ev, nevent, s, opts.inThread, true, opts.mute)}
         </div>
       </li>${p ? html`` : mediaLightboxes(ev.content, s?.media?.autoLoad ?? true, im)}`;
@@ -372,7 +391,7 @@ export function naddrFor(ev: NostrEvent): string {
 }
 
 /** An article as a feed row (Satori's ArticleRow): author head + card + actions. */
-function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+export function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
     const a = parseArticle(ev);
     return html`
       <li class="note article-row">
@@ -390,7 +409,7 @@ function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtm
 
 /** The focused note in a thread - an <li class="note focused"> in the feed list
  * (matching Satori), full content + the action row. */
-export function focusedNote(ev: NostrEvent, profiles?: ProfileMap, s?: Session, inThread?: string): SafeHtml {
+export function focusedNote(ev: NostrEvent, profiles?: ProfileMap, s?: Session, inThread?: string, extra?: SafeHtml): SafeHtml {
     const parent = replyContext(ev);
     const im = parseImeta(ev);
     return html`
@@ -403,7 +422,7 @@ export function focusedNote(ev: NostrEvent, profiles?: ProfileMap, s?: Session, 
           </div>
           ${parent}
           ${noteContent(ev, profiles, false, s?.media, im)}
-          ${ev.kind === KIND_POLL ? pollBox(ev) : null}
+          ${extra ?? null}
           ${noteActions(ev, neventFor(ev), s, inThread, false)}
         </div>
       </li>${mediaLightboxes(ev.content, s?.media?.autoLoad ?? true, im)}`;
