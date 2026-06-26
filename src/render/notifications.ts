@@ -27,7 +27,7 @@ export function notifCaughtUp(hadNew: boolean): SafeHtml {
  * - no gap. A real <a href> so it degrades to a full older-history page with JS off. */
 export function seeOlder(until: number): SafeHtml {
     const url = `/notifications?seen=1&until=${String(until)}`;
-    return html`<li class="notif-earlier" id="see-older"><a class="see-earlier" href="${url}" h-get h-target="#see-older" h-swap="outer" h-push-url="false">See older notifications</a></li>`;
+    return html`<li class="notif-earlier" id="see-older"><a class="see-earlier quiet" href="${url}" h-get h-target="#see-older" h-swap="outer" h-push-url="false">See older notifications</a></li>`;
 }
 
 function profileLink(pubkey: string, profiles: ProfileMap): SafeHtml {

@@ -1290,8 +1290,9 @@
            opt-in past the line (design for exit, not endless scroll). */
         .caught-up { padding: 48px 20px; border-top: 1px solid var(--border); }
         /* The caught-up affirmation wears the vermilion seal (with the ensō) - one state, one accent -
-           so it reads as the headline above the deliberately-quiet "see earlier" door. */
-        .caught-up .empty-sub { color: var(--accent); }
+           so it reads as the headline above the deliberately-quiet "see older/earlier" door. Applies to
+           BOTH clearings (feed + notifications) so the catch-up moment is identical across the app. */
+        .caught-up .empty-sub, .notif-clearing .empty-sub { color: var(--accent); }
         .see-earlier {
             background: none; border: none; padding: 4px 8px; cursor: pointer;
             color: var(--accent); font-family: var(--serif); font-style: italic;
@@ -1299,9 +1300,11 @@
         }
         .see-earlier:hover:not(:disabled) { text-decoration: underline; }
         /* Caught up: the door to the older backlog is deliberately QUIET (muted, smaller, upright) - present
-           if you want it, but not an accent invitation pulling you back in the moment you're told to rest. */
-        .see-earlier.feed-older { color: var(--muted); font-style: normal; font-size: 13px; }
-        .see-earlier.feed-older:hover { color: var(--text); }
+           if you want it, but not an accent invitation pulling you back in the moment you're told to rest.
+           Shared by the feed AND notifications "see older" doors (the accent .see-earlier is the inviting
+           "continue reading", reserved for when there's genuinely more NEW). */
+        .see-earlier.quiet { color: var(--muted); font-style: normal; font-size: 13px; }
+        .see-earlier.quiet:hover { color: var(--text); }
         /* More new still below: the inviting accent continue (the .see-earlier default) reads as "come read". */
         .caught-up .feed-continue { margin-top: 4px; }
         /* In-flight: swap "look back" → "Loading…" while the older page is fetched. */

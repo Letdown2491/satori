@@ -555,7 +555,7 @@ export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: 
     // rest). More new still waiting → the inviting accent "Continue reading". The affordance matches the message.
     const cont = opts.more === undefined ? null
         : opts.caughtUp
-            ? html`<a class="see-earlier feed-older" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">See earlier posts</a>`
+            ? html`<a class="see-earlier quiet" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">See earlier posts</a>`
             : html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`;
     return html`<li class="empty caught-up" id="feed-clearing"${mark}>${enso(40, true)}<span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${cont}</li>`;
 }
