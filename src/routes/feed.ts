@@ -45,7 +45,9 @@ const TABS: FeedTab[] = ['following', 'followers', 'commons', 'longform'];
  * (Bunker decrypts server-side in ensureLists, so it's never pending.) */
 export function pendingPrivateKinds(s: Session & { me: string }): number[] {
     if (!signsOnClient(s)) return []; // bunker decrypts server-side in ensureLists - never pending
-    return [...PRIVATE_KINDS].filter((k) => !!s.lists.get(k)?.content && !s.privateTags.has(k));
+    // Exclude kinds we've already dispatched a decrypt for this session: if the extension never answers
+    // (no nip44 auto-approve), the list stays unattempted forever - this stops it re-firing every refresh.
+    return [...PRIVATE_KINDS].filter((k) => !!s.lists.get(k)?.content && !s.privateTags.has(k) && !s.primerTried.has(k));
 }
 
 /** A one-shot, invisible primer that decrypts the pending private lists (nip07) on a
@@ -330,6 +332,7 @@ export async function getListPrime(ctx: Ctx): Promise<void> {
     const [kind] = pendingPrivateKinds(s);
     const content = kind != null ? s.lists.get(kind)?.content : undefined;
     if (kind == null || !content) { ctx.res.writeHead(204); ctx.res.end(); return; }
+    s.primerTried.add(kind); // mark dispatched: a decrypt that never returns won't re-fire on the next load
     const carry = retParam(ctx) ? `ret=${encodeURIComponent(retParam(ctx))}` : `tab=${tabParam(ctx)}`;
     sendSignRequest(ctx, { pubkey: s.me, ciphertext: content }, `/notes/list-primed?${carry}&kind=${kind}`, 'nip44_decrypt');
 }
@@ -353,6 +356,7 @@ export async function postListPrimed(ctx: Ctx): Promise<void> {
     const [next] = pendingPrivateKinds(s);
     const nextContent = next != null ? s.lists.get(next)?.content : undefined;
     if (next != null && nextContent) {
+        s.primerTried.add(next); // same dispatched-once guard as getListPrime
         sendSignRequest(ctx, { pubkey: s.me, ciphertext: nextContent }, `/notes/list-primed?${carry}&kind=${next}`, 'nip44_decrypt');
         return;
     }

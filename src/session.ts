@@ -45,6 +45,11 @@ export interface Session {
     // a write must NOT clobber the encrypted content). nip07 leaves it unattempted
     // (the key isn't on this server) unless a decrypt round-trip primes it.
     privateTags: Map<number, string[][] | null>;
+    // nip07 only: list kinds whose private-decrypt round-trip we've already DISPATCHED this session, so
+    // a decrypt that never returns (extension doesn't auto-approve nip44, or times out) is not re-fired
+    // on every page load (it would otherwise stay "pending" forever and re-pop the "waiting for signer"
+    // toast each refresh). Reset on a fresh session (sign out/in retries once).
+    primerTried: Set<number>;
     // NIP-25 like + reply/repost AND NIP-57 zapped state now ALL live in the persistent
     // engagement cache (data/engagement-cache.ts), synced once and read as set lookups - not
     // per-session. (Zaps used to be a per-session Map here; folded in for one source of truth.)
@@ -89,6 +94,7 @@ function makeSession(mode: SignMode, pool: Pool, signer: BunkerSigner | null, id
         profiles: new Map(),
         lists: new Map(),
         privateTags: new Map(),
+        primerTried: new Set(),
         myPollIds: null,
     };
     sessions.set(s.id, s);
