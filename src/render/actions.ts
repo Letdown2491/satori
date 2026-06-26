@@ -8,7 +8,11 @@ import { icon, type IconName } from './svg.ts';
 import { isOn, type ActionName } from '../actions.ts';
 import { cachedReaction } from '../data/engagement-cache.ts';
 import { REACTIONS } from '../data/reactions.ts';
+import { userEmojiCached } from '../data/emoji-sets.ts';
+import { imgSrc } from './content.ts';
 import type { Session } from '../session.ts';
+
+const CUSTOM_CAP = 15; // how many of the user's custom emoji the picker shows - a calm palette, not a keyboard
 
 /** A stable element id for an action+target, used as the swap target. */
 function actId(action: ActionName, target: string): string {
@@ -48,8 +52,10 @@ export function muteAct(s: Session, pubkey: string, eventId: string): SafeHtml {
       </form>`;
 }
 
-/** A reaction's glyph: a plain heart for '+'/'' (the default like), else the chosen emoji character. */
-function reactionGlyph(emoji: string): SafeHtml {
+/** A reaction's glyph: a custom NIP-30 image when there's a url, a plain heart for '+'/'' (the default
+ * like), else the chosen unicode emoji character. */
+function reactionGlyph(emoji: string, url?: string): SafeHtml {
+    if (url) return html`<img class="emoji" src="${imgSrc(url)}" alt=":${emoji}:" loading="lazy">`;
     return emoji === '+' || emoji === '' ? icon('like', true) : html`<span class="react-emoji">${emoji}</span>`;
 }
 
@@ -67,15 +73,17 @@ export function likeButton(s: Session, noteId: string, author: string): SafeHtml
         <input type="hidden" name="author" value="${author}">`;
     if (mine) {
         return html`${head}
-        <button type="submit" name="emoji" value="${mine.emoji}" class="note-act like active" title="Remove reaction" aria-label="Remove reaction" aria-pressed="true">${reactionGlyph(mine.emoji)}</button>
+        <button type="submit" name="emoji" value="${mine.emoji}" class="note-act like active" title="Remove reaction" aria-label="Remove reaction" aria-pressed="true">${reactionGlyph(mine.emoji, mine.url)}</button>
       </form>`;
     }
     // ONE control: a smiley that reveals the whole palette (heart included, shown as ❤️). Zero-JS via the
-    // hidden-checkbox toggle. Picking any emoji reacts; there's no separate one-click heart button.
+    // hidden-checkbox toggle. Picking any emoji reacts; there's no separate one-click heart button. The
+    // user's own NIP-30 custom emoji (capped) follow the curated unicode set as small images.
+    const custom = s.me ? Object.entries(userEmojiCached(s.me)).slice(0, CUSTOM_CAP) : [];
     return html`${head}
         <input type="checkbox" id="pal-${noteId}" class="react-toggle">
         <label class="note-act react-more" for="pal-${noteId}" title="React" aria-label="React">${icon('smile')}</label>
-        <span class="react-palette">${REACTIONS.map((e) => { const g = e === '+' ? '❤️' : e; return html`<button type="submit" name="emoji" value="${e}" class="react-opt" title="React ${g}" aria-label="React ${g}">${g}</button>`; })}</span>
+        <span class="react-palette">${REACTIONS.map((e) => { const g = e === '+' ? '❤️' : e; return html`<button type="submit" name="emoji" value="${e}" class="react-opt" title="React ${g}" aria-label="React ${g}">${g}</button>`; })}${custom.map(([code, url]) => html`<button type="submit" name="emoji" value="${code}" class="react-opt" title="React :${code}:" aria-label="React ${code}"><img class="emoji" src="${imgSrc(url)}" alt=":${code}:" loading="lazy"></button>`)}</span>
       </form>`;
 }
 

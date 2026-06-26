@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path';
 import { naddrEncode } from 'nostr-tools/nip19';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
+import { emojiFromTags } from '../nostr/emoji30.ts';
 import { parseZapReceipt } from './notifications.ts';
 import type { Pool } from './pool.ts';
 import type { RelayList, NostrEvent } from '../nostr/types.ts';
@@ -31,7 +32,7 @@ function addrToNaddr(a: string): string | null {
 // capped: they back zero-round-trip like/repost/reply button state, so evicting old ids would
 // make older notes render wrong. Bounded in practice by your activity, not by external input.
 interface UE {
-    liked: Map<string, { id: string; emoji: string }>; // noteId → your reaction: the kind:7 id (to unlike) + the emoji you chose ('+' = a plain heart)
+    liked: Map<string, { id: string; emoji: string; url?: string }>; // noteId → your reaction: the kind:7 id (to unlike) + the emoji ('+' = heart; for a custom NIP-30 emoji, the shortcode + its image url)
     reposted: Set<string>;       // note ids + article addresses (kind:6/16 e/a, kind:1 q)
     replied: Set<string>;        // note ids + article addresses (kind:1 e, kind:1111 A)
     zapped: Set<string>;         // note ids + article naddrs you zapped (kind:9735 #P=you → e/a target)
@@ -52,10 +53,10 @@ let synced = 0, lookups = 0; // lightweight instrumentation
 
 (function load(): void {
     try {
-        const raw = JSON.parse(readFileSync(FILE, 'utf8')) as Record<string, { liked: [string, string | { id: string; emoji: string }][]; reposted: string[]; replied: string[]; zapped?: string[]; lastSync: number; zapSync?: number }>;
+        const raw = JSON.parse(readFileSync(FILE, 'utf8')) as Record<string, { liked: [string, string | { id: string; emoji: string; url?: string }][]; reposted: string[]; replied: string[]; zapped?: string[]; lastSync: number; zapSync?: number }>;
         for (const [pk, u] of Object.entries(raw)) {
             // Coerce legacy `liked` entries (value was a bare reaction-id string) to the {id, emoji} shape.
-            const liked = new Map<string, { id: string; emoji: string }>();
+            const liked = new Map<string, { id: string; emoji: string; url?: string }>();
             for (const [k, v] of u.liked) liked.set(k, typeof v === 'string' ? { id: v, emoji: '+' } : v);
             users.set(pk, { liked, reposted: new Set(u.reposted), replied: new Set(u.replied), zapped: new Set(u.zapped ?? []), lastSync: u.lastSync || 0, zapSync: u.zapSync || 0, syncing: false });
         }
@@ -86,15 +87,16 @@ function scheduleFlush(): void {
 
 /** Your kind:7 reaction id for a note (→ liked, and needed to unlike), or undefined. */
 export function cachedLikeId(me: string, noteId: string): string | undefined { lookups++; return ue(me).liked.get(noteId)?.id; }
-/** Your full reaction for a note (id + the emoji you chose), or undefined - so the button shows YOUR emoji. */
-export function cachedReaction(me: string, noteId: string): { id: string; emoji: string } | undefined { lookups++; return ue(me).liked.get(noteId); }
+/** Your full reaction for a note (id + the emoji you chose + a custom emoji url), or undefined - so the
+ * button shows YOUR emoji (a unicode char, a heart, or a custom NIP-30 image). */
+export function cachedReaction(me: string, noteId: string): { id: string; emoji: string; url?: string } | undefined { lookups++; return ue(me).liked.get(noteId); }
 export function cachedReposted(me: string, key: string): boolean { return ue(me).reposted.has(key); }
 export function cachedReplied(me: string, key: string): boolean { return ue(me).replied.has(key); }
 export function cachedZapped(me: string, key: string): boolean { return ue(me).zapped.has(key); }
 
 // --- optimistic mutations (keep the cache correct the instant you act) -----
 
-export function setLike(me: string, noteId: string, reactionId: string, emoji = '+'): void { ue(me).liked.set(noteId, { id: reactionId, emoji }); scheduleFlush(); }
+export function setLike(me: string, noteId: string, reactionId: string, emoji = '+', url?: string): void { ue(me).liked.set(noteId, { id: reactionId, emoji, ...(url ? { url } : {}) }); scheduleFlush(); }
 export function clearLike(me: string, noteId: string): void { ue(me).liked.delete(noteId); scheduleFlush(); }
 export function addZapped(me: string, key: string): void { ue(me).zapped.add(key); scheduleFlush(); }
 
@@ -140,7 +142,10 @@ async function syncEngagement(pool: Pool, me: string, myRelays: RelayList | null
             if (!key) continue;
             if ((newestLike.get(key) ?? -1) >= ev.created_at) continue;
             newestLike.set(key, ev.created_at);
-            u.liked.set(key, { id: ev.id, emoji: ev.content || '+' }); // '+'/'' both normalize to a plain heart
+            // A custom NIP-30 reaction = content `:shortcode:` + an emoji tag carrying the image url.
+            const code = /^:([a-zA-Z0-9_-]+):$/.exec(ev.content || '')?.[1];
+            const url = code ? emojiFromTags(ev.tags)?.[code] : undefined;
+            u.liked.set(key, url && code ? { id: ev.id, emoji: code, url } : { id: ev.id, emoji: ev.content || '+' }); // '+'/'' → a plain heart
         }
         for (const ev of posts) {
             if (ev.kind === 1) {

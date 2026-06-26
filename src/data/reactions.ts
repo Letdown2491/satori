@@ -5,29 +5,47 @@
 // both signing modes work (bunker signs here; nip07 sign-and-resubmits).
 
 import type { UnsignedEvent } from '../nostr/types.ts';
+import type { EmojiMap } from '../nostr/emoji30.ts';
 
 const now = () => Math.floor(Date.now() / 1000);
 
-/** The curated reaction palette (NIP-25 content). `+` is a plain heart (the one-click default); the
- * rest are a small, deliberately-limited set - a picker, not an engagement-maximizing keyboard. Unicode
- * only for now (custom NIP-30 emoji is a later add). No counts are ever shown (the OnlyZaps ethos). */
+/** The curated unicode reaction palette (NIP-25 content). `+` is a plain heart; the rest are a small,
+ * deliberately-limited set - a picker, not an engagement-maximizing keyboard. The user's NIP-30 custom
+ * emoji extend this at render time. No counts are ever shown (the OnlyZaps ethos). */
 export const REACTIONS = ['+', '😂', '🔥', '👍', '😮', '🙏'] as const;
 
-/** Validate a submitted reaction against the palette; anything off-list falls back to a plain heart -
- * so the content we sign/publish is always one of our known emoji, never arbitrary user input. */
-export function pickReaction(raw: string | null | undefined): string {
-    return raw && (REACTIONS as readonly string[]).includes(raw) ? raw : '+';
+/** A resolved reaction: a unicode char / '+' (no url), OR a custom NIP-30 emoji (`emoji` = shortcode,
+ * `url` = its image). The url is always resolved SERVER-SIDE from the user's own emoji set - never taken
+ * from the client - so a reaction can only ever carry a url the user actually has. */
+export interface Reaction { emoji: string; url?: string }
+
+/** Resolve a submitted reaction: a palette unicode emoji, else a shortcode that's in the user's custom
+ * set, else a plain heart. Off-list / unknown input can never reach the signed event. */
+export function pickReaction(raw: string | null | undefined, custom: EmojiMap = {}): Reaction {
+    if (raw && (REACTIONS as readonly string[]).includes(raw)) return { emoji: raw };
+    if (raw && custom[raw]) return { emoji: raw, url: custom[raw] }; // a known custom shortcode (url from the user's set)
+    return { emoji: '+' };
 }
 
-/** Unsigned reaction (kind:7) for a note - `emoji` is the NIP-25 content ('+' = a plain heart). */
-export function likeTemplate(me: string, note: { id: string; pubkey: string }, emoji = '+'): UnsignedEvent {
-    return { kind: 7, created_at: now(), pubkey: me, content: emoji, tags: [['e', note.id], ['p', note.pubkey], ['k', '1']] };
+/** NIP-25 content + optional NIP-30 emoji tag for a reaction: a custom emoji is `:shortcode:` + an
+ * `["emoji", shortcode, url]` tag; unicode/'+' is just the content. */
+function reactionFields(r: Reaction): { content: string; emojiTag?: string[] } {
+    return r.url ? { content: `:${r.emoji}:`, emojiTag: ['emoji', r.emoji, r.url] } : { content: r.emoji };
+}
+
+/** Unsigned reaction (kind:7) for a note. `r` defaults to a plain heart. */
+export function likeTemplate(me: string, note: { id: string; pubkey: string }, r: Reaction = { emoji: '+' }): UnsignedEvent {
+    const { content, emojiTag } = reactionFields(r);
+    const tags = [['e', note.id], ['p', note.pubkey], ['k', '1'], ...(emojiTag ? [emojiTag] : [])];
+    return { kind: 7, created_at: now(), pubkey: me, content, tags };
 }
 
 /** Unsigned reaction (kind:7) for an addressable event (NIP-25): `a` = the address, `p` = the author,
- * `k` = the reacted kind. Used for articles (kind:30023). `emoji` is the content ('+' = a plain heart). */
-export function articleLikeTemplate(me: string, article: { address: string; pubkey: string; kind: number }, emoji = '+'): UnsignedEvent {
-    return { kind: 7, created_at: now(), pubkey: me, content: emoji, tags: [['a', article.address], ['p', article.pubkey], ['k', String(article.kind)]] };
+ * `k` = the reacted kind. Used for articles (kind:30023). */
+export function articleLikeTemplate(me: string, article: { address: string; pubkey: string; kind: number }, r: Reaction = { emoji: '+' }): UnsignedEvent {
+    const { content, emojiTag } = reactionFields(r);
+    const tags = [['a', article.address], ['p', article.pubkey], ['k', String(article.kind)], ...(emojiTag ? [emojiTag] : [])];
+    return { kind: 7, created_at: now(), pubkey: me, content, tags };
 }
 
 /** Unsigned unlike: a kind:5 deletion of your reaction event. */

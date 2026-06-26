@@ -718,6 +718,10 @@
         }
         .react-opt:hover { background: var(--border); }
         .react-opt:active { transform: scale(0.9); }
+        /* Custom (NIP-30) emoji in the picker + on the reacted button: sized to sit with the unicode set. */
+        .react-opt .emoji { width: 20px; height: 20px; vertical-align: middle; }
+        .react-palette { max-width: 248px; flex-wrap: wrap; }
+        .note-act.like .emoji { width: 17px; height: 17px; vertical-align: middle; }
         /* Reply/quote you've already engaged with: a filled glyph in text color -
            visible (not muted) but quieter than the accent of like/bookmark/pin. The
            icon ships filled (icon(name, true)); this lifts it out of the muted gray. */

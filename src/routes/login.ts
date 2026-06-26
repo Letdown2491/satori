@@ -14,6 +14,7 @@ import { accessAllows } from '../access.ts';
 import { clearDmCache, prewarmDms } from '../data/dms.ts';
 import { dmPrewarm } from '../render/dms.ts';
 import { clearNip07DmCache } from '../data/dms-nip07.ts';
+import { clearUserEmoji } from '../data/emoji-sets.ts';
 import { html, type SafeHtml } from '../html.ts';
 import { wordmark } from '../render/layout.ts';
 import { issueChallenge, buildChallengeEvent, verifyChallenge } from '../nip07.ts';
@@ -180,6 +181,7 @@ export function postLogout(ctx: Ctx): void {
     if (ctx.session) destroySession(ctx.session.id);
     clearDmCache(); // the decrypted-DM cache is plaintext at rest - never let the next account read it
     clearNip07DmCache(); // and the nip07 in-memory decrypt/chain state
+    clearUserEmoji(); // the next account must not inherit this account's custom-emoji set
     setCookie(ctx, SID, '', { maxAge: 0 });
     redirect(ctx, '/login');
 }
