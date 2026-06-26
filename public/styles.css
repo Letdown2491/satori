@@ -941,12 +941,9 @@
         .mute-list .mute-row:has(.mute-btn.muted) { counter-increment: mutes; }
         .mute-list .list-count .count-n::before { content: counter(mutes); }
         .feed { list-style: none; padding: 0; margin: 0; }
-        /* A SOLE empty/caught-up state (no notes above it) centers in the space below the sticky bar,
-           rather than clinging to the top with a void beneath - the ensō floats balanced, a calm "you're
-           done, rest" moment. `:only-child` keeps it natural when notes DO sit above the clearing. */
-        .feed:has(> .empty:only-child) {
-            min-height: calc(100dvh - 120px); display: flex; flex-direction: column; justify-content: center;
-        }
+        /* The clearing's top border is a DIVIDER between notes and the clearing. When the clearing stands
+           alone (caught up, no notes above), that line is a redundant rule right under the header - drop it. */
+        .feed > .caught-up:only-child { border-top: none; }
         /* Ensō "clear the timeline" - a sumi-e ink-wash dispersal: the notes soften
            and lighten as if ink dissolving into water. */
         .feed.clearing { opacity: 0; filter: blur(12px); transition: opacity 0.8s ease, filter 0.8s ease; }
@@ -1403,10 +1400,7 @@ a.fab { display: inline-flex; align-items: center; justify-content: center; text
     border-top: 1px solid var(--border);
 }
 .view-pad { padding: 18px 0 0; } /* bottom clearance now lives on #app (FAB safe-area) */
-.view-empty {
-    text-align: center; color: var(--muted); padding: 48px 16px;
-    min-height: calc(100dvh - 120px); display: flex; flex-direction: column; align-items: center; justify-content: center;
-}
+.view-empty { text-align: center; color: var(--muted); padding: 48px 16px; }
 .view-empty .enso { margin: 0 auto 14px; }
 
 /* ── Sign-in fidelity ────────────────────────────────────────────────────── */
