@@ -1289,6 +1289,9 @@
         /* The "caught up" clearing - a deliberate end to the feed; older notes are
            opt-in past the line (design for exit, not endless scroll). */
         .caught-up { padding: 48px 20px; border-top: 1px solid var(--border); }
+        /* The caught-up affirmation wears the vermilion seal (with the ensō) - one state, one accent -
+           so it reads as the headline above the deliberately-quiet "see earlier" door. */
+        .caught-up .empty-sub { color: var(--accent); }
         .see-earlier {
             background: none; border: none; padding: 4px 8px; cursor: pointer;
             color: var(--accent); font-family: var(--serif); font-style: italic;
