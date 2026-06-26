@@ -700,6 +700,24 @@
         .note-act.pin:hover, .note-act.pin.active,
         .note-act.bookmark:hover, .note-act.bookmark.active { color: var(--accent); }
         .note-act.mute:hover, .note-act.mute.active { color: var(--accent); }
+        /* Emoji reactions (opt-in): a one-click heart + a small smiley that reveals a curated palette
+           popover (hidden-checkbox toggle, zero-JS - same idiom as the compose toggles). No counts. */
+        .act-form.react { position: relative; display: inline-flex; align-items: center; gap: 7px; }
+        .react-toggle { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+        .react-toggle:checked ~ .react-more { color: var(--accent); }
+        .react-emoji { font-size: 15px; line-height: 1; }
+        .react-palette {
+            display: none; position: absolute; bottom: calc(100% + 6px); left: -6px; z-index: 6;
+            gap: 2px; padding: 4px 6px; background: var(--bg);
+            border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+        }
+        .react-toggle:checked ~ .react-palette { display: inline-flex; }
+        .react-opt {
+            background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1;
+            padding: 4px 6px; border-radius: 8px; transition: background 0.12s ease, transform 0.1s ease;
+        }
+        .react-opt:hover { background: var(--border); }
+        .react-opt:active { transform: scale(0.9); }
         /* Reply/quote you've already engaged with: a filled glyph in text color -
            visible (not muted) but quieter than the accent of like/bookmark/pin. The
            icon ships filled (icon(name, true)); this lifts it out of the muted gray. */

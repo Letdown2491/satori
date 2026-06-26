@@ -6,7 +6,8 @@
 import { html, type SafeHtml } from '../html.ts';
 import { icon, type IconName } from './svg.ts';
 import { isOn, type ActionName } from '../actions.ts';
-import { isLiked } from '../likes.ts';
+import { cachedReaction } from '../data/engagement-cache.ts';
+import { REACTIONS } from '../data/reactions.ts';
 import type { Session } from '../session.ts';
 
 /** A stable element id for an action+target, used as the swap target. */
@@ -47,15 +48,34 @@ export function muteAct(s: Session, pubkey: string, eventId: string): SafeHtml {
       </form>`;
 }
 
-/** The like button (NIP-25). Unlike the list toggles, a like is a per-note kind:7
- * event, so state comes from the likes cache (not a list) and the form carries the
- * note author (needed for the like's p-tag). Fills the heart when liked. */
+/** A reaction's glyph: a plain heart for '+'/'' (the default like), else the chosen emoji character. */
+function reactionGlyph(emoji: string): SafeHtml {
+    return emoji === '+' || emoji === '' ? icon('like', true) : html`<span class="react-emoji">${emoji}</span>`;
+}
+
+/** The reaction control (NIP-25). A like is a per-note kind:7 event, so state comes from the engagement
+ * cache (not a list). Two states:
+ *  - reacted: a single button showing YOUR emoji; clicking it retracts (the route sees an existing
+ *    reaction and emits the kind:5 delete - so the submitted emoji is irrelevant there).
+ *  - not reacted: a one-click heart PLUS a CSS-revealed palette (zero-JS via a hidden checkbox, like the
+ *    compose toggles) of the rest of the curated set; each emoji is a submit button carrying its value.
+ * No counts of others are ever shown - your reaction is a personal gesture, not a scoreboard. */
 export function likeButton(s: Session, noteId: string, author: string): SafeHtml {
-    const on = isLiked(s, noteId);
     const id = `like-${noteId}`;
-    return html`<form id="${id}" class="act-form" action="/like/${noteId}" method="post" h-post h-target="#${id}" h-swap="outer" h-optimistic="class:active" h-optimistic-target="#${id} .note-act">
-        <input type="hidden" name="author" value="${author}">
-        <button type="submit" class="note-act like ${on ? 'active' : ''}" title="${on ? 'Liked ✓' : 'Like'}" aria-label="Like" aria-pressed="${on ? 'true' : 'false'}">${icon('like', on)}</button>
+    const mine = s.me ? cachedReaction(s.me, noteId) : undefined;
+    const head = html`<form id="${id}" class="act-form react" action="/like/${noteId}" method="post" h-post h-target="#${id}" h-swap="outer">
+        <input type="hidden" name="author" value="${author}">`;
+    if (mine) {
+        return html`${head}
+        <button type="submit" name="emoji" value="${mine.emoji}" class="note-act like active" title="Remove reaction" aria-label="Remove reaction" aria-pressed="true">${reactionGlyph(mine.emoji)}</button>
+      </form>`;
+    }
+    const rest = REACTIONS.filter((e) => e !== '+');
+    return html`${head}
+        <button type="submit" name="emoji" value="+" class="note-act like" title="Like" aria-label="Like" aria-pressed="false">${icon('like', false)}</button>
+        <input type="checkbox" id="pal-${noteId}" class="react-toggle">
+        <label class="note-act react-more" for="pal-${noteId}" title="More reactions" aria-label="More reactions">${icon('smile')}</label>
+        <span class="react-palette">${rest.map((e) => html`<button type="submit" name="emoji" value="${e}" class="react-opt" title="React ${e}" aria-label="React ${e}">${e}</button>`)}</span>
       </form>`;
 }
 

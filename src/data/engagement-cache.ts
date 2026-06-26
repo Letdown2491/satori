@@ -31,7 +31,7 @@ function addrToNaddr(a: string): string | null {
 // capped: they back zero-round-trip like/repost/reply button state, so evicting old ids would
 // make older notes render wrong. Bounded in practice by your activity, not by external input.
 interface UE {
-    liked: Map<string, string>;  // noteId → your kind:7 event id (needed to unlike)
+    liked: Map<string, { id: string; emoji: string }>; // noteId → your reaction: the kind:7 id (to unlike) + the emoji you chose ('+' = a plain heart)
     reposted: Set<string>;       // note ids + article addresses (kind:6/16 e/a, kind:1 q)
     replied: Set<string>;        // note ids + article addresses (kind:1 e, kind:1111 A)
     zapped: Set<string>;         // note ids + article naddrs you zapped (kind:9735 #P=you → e/a target)
@@ -52,9 +52,12 @@ let synced = 0, lookups = 0; // lightweight instrumentation
 
 (function load(): void {
     try {
-        const raw = JSON.parse(readFileSync(FILE, 'utf8')) as Record<string, { liked: [string, string][]; reposted: string[]; replied: string[]; zapped?: string[]; lastSync: number; zapSync?: number }>;
+        const raw = JSON.parse(readFileSync(FILE, 'utf8')) as Record<string, { liked: [string, string | { id: string; emoji: string }][]; reposted: string[]; replied: string[]; zapped?: string[]; lastSync: number; zapSync?: number }>;
         for (const [pk, u] of Object.entries(raw)) {
-            users.set(pk, { liked: new Map(u.liked), reposted: new Set(u.reposted), replied: new Set(u.replied), zapped: new Set(u.zapped ?? []), lastSync: u.lastSync || 0, zapSync: u.zapSync || 0, syncing: false });
+            // Coerce legacy `liked` entries (value was a bare reaction-id string) to the {id, emoji} shape.
+            const liked = new Map<string, { id: string; emoji: string }>();
+            for (const [k, v] of u.liked) liked.set(k, typeof v === 'string' ? { id: v, emoji: '+' } : v);
+            users.set(pk, { liked, reposted: new Set(u.reposted), replied: new Set(u.replied), zapped: new Set(u.zapped ?? []), lastSync: u.lastSync || 0, zapSync: u.zapSync || 0, syncing: false });
         }
     } catch { /* no cache yet */ }
 })();
@@ -82,14 +85,16 @@ function scheduleFlush(): void {
 // --- reads (the hot path) --------------------------------------------------
 
 /** Your kind:7 reaction id for a note (→ liked, and needed to unlike), or undefined. */
-export function cachedLikeId(me: string, noteId: string): string | undefined { lookups++; return ue(me).liked.get(noteId); }
+export function cachedLikeId(me: string, noteId: string): string | undefined { lookups++; return ue(me).liked.get(noteId)?.id; }
+/** Your full reaction for a note (id + the emoji you chose), or undefined - so the button shows YOUR emoji. */
+export function cachedReaction(me: string, noteId: string): { id: string; emoji: string } | undefined { lookups++; return ue(me).liked.get(noteId); }
 export function cachedReposted(me: string, key: string): boolean { return ue(me).reposted.has(key); }
 export function cachedReplied(me: string, key: string): boolean { return ue(me).replied.has(key); }
 export function cachedZapped(me: string, key: string): boolean { return ue(me).zapped.has(key); }
 
 // --- optimistic mutations (keep the cache correct the instant you act) -----
 
-export function setLike(me: string, noteId: string, reactionId: string): void { ue(me).liked.set(noteId, reactionId); scheduleFlush(); }
+export function setLike(me: string, noteId: string, reactionId: string, emoji = '+'): void { ue(me).liked.set(noteId, { id: reactionId, emoji }); scheduleFlush(); }
 export function clearLike(me: string, noteId: string): void { ue(me).liked.delete(noteId); scheduleFlush(); }
 export function addZapped(me: string, key: string): void { ue(me).zapped.add(key); scheduleFlush(); }
 
@@ -127,7 +132,7 @@ async function syncEngagement(pool: Pool, me: string, myRelays: RelayList | null
         if (!u.zapSync) console.log(`[engagement] zap backfill: ${zaps.length} receipt(s) via #P for ${me.slice(0, 8)}…`); // diagnostic: 0 ⇒ relays/LNURL don't tag receipts with P
         const newestLike = new Map<string, number>();
         for (const ev of reactions) {
-            if (ev.content !== '+' && ev.content !== '') continue;
+            if (ev.content === '-') continue; // NIP-25 downvote: we don't surface dislikes
             // NIP-25: last e tag = reacted note; an `a` tag = an addressable target (an article).
             const e = [...ev.tags].reverse().find((t) => t[0] === 'e' && t[1]);
             const a = e ? null : [...ev.tags].reverse().find((t) => t[0] === 'a' && t[1]);
@@ -135,7 +140,7 @@ async function syncEngagement(pool: Pool, me: string, myRelays: RelayList | null
             if (!key) continue;
             if ((newestLike.get(key) ?? -1) >= ev.created_at) continue;
             newestLike.set(key, ev.created_at);
-            u.liked.set(key, ev.id);
+            u.liked.set(key, { id: ev.id, emoji: ev.content || '+' }); // '+'/'' both normalize to a plain heart
         }
         for (const ev of posts) {
             if (ev.kind === 1) {

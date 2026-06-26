@@ -7,7 +7,7 @@
 
 import { html } from '../html.ts';
 import { decode } from 'nostr-tools/nip19';
-import { likeTemplate, articleLikeTemplate, unlikeTemplate } from '../data/reactions.ts';
+import { likeTemplate, articleLikeTemplate, unlikeTemplate, pickReaction } from '../data/reactions.ts';
 import { cachedLikeId, setLike, clearLike } from '../data/engagement-cache.ts';
 import { published, writeRelays } from '../actions.ts';
 import { likeButton } from '../render/actions.ts';
@@ -51,17 +51,18 @@ export async function postLike(ctx: Ctx): Promise<void> {
 
     const existing = cachedLikeId(s.me, noteId) ?? null; // current state (+ reaction id to unlike) from the cache
     const op = existing ? 'unlike' : 'like';
+    const emoji = pickReaction(form.get('emoji')); // which reaction to add (palette-validated; '+' = heart). Ignored on unlike.
     const template = existing ? unlikeTemplate(s.me, existing)
-        : t.addr ? articleLikeTemplate(s.me, t.addr) : likeTemplate(s.me, { id: noteId, pubkey: author });
+        : t.addr ? articleLikeTemplate(s.me, t.addr, emoji) : likeTemplate(s.me, { id: noteId, pubkey: author }, emoji);
 
     // nip07: the extension signs; the continuation publishes + updates state.
-    if (signsOnClient(s)) { sendSignRequest(ctx, template, `/like/${noteId}/publish?author=${author}&op=${op}`); return; }
+    if (signsOnClient(s)) { sendSignRequest(ctx, template, `/like/${noteId}/publish?author=${author}&op=${op}&emoji=${encodeURIComponent(emoji)}`); return; }
 
     // bunker: sign + publish here.
     try {
         const signed = await s.signer!.signEvent(template);
         await s.pool.publish(writeRelays(s), signed);
-        if (op === 'like') setLike(s.me, noteId, signed.id); else clearLike(s.me, noteId);
+        if (op === 'like') setLike(s.me, noteId, signed.id, emoji); else clearLike(s.me, noteId);
     } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't ${op}: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
         return;
@@ -77,6 +78,7 @@ export async function postLikePublish(ctx: Ctx): Promise<void> {
     const noteId = ctx.params.target ?? '';
     const author = (ctx.query.get('author') ?? '').trim();
     const op = ctx.query.get('op') === 'unlike' ? 'unlike' : 'like';
+    const emoji = pickReaction(ctx.query.get('emoji'));
     // Decode-validate (not just the `naddr1` prefix): a non-canonical target would otherwise reach
     // the `H-Retarget: #like-<target>` header below. likeTarget() rejects anything that isn't a hex
     // note id or a real naddr, so only the safe bech32 charset can flow into the selector.
@@ -91,7 +93,7 @@ export async function postLikePublish(ctx: Ctx): Promise<void> {
         sendFragment(ctx, html`<div class="notice error">Couldn't ${op === 'like' ? 'like' : 'unlike'} that - no relay accepted it.</div>`, {}, 502);
         return;
     }
-    if (op === 'like') setLike(s.me, noteId, signed.id); else clearLike(s.me, noteId);
+    if (op === 'like') setLike(s.me, noteId, signed.id, emoji); else clearLike(s.me, noteId);
     // Declare placement: the sign-request set H-Reswap:none (so a non-plugin client
     // won't swap the JSON template), which mutates the request's swap to "none". The
     // continuation must re-assert the swap or the heart never updates (only a reload
