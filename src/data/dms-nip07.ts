@@ -28,7 +28,7 @@ import type { Filter } from 'nostr-tools';
 import type { BatchResult } from '../wire.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
-import type { Conversation, DmMessage, DmInbox } from './dms.ts';
+import type { Conversation, DmMessage, DmInbox, PrivateReply } from './dms.ts';
 
 const HEX64 = /^[0-9a-f]{64}$/i;
 const RECENT_WRAPS = 500; // fits in one batch (maxBatchItems 1024); timestamps fuzzed ±2d
@@ -44,9 +44,6 @@ type Entry =
     // carries the rumor id + tags (to render in-thread), excluded from conversation aggregation.
     | { kind: 'reply'; parentId: string; id: string; from: string; at: number; text: string; tags: string[][] }
     | { kind: 'drop' };
-
-/** A decrypted private reply, shaped to render as a synthetic note event in a thread. */
-export interface PrivateReply { id: string; parent: string; from: string; at: number; content: string; tags: string[][] }
 
 /** A legacy (kind-4) message queued for nip04 decryption through the browser. */
 interface LegacyItem { id: string; peer: string; from: string; at: number; ciphertext: string }
@@ -190,20 +187,24 @@ function threadMessages(ids: Iterable<string>, peer: string, _me: string): DmMes
 /** All decrypted private replies (in-memory) to `noteId`, oldest-first - shown inline in the note's
  * thread, badged private (replies others sent to your note + self-copies of ones you sent). */
 export function privateRepliesForNip07(noteId: string): PrivateReply[] {
+    const t0 = performance.now();
     const out: PrivateReply[] = [];
     for (const e of mem.values()) {
         if (e.kind === 'reply' && e.parentId === noteId) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
     }
+    recordScan('privateRepliesForNip07', mem.size, performance.now() - t0);
     return out.sort((a, b) => a.at - b.at);
 }
 
 /** Every private reply OTHERS sent you (in-memory), newest-first - the notifications source. Self-copies
  * of replies you sent (from === me) are excluded, mirroring how notifications skip your own actions. */
 export function allPrivateRepliesNip07(me: string): PrivateReply[] {
+    const t0 = performance.now();
     const out: PrivateReply[] = [];
     for (const e of mem.values()) {
         if (e.kind === 'reply' && e.from !== me) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
     }
+    recordScan('allPrivateRepliesNip07', mem.size, performance.now() - t0);
     return out.sort((a, b) => b.at - a.at);
 }
 
@@ -397,6 +398,8 @@ export function sealStep(s: Session, chainId: string, results: BatchResult[]): {
     return { templates: ciphers.map((c) => sealTemplate(s.me!, c!)) };
 }
 
+/** Apply the signed seals for a DM send: wrap + publish, cache our own copy, and return the optimistic
+ * bubble. Null if a seal didn't verify. (Private-reply sends use wrapPrivateReplyStep below.) */
 export async function wrapStep(s: Session, chainId: string, results: BatchResult[]): Promise<DmMessage | null> {
     const chain = takeSend(chainId);
     if (!chain) return null;

@@ -64,13 +64,16 @@ export function sealTemplate(sender: string, encryptedRumor: string): UnsignedEv
 /** Validate an unwrapped rumor: it must actually come from the seal's signer (the sender can't be
  * spoofed) - NIP-59's core integrity check. Returns the rumor with its REAL kind (14/1/7); the
  * caller branches (DM vs private reply vs reaction). Kind is NOT gated here so private replies aren't
- * silently dropped as "not a DM". */
+ * silently dropped as "not a DM". The id is RE-DERIVED via getEventHash, never taken from the sender:
+ * a rumor is unsigned, so a forged `id` would otherwise flow untrusted into id-keyed sinks (renders,
+ * cache keys) - deriving it guarantees a canonical 64-hex id and the standard event-integrity binding. */
 export function rumorFromSeal(rumor: unknown, sealPubkey: string): Rumor | null {
     if (!rumor || typeof rumor !== 'object') return null;
     const r = rumor as Partial<Rumor>;
     if (typeof r.kind !== 'number' || typeof r.content !== 'string' || typeof r.created_at !== 'number') return null;
     if (r.pubkey !== sealPubkey) return null; // sender spoofing guard
-    return { id: String(r.id ?? ''), pubkey: r.pubkey, created_at: r.created_at, kind: r.kind, tags: Array.isArray(r.tags) ? r.tags : [], content: r.content };
+    const base = { pubkey: r.pubkey, created_at: r.created_at, kind: r.kind, tags: Array.isArray(r.tags) ? r.tags : [], content: r.content };
+    return { id: getEventHash(base), ...base };
 }
 
 /** Build the unsigned kind:1 reply RUMOR for a private reply to a public note: a normal NIP-10

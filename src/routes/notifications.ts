@@ -12,7 +12,7 @@ import { ensureLikes } from '../likes.ts';
 import { ensureEngaged } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
 import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
-import { allPrivateReplies } from '../data/dms.ts';
+import { allPrivateReplies, syntheticReply, type PrivateReply } from '../data/dms.ts';
 import { allPrivateRepliesNip07 } from '../data/dms-nip07.ts';
 import { signsOnClient, type Session } from '../session.ts';
 import { readReadState, advanceReadState } from '../read-state.ts';
@@ -25,13 +25,16 @@ function actorOf(n: Notif): string | null {
     return n.type === 'zap' ? parseZapReceipt(n.event).sender : n.event.pubkey;
 }
 
-/** Private (gift-wrapped) replies to your notes, from the local DM cache, as Notif rows within `win`.
- * Not on relays, so they're merged client-side; the same time bounds keep pagination consistent. */
-function cachedPrivateReplyNotifs(s: Session & { me: string }, win: { since?: number; until?: number }): Notif[] {
+/** Private replies to your notes, from the local DM cache, within `win`. Not on relays, so they're
+ * merged client-side; the same time bounds keep pagination consistent. */
+function cachedPrivateReplies(s: Session & { me: string }, win: { since?: number; until?: number }): PrivateReply[] {
     const raw = signsOnClient(s) ? allPrivateRepliesNip07(s.me) : allPrivateReplies(s);
-    return raw
-        .filter((r) => (win.until === undefined || r.at < win.until) && (win.since === undefined || r.at > win.since))
-        .map((r) => ({ type: 'privateReply' as const, event: { id: r.id, pubkey: r.from, created_at: r.at, kind: 1, tags: r.tags, content: r.content, sig: '' } }));
+    return raw.filter((r) => (win.until === undefined || r.at < win.until) && (win.since === undefined || r.at > win.since));
+}
+
+/** Those private replies as Notif rows (synthetic kind:1 events) for merging into the notifications feed. */
+function cachedPrivateReplyNotifs(s: Session & { me: string }, win: { since?: number; until?: number }): Notif[] {
+    return cachedPrivateReplies(s, win).map((r) => ({ type: 'privateReply' as const, event: syntheticReply(r) }));
 }
 
 /** Pubkeys to resolve (the actors). */
@@ -119,7 +122,9 @@ export async function getNotifUnread(ctx: Ctx): Promise<void> {
     ]);
     const muted = mutedPubkeys(s);
     const since = readReadState(ctx, s.me).notif;
-    const merged = [...items, ...cachedPrivateReplyNotifs(s, { since })];
-    const hasUnread = merged.some((n) => { const a = actorOf(n); return !a || !muted.has(a); });
+    // A relay notification OR an unmuted private reply newer than the high-water lights the dot. The
+    // private-reply check skips building synthetic events - the poll only needs existence, not the rows.
+    const hasUnread = items.some((n) => { const a = actorOf(n); return !a || !muted.has(a); })
+        || cachedPrivateReplies(s, { since }).some((r) => !muted.has(r.from));
     sendFragment(ctx, notifBell(hasUnread));
 }

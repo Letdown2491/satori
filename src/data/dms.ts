@@ -51,8 +51,16 @@ type Entry =
     | { kind: 'reply'; owner: string; parent: string; id: string; from: string; at: number; text: string; tags: string[][] }
     | { kind: 'drop' };
 
-/** A decrypted private reply, shaped to render as a synthetic note event in a thread. */
+/** A decrypted private reply, shaped to render as a synthetic note event in a thread. Shared by both
+ * DM engines (nip07 imports it from here) and the routes/render that fold private replies into threads. */
 export interface PrivateReply { id: string; parent: string; from: string; at: number; content: string; tags: string[][] }
+
+/** A decrypted private reply as a synthetic kind:1 event (sig empty - never published) so it threads via
+ * its NIP-10 tags and renders exactly like a public reply. The lock badge marks it private. One shared
+ * builder for the thread render, the notifications row, and the optimistic-send append. */
+export function syntheticReply(r: PrivateReply): NostrEvent {
+    return { id: r.id, pubkey: r.from, created_at: r.at, kind: 1, tags: r.tags, content: r.content, sig: '' };
+}
 
 const FILE = process.env.SATORI_DM_CACHE || join(process.cwd(), '.data', 'dms.json');
 const cache = new Map<string, Entry>();
@@ -393,8 +401,9 @@ export function privateRepliesFor(s: Session, noteId: string): PrivateReply[] {
     return out.sort((a, b) => a.at - b.at);
 }
 
-/** Every private reply OTHERS sent you (in-memory), newest-first - the notifications source. Self-copies
- * of replies you sent (from === me) are excluded, mirroring how notifications skip your own actions. */
+/** Every private reply OTHERS sent you (from the disk-backed cache), newest-first - the notifications
+ * source. Self-copies of replies you sent (from === me) are excluded, mirroring how notifications skip
+ * your own actions. */
 export function allPrivateReplies(s: Session): PrivateReply[] {
     if (!signsOnServer(s) || !s.me) return [];
     const me = s.me;
@@ -532,8 +541,9 @@ export async function sendDm(s: Session, peer: string, text: string): Promise<bo
 
 /** Send a PRIVATE reply (bunker): a kind:1 reply rumor (NIP-10 `baseTags` built exactly like a public
  * reply) gift-wrapped to the note author AND yourself, delivered to their DM relays. Never published as
- * a public note. Returns the rumor so the caller can render it optimistically in-thread. Null on failure. */
-export async function sendPrivateReply(s: Session, author: string, parentId: string, baseTags: string[][], content: string): Promise<Rumor | null> {
+ * a public note. Returns the cached PrivateReply (same shape as the nip07 path) so the caller can render
+ * it optimistically in-thread. Null on failure. */
+export async function sendPrivateReply(s: Session, author: string, parentId: string, baseTags: string[][], content: string): Promise<PrivateReply | null> {
     if (!signsOnServer(s) || !s.me) return null;
     const sg = s as Signed;
     const me = sg.me;
@@ -553,6 +563,6 @@ export async function sendPrivateReply(s: Session, author: string, parentId: str
         // Cache our own copy keyed by the parent note, so it shows in-thread immediately.
         cache.set(toSelf.id, { kind: 'reply', owner: me, parent: parentId, id: rumor.id, from: me, at: rumor.created_at, text: body, tags: rumor.tags });
         scheduleFlush();
-        return rumor;
+        return { id: rumor.id, parent: parentId, from: me, at: rumor.created_at, content: body, tags: rumor.tags };
     } catch (e) { console.warn('[dms] private reply failed:', (e as Error)?.message ?? e); return null; }
 }

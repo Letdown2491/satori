@@ -61,6 +61,9 @@ export interface Session {
     // button shows on notes/articles, and whether reactions appear in notifications. Both OFF by default.
     reactions?: boolean;
     reactionNotifs?: boolean;
+    // nip07 only: when the in-memory DM cache was last warmed by a thread view (epoch ms). The
+    // warm-on-thread trigger skips its relay query if a recent warm already covered it (see read.ts).
+    lastDmWarm?: number;
 }
 
 const sessions = new Map<string, Session>();

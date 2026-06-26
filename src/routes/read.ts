@@ -25,10 +25,9 @@ import { ensureLikes } from '../likes.ts';
 import { ensureEngaged, engageTarget } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
 import { ensureArticleReplies, replierPubkeys } from '../replies.ts';
-import { sendPage, sendFragment, notFound, redirect, type Ctx } from '../http.ts';
-import { privateRepliesFor, type PrivateReply } from '../data/dms.ts';
+import { sendPage, sendFragment, notFound, redirect, hasBatchCaps, readBatchResults, sendSignRequest, type Ctx } from '../http.ts';
+import { privateRepliesFor, syntheticReply, type PrivateReply } from '../data/dms.ts';
 import { privateRepliesForNip07, beginSync, applySeals, applyRumors, finalizeSync } from '../data/dms-nip07.ts';
-import { hasBatchCaps, readBatchResults, sendSignRequest } from '../http.ts';
 import { signsOnClient, type Session } from '../session.ts';
 
 const PAGE = 30;
@@ -167,15 +166,10 @@ function renderReplyTree(nodes: RNode[], depth: number, profiles: ProfileMap, s:
 }
 
 /** Decrypted private replies (NIP-59 gift-wrapped kind:1) to `noteId`, from whichever DM engine the
- * signing family uses. Surfaces what's already in the in-memory DM cache - warmed when the inbox syncs. */
+ * signing family uses. Surfaces what's already in the DM cache - bunker's is disk-backed; nip07's is
+ * in-memory and warmed asynchronously (see the warm-on-thread routes below). */
 function privateRepliesTo(s: Session, noteId: string): PrivateReply[] {
     return signsOnClient(s) ? privateRepliesForNip07(noteId) : privateRepliesFor(s, noteId);
-}
-
-/** Turn a decrypted private reply into a synthetic kind:1 event so it threads (NIP-10 tags) and renders
- * exactly like a public reply. Never published - `sig` is empty; the lock badge marks it private. */
-function syntheticReply(r: PrivateReply): NostrEvent {
-    return { id: r.id, pubkey: r.from, created_at: r.at, kind: 1, tags: r.tags, content: r.content, sig: '' };
 }
 
 export async function getThread(ctx: Ctx): Promise<void> {
@@ -233,15 +227,25 @@ function threadNoteId(entity: string): string | null {
     return null;
 }
 
-/** Terminal of the nip07 thread-warm chain: the decrypt cache is now warm, so render this note's private
- * replies (lock-badged) and append them into #thread. Empty fragment when there are none (clears the trigger). */
-async function appendThreadPrivates(ctx: Ctx, s: Session & { me: string }, chainId: string, noteId: string, entity: string): Promise<void> {
-    finalizeSync(s, chainId); // consume the chain; mem is warm (we ignore the inbox aggregate it returns)
-    const privates = privateRepliesForNip07(noteId);
+// After warming, skip a fresh inbox sync if one ran within this window (avoids a 500-wrap relay query on
+// every thread open in a session; a new private reply still surfaces on the next thread open past the TTL).
+const WARM_TTL_MS = 45_000;
+
+/** Render this note's private replies (lock-badged) from the warm cache and append them into #thread.
+ * Empty fragment when there are none (clears the trigger). */
+async function appendPrivateCards(ctx: Ctx, s: Session & { me: string }, privates: PrivateReply[], entity: string): Promise<void> {
     if (!privates.length) { sendFragment(ctx, html``); return; }
     await ensureProfiles(s, privates.map((p) => p.from));
     const cards = privates.map((p) => noteCard(syntheticReply(p), s.profiles, s, { hideParent: true, depth: 0, inThread: entity, isPrivate: true }));
     sendFragment(ctx, join(cards), APPEND_THREAD);
+}
+
+/** Terminal of the nip07 thread-warm chain: the decrypt cache is now warm, so consume the chain, stamp
+ * the warm time (for the recency gate), and append this note's private replies into #thread. */
+async function appendThreadPrivates(ctx: Ctx, s: Session & { me: string }, chainId: string, noteId: string, entity: string): Promise<void> {
+    finalizeSync(s, chainId); // consume the chain; mem is warm (we ignore the inbox aggregate it returns)
+    s.lastDmWarm = Date.now();
+    await appendPrivateCards(ctx, s, privateRepliesForNip07(noteId), entity);
 }
 
 /** GET /t/:id/private - start the nip07 warm: decrypt recent gift-wraps so this note's private replies
@@ -253,6 +257,11 @@ export async function getThreadPrivate(ctx: Ctx): Promise<void> {
     const noteId = threadNoteId(entity);
     // Only nip07 needs warming (bunker already inlined). No batch caps => can't decrypt; skip silently.
     if (!noteId || !signsOnClient(s) || !hasBatchCaps(ctx)) { sendFragment(ctx, html``); return; }
+    // Recently warmed? Skip the relay query + decrypt round-trips and just render from the warm cache.
+    if (s.lastDmWarm && Date.now() - s.lastDmWarm < WARM_TTL_MS) {
+        await appendPrivateCards(ctx, s as Session & { me: string }, privateRepliesForNip07(noteId), entity);
+        return;
+    }
     const { chainId, items } = await beginSync(s, 'inbox');
     if (items.length === 0) { await appendThreadPrivates(ctx, s as Session & { me: string }, chainId, noteId, entity); return; }
     sendSignRequest(ctx, { items }, `/t/${entity}/private/seals?chain=${chainId}`, 'nip44_decrypt_batch');

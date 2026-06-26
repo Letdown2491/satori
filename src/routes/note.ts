@@ -25,9 +25,8 @@ import { articleComposePage, draftsScreen, type ArticleComposeCtx } from '../ren
 import { getDraft, saveDraft, listDrafts, newDraftId, type NoteDraft, type PollDraft } from '../drafts.ts';
 import { composeSyncEl } from './article.ts';
 import { addScheduled, listScheduled } from '../data/scheduled.ts';
-import { sendPrivateReply } from '../data/dms.ts';
+import { sendPrivateReply, syntheticReply } from '../data/dms.ts';
 import { beginPrivateReplySend, sealStep, wrapPrivateReplyStep } from '../data/dms-nip07.ts';
-import type { Rumor } from '../nostr/nip17.ts';
 import { page } from '../render/layout.ts';
 import { requireLogin, chromeFor, ensureProfiles, LAND_ON_FEED } from './common.ts';
 import { readSignedEvent } from '../nip07.ts';
@@ -99,7 +98,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         <!-- Private reply (replies only): the .private-btn lock toggles this checkbox. When on it turns
              accent and reveals the caption; the form posts private=1 → a gift-wrapped reply, not a public one. -->
         ${c.reply ? html`<input type="checkbox" id="private-toggle" name="private" value="1" class="private-check">
-        <div class="private-row">${icon('lock')}<span>Gift-wrapped: only ${c.reply.name} can read this. It won’t appear publicly.</span></div>` : null}
+        <div class="private-row">${icon('lock')}<span>Only ${c.reply.name === 'note' ? 'the author' : c.reply.name} can read this. It won't appear publicly.</span></div>` : null}
         <!-- Schedule (new notes only): the .schedule-btn clock toggles this checkbox; the row
              reveals on :checked (pure CSS, like CW). The "Schedule" button sends do=schedule. -->
         ${c.isNew ? html`<input type="checkbox" id="schedule-toggle" class="sched-check">
@@ -117,7 +116,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         <div class="compose-foot">
           <label class="attach-btn" id="compose-attach" title="Add photo or video" aria-label="Add photo or video">${icon('image')}${composeFileInput()}</label>
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
-          ${c.reply ? html`<label class="attach-btn private-btn" for="private-toggle" title="Reply privately - gift-wrapped, only the author can read it" aria-label="Reply privately">${icon('lock')}</label>` : null}
+          ${c.reply ? html`<label class="attach-btn private-btn" for="private-toggle" title="Reply privately - only the author can read it" aria-label="Reply privately">${icon('lock')}</label>` : null}
           ${c.isNew ? html`<label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>` : null}
           <!-- Zero-JS only: with JS the file auto-uploads on select, so this fallback
                button is hidden (noscript). It submits the form to its /upload action. -->
@@ -181,12 +180,6 @@ export function getComposePreview(ctx: Ctx): void {
     const content = [text, ...mediaUrls].filter(Boolean).join('\n');
     if (!content) { sendFragment(ctx, html``); return; }
     sendFragment(ctx, composePreview(s.me, content, imeta, s.profiles));
-}
-
-/** A decrypted private-reply rumor as a synthetic kind:1 event (sig empty, never published) so it
- * renders in-thread exactly like a public reply - the lock badge marks it private. */
-function rumorEvent(r: Rumor): NostrEvent {
-    return { id: r.id, pubkey: r.pubkey, created_at: r.created_at, kind: r.kind, tags: r.tags, content: r.content, sig: '' };
 }
 
 /** Decode an nevent (or note1) into a reply target { id, pubkey }. */
@@ -418,9 +411,9 @@ export async function postNote(ctx: Ctx): Promise<void> {
             sendSignRequest(ctx, { items: r.items }, `/note/private/seal?${q}`, 'nip44_encrypt_batch');
             return;
         }
-        const rumor = await sendPrivateReply(s, rt.pubkey, rt.id, baseTags, content);
-        if (!rumor) { back("Couldn't send the private reply.", 502); return; }
-        if (inthread && ctx.isPartial) { sendReplyToThread(ctx, s, rumorEvent(rumor), inthread, undefined, true); return; }
+        const pr = await sendPrivateReply(s, rt.pubkey, rt.id, baseTags, content);
+        if (!pr) { back("Couldn't send the private reply.", 502); return; }
+        if (inthread && ctx.isPartial) { sendReplyToThread(ctx, s, syntheticReply(pr), inthread, undefined, true); return; }
         redirect(ctx, `/t/${replyNevent}`);
         return;
     }
@@ -539,8 +532,7 @@ export async function postPrivateReplyWrap(ctx: Ctx): Promise<void> {
     if (!sent) { privateSendError(ctx, "Couldn't send the private reply."); return; }
     const reply = ctx.query.get('reply');
     const inthread = (reply && ctx.query.get('inthread')) || null;
-    const ev = rumorEvent({ id: sent.id, pubkey: s.me, created_at: sent.at, kind: 1, tags: sent.tags, content: sent.content });
-    if (inthread) { sendReplyToThread(ctx, s as Session & { me: string }, ev, inthread, undefined, true); return; }
+    if (inthread) { sendReplyToThread(ctx, s as Session & { me: string }, syntheticReply(sent), inthread, undefined, true); return; }
     redirect(ctx, reply ? `/t/${reply}` : '/');
 }
 
