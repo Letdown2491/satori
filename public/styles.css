@@ -720,7 +720,11 @@
         .react-opt:active { transform: scale(0.9); }
         /* Custom (NIP-30) emoji in the picker + on the reacted button: sized to sit with the unicode set. */
         .react-opt .emoji { width: 20px; height: 20px; vertical-align: middle; }
-        .react-palette { max-width: 248px; flex-wrap: wrap; }
+        /* width:max-content keeps the popover sized to its content (a horizontal row) - WITHOUT it, an
+           absolutely-positioned flex container with flex-wrap collapses to the narrow parent's width and
+           wraps every emoji onto its own line (vertical). max-width then caps it so a big custom set wraps
+           into a tidy grid instead of one endless row. */
+        .react-palette { flex-direction: row; flex-wrap: wrap; width: max-content; max-width: 240px; }
         .note-act.like .emoji { width: 17px; height: 17px; vertical-align: middle; }
         /* Reply/quote you've already engaged with: a filled glyph in text color -
            visible (not muted) but quieter than the accent of like/bookmark/pin. The

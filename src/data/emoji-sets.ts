@@ -12,7 +12,7 @@ import { emojiFromTags, type EmojiMap } from '../nostr/emoji30.ts';
 export const KIND_USER_EMOJI = 10030; // the user's emoji list (a/emoji tags)
 export const KIND_EMOJI_SET = 30030;  // an addressable emoji set (emoji tags)
 
-const TTL_MS = 10 * 60 * 1000;
+const TTL_MS = 5 * 60 * 1000; // balance: a just-added emoji set appears within a few minutes, not a long wait
 const cache = new Map<string, { map: EmojiMap; at: number }>();
 const inflight = new Map<string, Promise<void>>();
 
