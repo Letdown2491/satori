@@ -12,6 +12,7 @@ import { parseEmojiTags } from '../nostr/emoji30.ts';
 import { tokenize } from '../nostr/content.ts';
 import { npub, shortNpub, displayName, timeAgo, avatar, type ProfileMap } from './util.ts';
 import { icon, enso } from './svg.ts';
+import { quote } from './quotes.ts';
 import { replyParent } from '../nostr/nip10.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
 import { parseArticle, readingMinutes, KIND_ARTICLE } from '../nostr/nip23.ts';
@@ -538,4 +539,19 @@ export function pagerSentinel(href: string): SafeHtml {
       <li class="pager" id="more">
         <a href="${href}" h-get h-target="#more" h-swap="outer" h-trigger="intersect once, click" h-indicator="#more" h-push-url="false"><span class="pager-label">older →</span><span class="pager-loading">settling…</span></a>
       </li>`;
+}
+
+/** The Following feed's "caught up" clearing (ported from the original Satori) - a still ensō + line that
+ * ENDS the new-since-last-visit set: a feed with a real end. `hadNew` false = you were already caught up.
+ * `markTs` (the newest note shown) arms an intersect that advances your last-visit high-water when the
+ * clearing scrolls into view - so you're marked "caught up" by REACHING the end, not by merely loading. */
+export function feedCaughtUp(hadNew: boolean, markTs?: number): SafeHtml {
+    const mark = markTs ? raw(` h-get="/feed/seen?ts=${String(markTs)}" h-trigger="intersect once" h-swap="none" h-push-url="false"`) : raw('');
+    return html`<li class="empty caught-up" id="feed-clearing"${mark}>${enso(40, true)}<span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}</li>`;
+}
+
+/** The quiet "see earlier" control below the clearing: reveals the already-read history (older than your
+ * last visit) and resumes normal scrolling. A real <a> so it works JS-off; helmjs swaps it in place. */
+export function seeEarlier(until: number): SafeHtml {
+    return html`<li class="notif-earlier" id="feed-earlier"><a class="see-earlier" href="/?seen=1&until=${String(until)}" h-get h-target="#feed-earlier" h-swap="outer" h-push-url="false">See earlier posts</a></li>`;
 }

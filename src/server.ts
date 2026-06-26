@@ -16,7 +16,7 @@ import { getScheduled, postScheduledCancel } from './routes/scheduled.ts';
 import { prunePersisted, persistedPubkeys } from './store.ts';
 import { adoptOwnerIfUnclaimed, accessMode } from './access.ts';
 import { getSession, isLoggedIn } from './session.ts';
-import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getListPrime, postListPrimed } from './routes/feed.ts';
+import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getFeedSeen, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
 import { getProfile, getProfileExtras, getThread, getThreadPrivate, postThreadPrivateSeals, postThreadPrivateRumors, getArticle, getEmbed } from './routes/read.ts';
 import { getHandlers } from './routes/handlers.ts';
@@ -138,6 +138,7 @@ const ROUTES: Route[] = [
     route('GET', '/commons', getCommons),
     route('GET', '/longform', getLongform),
     route('GET', '/notes/dot', getNotesDot),
+    route('GET', '/feed/seen', getFeedSeen),
     route('GET', '/notes/list-prime', getListPrime),
     route('POST', '/notes/list-primed', postListPrimed),
     route('GET', '/bookmarks', getBookmarks),
