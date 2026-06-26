@@ -551,8 +551,11 @@ export function pagerSentinel(href: string): SafeHtml {
  *  - `more` (a `until` cursor): renders the click-only "Continue reading" that swaps in the next batch. */
 export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: number }): SafeHtml {
     const mark = opts.markTs ? raw(` h-get="/feed/seen?ts=${String(opts.markTs)}" h-trigger="intersect once" h-swap="none" h-push-url="false"`) : raw('');
-    const cont = opts.more !== undefined
-        ? html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`
-        : null;
+    // Caught up → a QUIET door to the older backlog (don't tempt a doomscroll the moment you're told to
+    // rest). More new still waiting → the inviting accent "Continue reading". The affordance matches the message.
+    const cont = opts.more === undefined ? null
+        : opts.caughtUp
+            ? html`<a class="see-earlier feed-older" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">See earlier posts</a>`
+            : html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`;
     return html`<li class="empty caught-up" id="feed-clearing"${mark}>${enso(40, true)}<span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${cont}</li>`;
 }

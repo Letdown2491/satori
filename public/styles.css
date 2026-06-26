@@ -1295,6 +1295,12 @@
             font-size: 14px; letter-spacing: 0.02em;
         }
         .see-earlier:hover:not(:disabled) { text-decoration: underline; }
+        /* Caught up: the door to the older backlog is deliberately QUIET (muted, smaller, upright) - present
+           if you want it, but not an accent invitation pulling you back in the moment you're told to rest. */
+        .see-earlier.feed-older { color: var(--muted); font-style: normal; font-size: 13px; }
+        .see-earlier.feed-older:hover { color: var(--text); }
+        /* More new still below: the inviting accent continue (the .see-earlier default) reads as "come read". */
+        .caught-up .feed-continue { margin-top: 4px; }
         /* In-flight: swap "look back" → "Loading…" while the older page is fetched. */
         .see-earlier:disabled { color: transparent; cursor: default; position: relative; }
         .see-earlier:disabled::after { content: 'Loading…'; color: var(--muted); font-style: italic; position: absolute; left: 8px; top: 4px; }
