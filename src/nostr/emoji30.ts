@@ -16,7 +16,9 @@ export function emojiFromTags(tags: string[][]): EmojiMap | undefined {
     let map: EmojiMap | undefined;
     for (const tag of tags) {
         if (tag[0] !== 'emoji' || !tag[1] || !tag[2] || !CODE.test(tag[1]) || safeUrl(tag[2]) === '#') continue;
-        (map ??= {})[tag[1]] = tag[2];
+        // Null-prototype so a `:__proto__:`/`:constructor:` shortcode can't collide with inherited members
+        // when this map is later indexed by an attacker-supplied key (see pickReaction).
+        (map ??= Object.create(null) as EmojiMap)[tag[1]] = tag[2];
     }
     return map;
 }

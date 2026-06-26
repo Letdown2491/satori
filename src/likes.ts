@@ -12,8 +12,10 @@ export function isLiked(s: Session, noteId: string): boolean {
 }
 
 /** Ensure the engagement cache is syncing (background, idempotent). No per-note query. When reactions
- * are enabled, also warm the user's NIP-30 custom emoji (awaited + TTL-cached) so the picker has them. */
+ * are enabled, also warm the user's NIP-30 custom emoji - FIRE-AND-FORGET (not awaited): the picker
+ * degrades to the curated unicode palette while it warms, so never block first paint on a relay fetch
+ * (which can be ~24s on a cold Tor circuit). TTL-cached + single-flight, so it populates within a render. */
 export async function ensureLikes(s: Session & { me: string }, _noteIds: string[]): Promise<void> {
     ensureEngagementSynced(s);
-    if (s.reactions) await ensureUserEmoji(s);
+    if (s.reactions) void ensureUserEmoji(s);
 }

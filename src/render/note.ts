@@ -557,7 +557,7 @@ export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: 
     // genuinely MORE NEW below, that gets a visible "Continue reading" invite instead (it SHOULD be found).
     const older = opts.caughtUp && opts.more !== undefined;
     const seal = older
-        ? html`<a class="enso-link" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false" aria-label="See earlier posts" title="See earlier posts">${enso(40, true)}</a>`
+        ? html`<a class="enso-link" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false" aria-label="See older posts" title="See older posts">${enso(40, true)}</a>`
         : enso(40, true);
     const cont = (!opts.caughtUp && opts.more !== undefined)
         ? html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`

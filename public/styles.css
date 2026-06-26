@@ -705,11 +705,13 @@
         .act-form.react { position: relative; display: inline-flex; align-items: center; gap: 7px; }
         .react-toggle { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
         .react-toggle:checked ~ .react-more { color: var(--accent); }
+        /* The reveal checkbox is invisible but still a keyboard tab-stop; show focus on its visible label. */
+        .react-toggle:focus-visible ~ .react-more { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
         .react-emoji { font-size: 15px; line-height: 1; }
         .react-palette {
             display: none; position: absolute; bottom: calc(100% + 6px); left: -6px; z-index: 6;
             gap: 2px; padding: 4px 6px; background: var(--bg);
-            border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+            border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
         }
         .react-toggle:checked ~ .react-palette { display: inline-flex; }
         .react-opt {
@@ -1297,9 +1299,9 @@
         .enso-link { display: inline-flex; cursor: pointer; border-radius: 50%; transition: transform 0.25s ease; }
         .enso-link:hover { transform: scale(1.08); }
         .enso-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
-        /* The caught-up affirmation wears the vermilion seal (with the ensō) - one state, one accent -
-           so it reads as the headline above the deliberately-quiet "see older/earlier" door. Applies to
-           BOTH clearings (feed + notifications) so the catch-up moment is identical across the app. */
+        /* The caught-up affirmation wears the vermilion accent - one state, one accent (the ensō stays ink) -
+           so it reads as the headline of the clearing. Applies to BOTH clearings (feed + notifications) so
+           the catch-up moment is identical across the app. */
         .caught-up .empty-sub, .notif-clearing .empty-sub { color: var(--accent); font-size: 16px; margin-top: -10px; }
         .see-earlier {
             background: none; border: none; padding: 4px 8px; cursor: pointer;
@@ -1307,13 +1309,8 @@
             font-size: 14px; letter-spacing: 0.02em;
         }
         .see-earlier:hover:not(:disabled) { text-decoration: underline; }
-        /* Caught up: the door to the older backlog is deliberately QUIET (muted, smaller, upright) - present
-           if you want it, but not an accent invitation pulling you back in the moment you're told to rest.
-           Shared by the feed AND notifications "see older" doors (the accent .see-earlier is the inviting
-           "continue reading", reserved for when there's genuinely more NEW). */
-        .see-earlier.quiet { color: var(--muted); font-style: normal; font-size: 16px; }
-        .see-earlier.quiet:hover { color: var(--text); }
-        /* More new still below: the inviting accent continue (the .see-earlier default) reads as "come read". */
+        /* The inviting accent .see-earlier ("Continue reading") is reserved for when there's genuinely more
+           NEW; the caught-up backlog door is the unlabeled tappable ensō (.enso-link), not a text link. */
         .caught-up .feed-continue { margin-top: 4px; }
         /* In-flight: swap "look back" → "Loading…" while the older page is fetched. */
         .see-earlier:disabled { color: transparent; cursor: default; position: relative; }
@@ -1321,7 +1318,6 @@
         /* Notifications clearing sits right above its pager - keep them as tight as
            the timeline clearing (line → action = 16px), not two stacked blocks. */
         .empty.notif-clearing { padding: 48px 20px 16px; }
-        .notif-earlier { text-align: center; padding: 0 20px 24px; }
         .page-title { font-family: var(--serif); font-weight: 500; }
         .theme-select {
             padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);

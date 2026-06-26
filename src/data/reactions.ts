@@ -23,7 +23,10 @@ export interface Reaction { emoji: string; url?: string }
  * set, else a plain heart. Off-list / unknown input can never reach the signed event. */
 export function pickReaction(raw: string | null | undefined, custom: EmojiMap = {}): Reaction {
     if (raw && (REACTIONS as readonly string[]).includes(raw)) return { emoji: raw };
-    if (raw && custom[raw]) return { emoji: raw, url: custom[raw] }; // a known custom shortcode (url from the user's set)
+    // OWN string property only: an inherited prototype key (`__proto__`, `constructor`, `toString`…) would
+    // otherwise read truthy on a plain-object map and yield a NON-string "url" - a crash on render + a
+    // malformed kind:7. hasOwnProperty + typeof guards it even if the map isn't null-prototyped.
+    if (raw && Object.prototype.hasOwnProperty.call(custom, raw) && typeof custom[raw] === 'string') return { emoji: raw, url: custom[raw] };
     return { emoji: '+' };
 }
 

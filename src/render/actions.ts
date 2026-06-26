@@ -55,7 +55,7 @@ export function muteAct(s: Session, pubkey: string, eventId: string): SafeHtml {
 /** A reaction's glyph: a custom NIP-30 image when there's a url, a plain heart for '+'/'' (the default
  * like), else the chosen unicode emoji character. */
 function reactionGlyph(emoji: string, url?: string): SafeHtml {
-    if (url) return html`<img class="emoji" src="${imgSrc(url)}" alt=":${emoji}:" loading="lazy">`;
+    if (typeof url === 'string' && url) return html`<img class="emoji" src="${imgSrc(url)}" alt=":${emoji}:" loading="lazy">`;
     return emoji === '+' || emoji === '' ? icon('like', true) : html`<span class="react-emoji">${emoji}</span>`;
 }
 

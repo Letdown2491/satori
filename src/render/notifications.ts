@@ -26,13 +26,6 @@ export function notifCaughtUp(hadNew: boolean, olderUntil?: number): SafeHtml {
     return html`<li class="empty notif-clearing" id="notif-clearing"><span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}${seal}</li>`;
 }
 
-/** @deprecated The "see older" history is now the tappable ensō in notifCaughtUp. Kept for any callers.
- * Self-swaps in place with [seen rows][intersect pager], paginated continuously - no gap. */
-export function seeOlder(until: number): SafeHtml {
-    const url = `/notifications?seen=1&until=${String(until)}`;
-    return html`<li class="notif-earlier" id="see-older"><a class="see-earlier quiet" href="${url}" h-get h-target="#see-older" h-swap="outer" h-push-url="false">See older notifications</a></li>`;
-}
-
 function profileLink(pubkey: string, profiles: ProfileMap): SafeHtml {
     let npub = pubkey;
     try { npub = npubEncode(pubkey); } catch { /* keep raw */ }
