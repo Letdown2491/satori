@@ -70,12 +70,12 @@ export function likeButton(s: Session, noteId: string, author: string): SafeHtml
         <button type="submit" name="emoji" value="${mine.emoji}" class="note-act like active" title="Remove reaction" aria-label="Remove reaction" aria-pressed="true">${reactionGlyph(mine.emoji)}</button>
       </form>`;
     }
-    const rest = REACTIONS.filter((e) => e !== '+');
+    // ONE control: a smiley that reveals the whole palette (heart included, shown as ❤️). Zero-JS via the
+    // hidden-checkbox toggle. Picking any emoji reacts; there's no separate one-click heart button.
     return html`${head}
-        <button type="submit" name="emoji" value="+" class="note-act like" title="Like" aria-label="Like" aria-pressed="false">${icon('like', false)}</button>
         <input type="checkbox" id="pal-${noteId}" class="react-toggle">
-        <label class="note-act react-more" for="pal-${noteId}" title="More reactions" aria-label="More reactions">${icon('smile')}</label>
-        <span class="react-palette">${rest.map((e) => html`<button type="submit" name="emoji" value="${e}" class="react-opt" title="React ${e}" aria-label="React ${e}">${e}</button>`)}</span>
+        <label class="note-act react-more" for="pal-${noteId}" title="React" aria-label="React">${icon('smile')}</label>
+        <span class="react-palette">${REACTIONS.map((e) => { const g = e === '+' ? '❤️' : e; return html`<button type="submit" name="emoji" value="${e}" class="react-opt" title="React ${g}" aria-label="React ${g}">${g}</button>`; })}</span>
       </form>`;
 }
 
