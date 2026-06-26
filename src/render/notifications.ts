@@ -19,7 +19,7 @@ import type { Session } from '../session.ts';
  * (above) and your already-seen history (below the "See older" control). `hadNew` is whether
  * any new items sit above it - if not, it's the calm "you're all caught up" empty state. */
 export function notifCaughtUp(hadNew: boolean): SafeHtml {
-    return html`<li class="empty notif-clearing" id="notif-clearing">${enso(40, true)}<span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}</li>`;
+    return html`<li class="empty notif-clearing" id="notif-clearing"><span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}${enso(40, true)}</li>`;
 }
 
 /** The control under the clearing that reveals already-seen history (older than `until` = your

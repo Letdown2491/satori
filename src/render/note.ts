@@ -557,5 +557,7 @@ export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: 
         : opts.caughtUp
             ? html`<a class="see-earlier quiet" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">See earlier posts</a>`
             : html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`;
-    return html`<li class="empty caught-up" id="feed-clearing"${mark}>${enso(40, true)}<span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${cont}</li>`;
+    // ensō LAST: a clearing is a completion, and the seal (落款) stamps a finished work closed - it trails
+    // the text here, unlike the OPENING empty states (search/empty-feed) where the ensō leads to center you.
+    return html`<li class="empty caught-up" id="feed-clearing"${mark}><span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${enso(40, true)}${cont}</li>`;
 }
