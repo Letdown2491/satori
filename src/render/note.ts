@@ -541,17 +541,18 @@ export function pagerSentinel(href: string): SafeHtml {
       </li>`;
 }
 
-/** The Following feed's "caught up" clearing (ported from the original Satori) - a still ensō + line that
- * ENDS the new-since-last-visit set: a feed with a real end. `hadNew` false = you were already caught up.
- * `markTs` (the newest note shown) arms an intersect that advances your last-visit high-water when the
- * clearing scrolls into view - so you're marked "caught up" by REACHING the end, not by merely loading. */
-export function feedCaughtUp(hadNew: boolean, markTs?: number): SafeHtml {
-    const mark = markTs ? raw(` h-get="/feed/seen?ts=${String(markTs)}" h-trigger="intersect once" h-swap="none" h-push-url="false"`) : raw('');
-    return html`<li class="empty caught-up" id="feed-clearing"${mark}>${enso(40, true)}<span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}</li>`;
-}
-
-/** The quiet "see earlier" control below the clearing: reveals the already-read history (older than your
- * last visit) and resumes normal scrolling. A real <a> so it works JS-off; helmjs swaps it in place. */
-export function seeEarlier(until: number): SafeHtml {
-    return html`<li class="notif-earlier" id="feed-earlier"><a class="see-earlier" href="/?seen=1&until=${String(until)}" h-get h-target="#feed-earlier" h-swap="outer" h-push-url="false">See earlier posts</a></li>`;
+/** The Following feed's "caught up" clearing (ported from the original Satori): a still ensō + line that
+ * ENDS a reading batch - a feed with real ends, not an endless scroll. The new-since-last-visit set is
+ * capped to one window, then this; each "Continue reading" loads exactly one more batch ending in another
+ * clearing (a deliberate tap, never auto-scroll), so you choose to keep going - it never runs away.
+ *  - `caughtUp`: show the reassuring "You're all caught up" line (you've seen everything new).
+ *  - `markTs` (newest shown): arms an intersect that advances your last-visit high-water when this
+ *    clearing scrolls into view - so reaching the end marks you caught up, not merely loading.
+ *  - `more` (a `until` cursor): renders the click-only "Continue reading" that swaps in the next batch. */
+export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: number }): SafeHtml {
+    const mark = opts.markTs ? raw(` h-get="/feed/seen?ts=${String(opts.markTs)}" h-trigger="intersect once" h-swap="none" h-push-url="false"`) : raw('');
+    const cont = opts.more !== undefined
+        ? html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`
+        : null;
+    return html`<li class="empty caught-up" id="feed-clearing"${mark}>${enso(40, true)}<span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${cont}</li>`;
 }

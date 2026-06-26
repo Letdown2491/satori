@@ -8,7 +8,7 @@
 
 import { buildFollowsRoute, buildFollowersRoute, fetchRoutedPage, fetchTrendingPage } from '../data/feeds.ts';
 import { html, type SafeHtml } from '../html.ts';
-import { noteList, pagerSentinel, feedCaughtUp, seeEarlier } from '../render/note.ts';
+import { noteList, pagerSentinel, feedClearing } from '../render/note.ts';
 import { emptyItem } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
 import { page, notesHome } from '../render/layout.ts';
@@ -229,56 +229,44 @@ function followingBoundary(ctx: Ctx, me: string): number {
     return seen > 0 ? Math.max(seen, now - LOOKBACK_S) : now - FIRST_VISIT_S;
 }
 
-/** Build the Following landing content: the new set (notes newer than `boundary`) above a "caught up"
- * clearing that ends the feed, then "see earlier" for the older history. When the whole first window is
- * still new (boundary not yet reached) and more pages exist, it keeps paging the NEW set (carrying the
- * boundary via `nb`) until the clearing. Shared by the route and the nip07 list-primer re-render. */
-async function followingContent(s: Session & { me: string }, boundary: number): Promise<{ inner: SafeHtml; newestTs: number; events: NostrEvent[] }> {
+/** The Following LANDING view: the new-since-your-last-visit set, capped to ONE window (never auto-paged
+ * past it), then a clearing. Reaching the clearing marks you caught up (its intersect); "Continue reading"
+ * loads the next batch on a deliberate tap. Shared by the route and the nip07 list-primer re-render. */
+async function followingFirstView(s: Session & { me: string }, boundary: number): Promise<{ inner: SafeHtml; newestTs: number; events: NostrEvent[] }> {
     const { visible, allRaw, more, newestRaw } = await fillPage(s, 'following', undefined);
-    const oldest = visible.length ? visible[visible.length - 1]!.created_at : undefined;
     const newVisible = visible.filter((e) => e.created_at > boundary);
-    const reached = visible.some((e) => e.created_at <= boundary);
-    const tail = !reached && more !== null && oldest
-        ? pagerSentinel(`/?until=${oldest - 1}&nb=${boundary}`)
-        : html`${feedCaughtUp(newVisible.length > 0, newestRaw || undefined)}${reached ? seeEarlier(boundary) : null}`;
-    return { inner: html`${noteList(newVisible, s.profiles, s)}${tail}`, newestTs: newestRaw, events: allRaw };
+    const reached = visible.some((e) => e.created_at <= boundary) || more === null; // saw all the new in one window
+    const moreExists = more !== null || visible.length > newVisible.length; // more pages, or older notes held in this window
+    const contFrom = (newVisible.length ? newVisible[newVisible.length - 1]!.created_at : newestRaw) - 1;
+    const clearing = feedClearing({ caughtUp: reached, markTs: newestRaw || undefined, more: moreExists && contFrom > 0 ? contFrom : undefined });
+    return { inner: html`${noteList(newVisible, s.profiles, s)}${clearing}`, newestTs: newestRaw, events: allRaw };
 }
 
-/** GET / (Following) with the caught-up boundary. Full page, the new-set `#more` pager (carries `nb`),
- * and `seen` mode (the already-read history below "see earlier"). Mark-seen happens on CATCH-UP (the
- * clearing's intersect → /feed/seen), never on load - so "new since your last visit" stays true. */
+/** GET / (Following) with the original Satori "caught up" boundary - now in BATCHES (model B): one window
+ * + a clearing, and each "Continue reading" (a deliberate, click-only tap) loads exactly one more batch
+ * that also ends in a clearing. The scroll never runs away; you choose each step. Mark-seen happens on
+ * CATCH-UP (the first clearing's intersect → /feed/seen), never on load, so "new since you left" stays true. */
 async function serveFollowing(ctx: Ctx, s: Session & { me: string }, until?: number): Promise<void> {
-    const seenMode = ctx.query.get('seen') === '1';
-    const inPageSwap = ctx.isPartial && (ctx.hTarget === '#more' || ctx.hTarget === '#feed-earlier');
+    const batch = ctx.query.get('b') === '1';
+    const inPageSwap = ctx.isPartial && ctx.hTarget === '#feed-clearing';
+    const wrapPage = (frag: SafeHtml, newestTs?: number): void => {
+        if (inPageSwap) { sendFragment(ctx, frag); return; }
+        const primer = pendingPrivateKinds(s).length ? listPrimer({ tab: 'following' }) : null;
+        sendPage(ctx, html`<ul class="feed" id="feed">${frag}</ul>${primer ?? html``}`, chromeFor(ctx, s, { active: 'feed', feedTab: 'following', notesSince: newestTs }));
+    };
 
-    // SEEN history (revealed by "see earlier"): one continuous newest-first list, normal paging.
-    if (seenMode) {
+    // CONTINUE: a deliberate next batch (one window + its own clearing + the next "Continue"). No mark-seen
+    // (the first clearing already did); no new/old split (you've chosen to keep reading older notes).
+    if (batch) {
         const { visible, more } = await fillPage(s, 'following', until);
-        const frag = html`${noteList(visible, s.profiles, s)}${more}`;
-        if (inPageSwap) sendFragment(ctx, frag);
-        else sendPage(ctx, html`<ul class="feed" id="feed">${frag}</ul>`, chromeFor(ctx, s, { active: 'feed', feedTab: 'following' }));
-        return;
-    }
-
-    const boundary = ctx.query.get('nb') && /^\d+$/.test(ctx.query.get('nb')!) ? Number(ctx.query.get('nb')) : followingBoundary(ctx, s.me);
-
-    // New-set `#more` partial: page the new notes until the boundary, then the clearing.
-    if (inPageSwap) {
-        const { visible, more, newestRaw } = await fillPage(s, 'following', until);
         const oldest = visible.length ? visible[visible.length - 1]!.created_at : undefined;
-        const newVisible = visible.filter((e) => e.created_at > boundary);
-        const reached = visible.some((e) => e.created_at <= boundary);
-        const tail = !reached && more !== null && oldest
-            ? pagerSentinel(`/?until=${oldest - 1}&nb=${boundary}`)
-            : html`${feedCaughtUp(newVisible.length > 0, newestRaw || undefined)}${reached ? seeEarlier(boundary) : null}`;
-        sendFragment(ctx, html`${noteList(newVisible, s.profiles, s)}${tail}`);
+        wrapPage(html`${noteList(visible, s.profiles, s)}${feedClearing({ caughtUp: false, more: more !== null && oldest ? oldest - 1 : undefined })}`);
         return;
     }
 
-    // Full landing page.
-    const { inner, newestTs } = await followingContent(s, boundary);
-    const primer = pendingPrivateKinds(s).length ? listPrimer({ tab: 'following' }) : null;
-    sendPage(ctx, html`<ul class="feed" id="feed">${inner}</ul>${primer ?? html``}`, chromeFor(ctx, s, { active: 'feed', feedTab: 'following', notesSince: newestTs }));
+    // FIRST view (the new-since-your-last-visit window).
+    const { inner, newestTs } = await followingFirstView(s, followingBoundary(ctx, s.me));
+    wrapPage(inner, newestTs);
 }
 
 /** GET /feed/seen?ts= - the caught-up clearing's intersect target: reaching the end of the new set
@@ -375,7 +363,7 @@ export async function postListPrimed(ctx: Ctx): Promise<void> {
     // other tabs use the standard build. Both re-swap #feed only when the decrypted lists actually change a
     // visible note (a now-muted author drops, or a bookmark glyph flips), so the feed doesn't flash for nothing.
     const { content, events } = tab === 'following'
-        ? await followingContent(s, followingBoundary(ctx, s.me)).then((r) => ({ content: html`<ul class="feed" id="feed">${r.inner}</ul>`, events: r.events }))
+        ? await followingFirstView(s, followingBoundary(ctx, s.me)).then((r) => ({ content: html`<ul class="feed" id="feed">${r.inner}</ul>`, events: r.events }))
         : await buildFeed(s, tab);
     if (!privateAffectsPage(s, events)) { ctx.res.writeHead(204); ctx.res.end(); return; }
     sendFragment(ctx, content, { 'H-Reswap': 'outer', 'H-Retarget': '#feed' });
