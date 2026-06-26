@@ -5,7 +5,7 @@
 // both signing modes work (bunker signs here; nip07 sign-and-resubmits).
 
 import type { UnsignedEvent } from '../nostr/types.ts';
-import type { EmojiMap } from '../nostr/emoji30.ts';
+import type { EmojiMap } from '../nostr/nip30.ts';
 
 const now = () => Math.floor(Date.now() / 1000);
 

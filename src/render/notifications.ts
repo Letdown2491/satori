@@ -8,7 +8,7 @@ import { enso } from './svg.ts';
 import { quote } from './quotes.ts';
 import { avatar, displayName, timeAgo, type ProfileMap } from './util.ts';
 import { withEmoji } from './content.ts';
-import { emojiFromTags } from '../nostr/emoji30.ts';
+import { emojiFromTags } from '../nostr/nip30.ts';
 import { icon } from './svg.ts';
 import { replyParent } from '../nostr/nip10.ts';
 import { parseZapReceipt, type Notif } from '../data/notifications.ts';

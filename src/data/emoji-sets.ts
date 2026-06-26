@@ -2,12 +2,12 @@
 // curated (in any client) via their kind:10030 "emoji list" - which references kind:30030 "emoji sets"
 // (and may carry direct `emoji` tags) - and flatten it to a shortcode->url map. Managing/adding emoji
 // sets inside Satori is out of scope. Cached per session, TTL'd. The DISPLAY of custom emoji already
-// works (nostr/emoji30.ts + render withEmoji); this is purely the SOURCE for the picker + send path.
+// works (nostr/nip30.ts + render withEmoji); this is purely the SOURCE for the picker + send path.
 
 import type { Session } from '../session.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
-import { emojiFromTags, type EmojiMap } from '../nostr/emoji30.ts';
+import { emojiFromTags, type EmojiMap } from '../nostr/nip30.ts';
 
 export const KIND_USER_EMOJI = 10030; // the user's emoji list (a/emoji tags)
 export const KIND_EMOJI_SET = 30030;  // an addressable emoji set (emoji tags)

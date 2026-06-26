@@ -8,7 +8,7 @@ import { neventEncode, naddrEncode } from 'nostr-tools/nip19';
 import { html, join, raw, safeUrl, type SafeHtml } from '../html.ts';
 import { renderContent, renderMarkdown, mediaLightboxes, imgSrc, withEmoji, cleanTrackingParams, type MediaPrefs } from './content.ts';
 import { parseImeta, type ImetaMap } from '../nostr/imeta.ts';
-import { parseEmojiTags } from '../nostr/emoji30.ts';
+import { parseEmojiTags } from '../nostr/nip30.ts';
 import { tokenize } from '../nostr/content.ts';
 import { npub, shortNpub, displayName, timeAgo, avatar, type ProfileMap } from './util.ts';
 import { icon, enso } from './svg.ts';

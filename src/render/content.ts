@@ -12,7 +12,7 @@ import { npub, displayName, shortHash, type ProfileMap } from './util.ts';
 import { icon } from './svg.ts';
 import { parseYouTube, youtubeWatchUrl, youtubePlaylistUrl } from '../data/youtube.ts';
 import type { MediaMeta, ImetaMap } from '../nostr/imeta.ts';
-import type { EmojiMap } from '../nostr/emoji30.ts';
+import type { EmojiMap } from '../nostr/nip30.ts';
 import { refFor } from '../manifest/registry.ts';
 
 const SHORTCODE = /:([a-zA-Z0-9_-]+):/g;

@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { naddrEncode } from 'nostr-tools/nip19';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
-import { emojiFromTags } from '../nostr/emoji30.ts';
+import { emojiFromTags } from '../nostr/nip30.ts';
 import { parseZapReceipt } from './notifications.ts';
 import type { Pool } from './pool.ts';
 import type { RelayList, NostrEvent } from '../nostr/types.ts';

@@ -8,7 +8,7 @@
 
 import { html, join, raw, type SafeHtml } from '../html.ts';
 import { renderContent, withEmoji } from './content.ts';
-import { parseEmojiTags } from '../nostr/emoji30.ts';
+import { parseEmojiTags } from '../nostr/nip30.ts';
 import { avatar, displayName, timeAgo, npub, type ProfileMap } from './util.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';

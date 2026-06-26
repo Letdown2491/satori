@@ -2,7 +2,7 @@
 
 import type { Pool } from './pool.ts';
 import type { NostrEvent } from '../nostr/types.ts';
-import { emojiFromTags, type EmojiMap } from '../nostr/emoji30.ts';
+import { emojiFromTags, type EmojiMap } from '../nostr/nip30.ts';
 
 export interface Profile {
     name?: string;
