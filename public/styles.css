@@ -941,6 +941,12 @@
         .mute-list .mute-row:has(.mute-btn.muted) { counter-increment: mutes; }
         .mute-list .list-count .count-n::before { content: counter(mutes); }
         .feed { list-style: none; padding: 0; margin: 0; }
+        /* A SOLE empty/caught-up state (no notes above it) centers in the space below the sticky bar,
+           rather than clinging to the top with a void beneath - the ensō floats balanced, a calm "you're
+           done, rest" moment. `:only-child` keeps it natural when notes DO sit above the clearing. */
+        .feed:has(> .empty:only-child) {
+            min-height: calc(100dvh - 120px); display: flex; flex-direction: column; justify-content: center;
+        }
         /* Ensō "clear the timeline" - a sumi-e ink-wash dispersal: the notes soften
            and lighten as if ink dissolving into water. */
         .feed.clearing { opacity: 0; filter: blur(12px); transition: opacity 0.8s ease, filter 0.8s ease; }
@@ -1292,7 +1298,7 @@
         /* The caught-up affirmation wears the vermilion seal (with the ensō) - one state, one accent -
            so it reads as the headline above the deliberately-quiet "see older/earlier" door. Applies to
            BOTH clearings (feed + notifications) so the catch-up moment is identical across the app. */
-        .caught-up .empty-sub, .notif-clearing .empty-sub { color: var(--accent); }
+        .caught-up .empty-sub, .notif-clearing .empty-sub { color: var(--accent); font-size: 16px; margin-top: 0; }
         .see-earlier {
             background: none; border: none; padding: 4px 8px; cursor: pointer;
             color: var(--accent); font-family: var(--serif); font-style: italic;
@@ -1303,7 +1309,7 @@
            if you want it, but not an accent invitation pulling you back in the moment you're told to rest.
            Shared by the feed AND notifications "see older" doors (the accent .see-earlier is the inviting
            "continue reading", reserved for when there's genuinely more NEW). */
-        .see-earlier.quiet { color: var(--muted); font-style: normal; font-size: 13px; }
+        .see-earlier.quiet { color: var(--muted); font-style: normal; font-size: 16px; }
         .see-earlier.quiet:hover { color: var(--text); }
         /* More new still below: the inviting accent continue (the .see-earlier default) reads as "come read". */
         .caught-up .feed-continue { margin-top: 4px; }
@@ -1397,7 +1403,10 @@ a.fab { display: inline-flex; align-items: center; justify-content: center; text
     border-top: 1px solid var(--border);
 }
 .view-pad { padding: 18px 0 0; } /* bottom clearance now lives on #app (FAB safe-area) */
-.view-empty { text-align: center; color: var(--muted); padding: 48px 16px; }
+.view-empty {
+    text-align: center; color: var(--muted); padding: 48px 16px;
+    min-height: calc(100dvh - 120px); display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
 .view-empty .enso { margin: 0 auto 14px; }
 
 /* ── Sign-in fidelity ────────────────────────────────────────────────────── */
