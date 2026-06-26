@@ -11,6 +11,7 @@ import { html, raw, join, safeUrl, type SafeHtml } from '../html.ts';
 import { npub, displayName, shortHash, type ProfileMap } from './util.ts';
 import { icon } from './svg.ts';
 import { parseYouTube, youtubeWatchUrl, youtubePlaylistUrl } from '../data/youtube.ts';
+import { torStrict } from '../privacy.ts';
 import type { MediaMeta, ImetaMap } from '../nostr/imeta.ts';
 import type { EmojiMap } from '../nostr/nip30.ts';
 import { refFor } from '../manifest/registry.ts';
@@ -123,12 +124,25 @@ function aspectClass(dim?: string): string {
 function video(url: string, meta?: MediaMeta): SafeHtml {
     const href = safeUrl(url);
     if (href === '#') return extLink(url, url);
+    // Strict Privacy Mode: a note video would stream browser→host (the lone CSP gap, leaks your IP). We
+    // don't proxy video (Tor can't carry it well); instead suppress it like the YT player - poster + a
+    // deliberate "leaves Tor" open link, nothing auto-loads.
+    if (torStrict()) return videoSuppressed(url, meta);
     // With a poster (imeta thumb): show the frame; preload="none" so the video itself loads only
     // on play. Without one: a calm play-facade (no black box) that loads nothing until clicked.
     if (meta?.thumb) {
         return html`<video class="media ${aspectClass(meta.dim)}" src="${href}" controls preload="none" playsinline${dimStyle(meta)} poster="${imgSrc(meta.thumb)}"></video>`;
     }
     return videoFacade(url, meta);
+}
+
+/** Strict Privacy Mode video: a calm ink panel whose play glyph OPENS the raw file in a new tab (a
+ * deliberate, user-chosen leak), with a quiet "opens outside Tor" caption. No inline <video src>, no
+ * h-get-to-/video - so nothing streams browser→host under Tor. Mirrors the suppressed YouTube player. */
+function videoSuppressed(url: string, meta?: MediaMeta): SafeHtml {
+    const href = safeUrl(url);
+    if (href === '#') return extLink(url, url);
+    return html`<a class="video-facade strict ${aspectClass(meta?.dim)}" href="${href}" target="_blank" rel="noreferrer noopener" aria-label="Open video (leaves Tor)" title="Open video (leaves Tor)">${icon('play', true)}<span class="video-strict-note">opens outside Tor</span></a>`;
 }
 
 /** No-poster play placeholder: a calm ink panel + play glyph (aspect-bucketed from the imeta

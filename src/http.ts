@@ -3,6 +3,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { renderToString, type SafeHtml } from './html.ts';
+import { torStrict } from './privacy.ts';
 import type { Session } from './session.ts';
 import type { BatchResult } from './wire.ts';
 export type { BatchResult };
@@ -133,26 +134,28 @@ export function readUpload(req: IncomingMessage, limit = 25 * 1024 * 1024): Prom
     });
 }
 
-const SECURITY_HEADERS: Record<string, string> = {
-    // A local daemon: keep it locked down. Both `script-src 'self'` AND `style-src 'self'`
-    // are strict (no 'unsafe-inline'): we emit ZERO inline styles - former dynamic values
-    // are class buckets (avatar hue .avatar-h0..35, poll width .pw-0..100, reply depth
-    // .depth-1..4) or HTML width/height attrs (media aspect-ratio). Nonces/hashes can't
-    // cover `style=` attributes anyway, so eliminating them is the only way to lock style-src.
-    // img-src 'self' data: - ALL images now load same-origin via our proxies (/media,
-    // /avatar, /yt/thumb) or as data: URIs, so the browser physically can't fetch an
-    // off-origin image even if a bug emitted a raw src (enforces the no-leak guarantee).
-    // media-src stays * (video isn't proxied - it streams direct on play). Videos use
-    // preload="none", so NOTHING is fetched until the user presses play: no passive on-load
-    // IP leak; the only exposure is the explicit play (a per-Privacy-Mode proxy is a follow-up).
-    // frame-src allows
-    // ONLY the YouTube privacy player. script-src 'self' (iframe scripts run in YT's
-    // own origin, not ours, so framing doesn't loosen our XSS guard).
-    'Content-Security-Policy':
-        "default-src 'self'; img-src 'self' data:; media-src *; style-src 'self'; script-src 'self'; frame-src https://www.youtube-nocookie.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
-};
+// A local daemon: keep it locked down. Both `script-src 'self'` AND `style-src 'self'` are strict (no
+// 'unsafe-inline'): we emit ZERO inline styles - former dynamic values are class buckets (avatar hue
+// .avatar-h0..35, poll width .pw-0..100, reply depth .depth-1..4) or HTML width/height attrs (media
+// aspect-ratio). img-src 'self' data: - ALL images load same-origin via our proxies (/media, /avatar,
+// /yt/thumb) or data:, so the browser physically can't fetch an off-origin image even if a bug emitted
+// a raw src (enforces the no-leak guarantee).
+//   media-src / frame-src are PER-PRIVACY-MODE: off/balanced let video stream direct on play (preload=
+//   "none", so nothing loads until the explicit play) and allow the YouTube nocookie player. STRICT
+//   suppresses both at the render layer (videoSuppressed / the YT-player suppression) AND locks them
+//   here ('self' / 'none') as the CSP-level enforcement of strict's no-leak guarantee - the browser
+//   physically can't stream off-origin video or frame YouTube.
+function securityHeaders(): Record<string, string> {
+    const strict = torStrict();
+    const mediaSrc = strict ? "'self'" : '*';
+    const frameSrc = strict ? "'none'" : 'https://www.youtube-nocookie.com';
+    return {
+        'Content-Security-Policy':
+            `default-src 'self'; img-src 'self' data:; media-src ${mediaSrc}; style-src 'self'; script-src 'self'; frame-src ${frameSrc}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+    };
+}
 
 export function setCookie(ctx: Ctx, name: string, value: string, opts: { maxAge?: number } = {}): void {
     const res = ctx.res;
@@ -187,18 +190,18 @@ export function sendPage<C>(ctx: Ctx, content: SafeHtml, chrome: C, status = 200
     const errorHeaders = status >= 400 ? { 'H-Retarget': 'body', 'H-Reswap': 'inner' } : {};
     if (!pageRenderer) throw new Error('sendPage: no page renderer registered (call setPageRenderer at boot).');
     const body = renderToString(pageRenderer(content, chrome));
-    ctx.res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS, ...errorHeaders });
+    ctx.res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders(), ...errorHeaders });
     ctx.res.end(body);
 }
 
 /** Send a bare HTML fragment (helmjs partial swap target), with optional H-* headers. */
 export function sendFragment(ctx: Ctx, content: SafeHtml, extraHeaders: Record<string, string> = {}, status = 200): void {
-    ctx.res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS, ...extraHeaders });
+    ctx.res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders(), ...extraHeaders });
     ctx.res.end(renderToString(content));
 }
 
 export function redirect(ctx: Ctx, location: string, status = 303): void {
-    ctx.res.writeHead(status, { Location: location, ...SECURITY_HEADERS });
+    ctx.res.writeHead(status, { Location: location, ...securityHeaders() });
     ctx.res.end();
 }
 
@@ -214,7 +217,7 @@ export function safeReferer(ctx: Ctx): string {
 }
 
 export function notFound(ctx: Ctx, message = 'Not found'): void {
-    ctx.res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
+    ctx.res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...securityHeaders() });
     ctx.res.end(message);
 }
 
@@ -291,7 +294,7 @@ export function sendSignRequest(
         'H-Nostr-Sign': continuationUrl,
         'H-Nostr-Method': method,
         'H-Reswap': 'none',
-        ...SECURITY_HEADERS,
+        ...securityHeaders(),
     });
     ctx.res.end(signRequestBody(template));
 }

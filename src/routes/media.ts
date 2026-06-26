@@ -9,6 +9,8 @@ import { isPublicHttpUrl } from '../ssrf.ts';
 import { torFetch } from '../data/torfetch.ts';
 import { getAvatarBytes, putAvatarBytes } from '../data/avatar-cache.ts';
 import { sendFragment, type Ctx } from '../http.ts';
+import { html, safeUrl } from '../html.ts';
+import { torStrict } from '../privacy.ts';
 import { videoEmbed } from '../render/content.ts';
 
 const MAX_BYTES = 25 * 1024 * 1024;  // generous for images, but bounded
@@ -52,7 +54,11 @@ export async function getMedia(ctx: Ctx): Promise<void> {
 
 /** GET /video?u=<url>&dim=<dim> - the autoplaying <video> for a poster-less video facade,
  * swapped in (helmjs) when the user clicks the play placeholder. Render-only (the <video src>
- * still streams direct, like all video); the facade's <a href> is the no-JS fallback. */
+ * still streams direct, like all video); the facade's <a href> is the no-JS fallback. In strict
+ * Privacy Mode the facade never offers this h-get, but guard defensively - return the raw-file open
+ * link (a deliberate "leaves Tor" tab) instead of an inline streaming <video>. */
 export function getVideoEmbed(ctx: Ctx): void {
-    sendFragment(ctx, videoEmbed(ctx.query.get('u') ?? '', ctx.query.get('dim') ?? undefined));
+    const url = ctx.query.get('u') ?? '';
+    if (torStrict()) { sendFragment(ctx, html`<a class="video-facade-play strict-link" href="${safeUrl(url)}" target="_blank" rel="noreferrer noopener">▶ Open video (leaves Tor)</a>`); return; }
+    sendFragment(ctx, videoEmbed(url, ctx.query.get('dim') ?? undefined));
 }

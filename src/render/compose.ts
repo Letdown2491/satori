@@ -5,6 +5,8 @@
 import { randomBytes } from 'node:crypto';
 import { html, raw, type SafeHtml } from '../html.ts';
 import { imgSrc } from './content.ts';
+import { icon } from './svg.ts';
+import { torStrict } from '../privacy.ts';
 
 /** The compose file input. After an enhanced Attach, /upload re-emits this with
  * `h-oob` so helmjs swaps it (by id) back to empty - otherwise the input keeps
@@ -20,9 +22,11 @@ export function mediaItem(imeta: string[]): SafeHtml {
     const id = `media-${randomBytes(6).toString('hex')}`;
     const url = imeta.find((t) => t.startsWith('url '))?.slice(4) ?? '';
     const mime = imeta.find((t) => t.startsWith('m '))?.slice(2) ?? '';
-    const thumb = mime.startsWith('video/')
-        ? html`<video class="media-thumb" src="${url}" muted></video>`
-        : html`<img class="media-thumb" src="${imgSrc(url)}" alt="attachment">`;
+    // Strict Privacy Mode: a raw <video src> would fetch (metadata) browser→host, leaking your IP even for
+    // your own upload. Show a non-loading video glyph instead - the imeta hidden input still carries the url.
+    const thumb = !mime.startsWith('video/') ? html`<img class="media-thumb" src="${imgSrc(url)}" alt="attachment">`
+        : torStrict() ? html`<div class="media-thumb media-thumb-vid">${icon('play', true)}</div>`
+        : html`<video class="media-thumb" src="${url}" muted></video>`;
     return html`
       <div class="media-item" id="${id}">
         <input type="hidden" name="imeta" value="${JSON.stringify(imeta)}">
