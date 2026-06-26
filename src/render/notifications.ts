@@ -10,7 +10,7 @@ import { avatar, displayName, timeAgo, type ProfileMap } from './util.ts';
 import { withEmoji } from './content.ts';
 import { emojiFromTags } from '../nostr/nip30.ts';
 import { icon } from './svg.ts';
-import { replyParent } from '../nostr/nip10.ts';
+import { replyRoot } from '../nostr/nip10.ts';
 import { parseZapReceipt, type Notif } from '../data/notifications.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
@@ -63,7 +63,9 @@ function reactionRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
  * PARENT note's thread (where it shows inline). The reply itself has no public thread of its own, so we
  * never link to it - we point back to the note it answers. */
 function privateReplyRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
-    const parentId = replyParent(ev)?.id;
+    // Link to the thread ROOT (the public note), never the immediate parent: in a private sub-conversation
+    // the parent is an unpublished private reply, so /t/<parent> would 404. The root is always published.
+    const parentId = replyRoot(ev)?.id;
     let note: SafeHtml = html`your note`;
     if (parentId) { try { note = html`<a href="/t/${neventEncode({ id: parentId })}" h-scroll="top instant">your note</a>`; } catch { /* keep text */ } }
     return html`<li class="notif-row notif-private">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'sm')}

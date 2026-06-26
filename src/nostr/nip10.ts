@@ -19,3 +19,12 @@ export function replyParent(note: NostrEvent): { id: string; relays: string[] } 
     if (!tag || !tag[1]) return null;
     return { id: tag[1], relays: tag[2] ? [tag[2]] : [] };
 }
+
+/** The thread ROOT a reply belongs to - the "root"-marked e-tag, else the reply target. For a PRIVATE
+ * reply this is the PUBLIC note the conversation hangs off (always published, so a linkable /t/), unlike
+ * the immediate parent which, in a private sub-conversation, is an UNPUBLISHED private reply (a dead link). */
+export function replyRoot(note: NostrEvent): { id: string; relays: string[] } | null {
+    const root = (note.tags || []).find((t) => t[0] === 'e' && t[1] && t[3] === 'root');
+    if (root && root[1]) return { id: root[1], relays: root[2] ? [root[2]] : [] };
+    return replyParent(note); // no explicit root marker → the reply target (a direct reply's root IS its parent)
+}
