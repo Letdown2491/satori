@@ -551,13 +551,16 @@ export function pagerSentinel(href: string): SafeHtml {
  *  - `more` (a `until` cursor): renders the click-only "Continue reading" that swaps in the next batch. */
 export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: number }): SafeHtml {
     const mark = opts.markTs ? raw(` h-get="/feed/seen?ts=${String(opts.markTs)}" h-trigger="intersect once" h-swap="none" h-push-url="false"`) : raw('');
-    // Caught up → a QUIET door to the older backlog (don't tempt a doomscroll the moment you're told to
-    // rest). More new still waiting → the inviting accent "Continue reading". The affordance matches the message.
-    const cont = opts.more === undefined ? null
-        : opts.caughtUp
-            ? html`<a class="see-earlier quiet" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">See earlier posts</a>`
-            : html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`;
-    // ensō LAST: a clearing is a completion, and the seal (落款) stamps a finished work closed - it trails
-    // the text here, unlike the OPENING empty states (search/empty-feed) where the ensō leads to center you.
-    return html`<li class="empty caught-up" id="feed-clearing"${mark}><span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${enso(40, true)}${cont}</li>`;
+    // The ensō trails as the closing seal (落款). When you're CAUGHT UP, the seal IS the quiet gateway to
+    // the older backlog - an unlabeled, hover/touch-discovered gesture, so "rest" isn't undercut by a UI
+    // button inviting a backlog scroll. It stays a real link (aria-label + keyboard focus). When there's
+    // genuinely MORE NEW below, that gets a visible "Continue reading" invite instead (it SHOULD be found).
+    const older = opts.caughtUp && opts.more !== undefined;
+    const seal = older
+        ? html`<a class="enso-link" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false" aria-label="See earlier posts" title="See earlier posts">${enso(40, true)}</a>`
+        : enso(40, true);
+    const cont = (!opts.caughtUp && opts.more !== undefined)
+        ? html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`
+        : null;
+    return html`<li class="empty caught-up" id="feed-clearing"${mark}><span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${seal}${cont}</li>`;
 }

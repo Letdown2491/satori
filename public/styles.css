@@ -1292,6 +1292,11 @@
         /* The "caught up" clearing - a deliberate end to the feed; older notes are
            opt-in past the line (design for exit, not endless scroll). */
         .caught-up { padding: 48px 20px; border-top: 1px solid var(--border); }
+        /* When you're caught up, the ensō IS the (unlabeled) gateway to older posts/notifications. A gentle
+           scale on hover/focus is the only hint it's tappable - discovered, not advertised. Keyboard-focusable. */
+        .enso-link { display: inline-flex; cursor: pointer; border-radius: 50%; transition: transform 0.25s ease; }
+        .enso-link:hover { transform: scale(1.08); }
+        .enso-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
         /* The caught-up affirmation wears the vermilion seal (with the ensō) - one state, one accent -
            so it reads as the headline above the deliberately-quiet "see older/earlier" door. Applies to
            BOTH clearings (feed + notifications) so the catch-up moment is identical across the app. */

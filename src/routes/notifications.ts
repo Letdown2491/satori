@@ -4,7 +4,7 @@
 
 import { html, type SafeHtml } from '../html.ts';
 import { fetchMyPollIds, fetchNotifications, parseZapReceipt, type Notif } from '../data/notifications.ts';
-import { notifList, notifCaughtUp, seeOlder } from '../render/notifications.ts';
+import { notifList, notifCaughtUp } from '../render/notifications.ts';
 import { pagerSentinel } from '../render/note.ts';
 import { notifBell } from '../render/layout.ts';
 import { ensureLists, mutedPubkeys } from '../actions.ts';
@@ -63,7 +63,7 @@ export async function getNotifications(ctx: Ctx): Promise<void> {
     const seenMode = ctx.query.get('seen') === '1'; // "See older": the already-seen history below the boundary
     // Only an in-page swap (the #more pager or the #see-older control) gets a bare fragment; a boosted
     // navigation is also isPartial but needs the full page (chrome), so gate on the swap target.
-    const inPageSwap = ctx.isPartial && (ctx.hTarget === '#more' || ctx.hTarget === '#see-older');
+    const inPageSwap = ctx.isPartial && (ctx.hTarget === '#more' || ctx.hTarget === '#notif-clearing');
     const wrap = (frag: SafeHtml): void => {
         if (inPageSwap) sendFragment(ctx, frag);
         else sendPage(ctx, html`<ul class="feed" id="feed">${frag}</ul>`, chromeFor(ctx, s, { active: 'notifications', title: 'Notifications' }));
@@ -82,10 +82,9 @@ export async function getNotifications(ctx: Ctx): Promise<void> {
     // SEEN history: one continuous, newest-first list paginated by `until`. No boundary logic.
     if (seenMode) {
         const more = fullPage && oldest ? pagerSentinel(`/notifications?seen=1&until=${String(oldest - 1)}`) : html``;
-        // The "See older" click reveals history below the boundary, so the "all caught up" clearing
-        // left above the button no longer belongs - OOB-clear it (only on that first reveal click).
-        const clearTop = ctx.hTarget === '#see-older' ? html`<li id="notif-clearing" h-oob="true"></li>` : html``;
-        wrap(html`${notifList(visible, s.profiles, s)}${more}${clearTop}`);
+        // The tappable ensō (#notif-clearing) is swapped OUTER with this seen history, so the "caught up"
+        // clearing is replaced in place - no separate OOB clear needed.
+        wrap(html`${notifList(visible, s.profiles, s)}${more}`);
         return;
     }
 
@@ -105,7 +104,7 @@ export async function getNotifications(ctx: Ctx): Promise<void> {
     // close it: the "caught up" clearing, plus "See older" when there's already-seen history to reveal.
     const tail = !reachedBoundary && fullPage && oldest
         ? pagerSentinel(`/notifications?until=${String(oldest - 1)}&nb=${String(boundary)}`)
-        : html`${notifCaughtUp(newVisible.length > 0)}${reachedBoundary ? seeOlder(boundary) : html``}`;
+        : notifCaughtUp(newVisible.length > 0, reachedBoundary ? boundary : undefined);
     wrap(html`${notifList(newVisible, s.profiles, s)}${tail}`);
 }
 

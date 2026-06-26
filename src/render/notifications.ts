@@ -15,16 +15,19 @@ import { parseZapReceipt, type Notif } from '../data/notifications.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
 
-/** The "caught up" clearing that closes the NEW set: the boundary between new notifications
- * (above) and your already-seen history (below the "See older" control). `hadNew` is whether
- * any new items sit above it - if not, it's the calm "you're all caught up" empty state. */
-export function notifCaughtUp(hadNew: boolean): SafeHtml {
-    return html`<li class="empty notif-clearing" id="notif-clearing"><span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}${enso(40, true)}</li>`;
+/** The "caught up" clearing that closes the NEW set. The trailing ensō IS the quiet gateway to your
+ * already-seen history when `olderUntil` is given (an unlabeled, hover/touch-discovered gesture - we
+ * don't invite a backlog scroll the moment you're caught up); it stays a real link (aria-label + keyboard
+ * focus). `hadNew` is whether any new items sit above it - if not, the calm "you're all caught up" state. */
+export function notifCaughtUp(hadNew: boolean, olderUntil?: number): SafeHtml {
+    const seal = olderUntil !== undefined
+        ? html`<a class="enso-link" href="/notifications?seen=1&until=${String(olderUntil)}" h-get h-target="#notif-clearing" h-swap="outer" h-push-url="false" aria-label="See older notifications" title="See older notifications">${enso(40, true)}</a>`
+        : enso(40, true);
+    return html`<li class="empty notif-clearing" id="notif-clearing"><span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}${seal}</li>`;
 }
 
-/** The control under the clearing that reveals already-seen history (older than `until` = your
- * read high-water). Self-swaps in place with [seen rows][intersect pager], paginated continuously
- * - no gap. A real <a href> so it degrades to a full older-history page with JS off. */
+/** @deprecated The "see older" history is now the tappable ensō in notifCaughtUp. Kept for any callers.
+ * Self-swaps in place with [seen rows][intersect pager], paginated continuously - no gap. */
 export function seeOlder(until: number): SafeHtml {
     const url = `/notifications?seen=1&until=${String(until)}`;
     return html`<li class="notif-earlier" id="see-older"><a class="see-earlier quiet" href="${url}" h-get h-target="#see-older" h-swap="outer" h-push-url="false">See older notifications</a></li>`;
