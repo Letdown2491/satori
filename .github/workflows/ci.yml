@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancel an in-progress run when a branch is pushed again.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gate on the engines floor (>=22.6, where node's --experimental-strip-types landed):
+      # if it works on the floor it works above, and dev runs newer.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install (clean, from the lockfile)
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # The app has no build step - it runs TS directly via node's type stripping. tsc and the
+      # runtime stripper can disagree (and tsc won't catch a forgotten new file at runtime), so
+      # boot the server and confirm it actually serves. A 303 (login redirect on an unclaimed
+      # instance) counts as up; only a non-response fails.
+      - name: Boot smoke test
+        run: |
+          PORT=8787 node --experimental-strip-types src/server.ts &
+          SRV=$!
+          ok=
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8787/" || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then echo "server responded with HTTP $code"; ok=1; break; fi
+            sleep 0.5
+          done
+          kill "$SRV" 2>/dev/null || true
+          if [ -z "$ok" ]; then echo "server did not respond within 10s"; exit 1; fi

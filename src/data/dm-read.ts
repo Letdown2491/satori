@@ -6,6 +6,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { debouncedFlush } from './json-store.ts';
 
 const FILE = process.env.SATORI_DM_READ || join(process.cwd(), '.data', 'dm-read.json');
 const BASELINE = '*'; // reserved key: "everything at/before here is considered read"
@@ -19,15 +20,11 @@ const read = new Map<string, Acct>();
     } catch { /* none yet */ }
 })();
 
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-function flush(): void {
-    if (flushTimer) return;
-    flushTimer = setTimeout(() => {
-        flushTimer = null;
-        try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(Object.fromEntries(read)), { mode: 0o600 }); }
-        catch (e) { console.warn('[dm-read] flush failed:', (e as Error)?.message ?? e); }
-    }, 5000);
-}
+const flusher = debouncedFlush(() => {
+    try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(Object.fromEntries(read)), { mode: 0o600 }); }
+    catch (e) { console.warn('[dm-read] flush failed:', (e as Error)?.message ?? e); }
+}, 5000);
+const flush = (): void => flusher.schedule();
 
 /** Set the forward-looking baseline on first sight of an account (so pre-existing convos
  * don't all show unread). No-op once set. */

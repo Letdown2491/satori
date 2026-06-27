@@ -15,17 +15,12 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { decode } from 'nostr-tools/nip19';
+import { pubkeyFromBech } from './nostr/nip19.ts';
 
 const OWNER_FILE = process.env.SATORI_OWNER_FILE || join(process.cwd(), '.data', 'owner.json');
 
 /** npub / nprofile / 64-hex → hex pubkey, or null. */
-function toHex(s: string): string | null {
-    const t = s.trim();
-    if (/^[0-9a-f]{64}$/i.test(t)) return t.toLowerCase();
-    try { const d = decode(t); if (d.type === 'npub') return d.data; if (d.type === 'nprofile') return d.data.pubkey; } catch { /* not bech32 */ }
-    return null;
-}
+const toHex = (s: string): string | null => pubkeyFromBech(s.trim());
 const parseList = (env: string | undefined): string[] => (env ?? '').split(/[\s,]+/).map(toHex).filter((x): x is string => !!x);
 
 const OPEN = /^(1|true|yes|on)$/i.test(process.env.SATORI_OPEN ?? '');

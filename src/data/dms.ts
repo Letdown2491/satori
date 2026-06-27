@@ -8,6 +8,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { debouncedFlush } from './json-store.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { mutedPubkeys } from '../actions.ts';
 import { dmUnread } from './dm-read.ts';
@@ -78,15 +79,11 @@ const cache = new Map<string, Entry>();
     } catch { /* none yet */ }
 })();
 
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleFlush(): void {
-    if (flushTimer) return;
-    flushTimer = setTimeout(() => {
-        flushTimer = null;
-        try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 }); }
-        catch (e) { console.warn('[dms] cache flush failed:', (e as Error)?.message ?? e); }
-    }, 5000);
-}
+const flusher = debouncedFlush(() => {
+    try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 }); }
+    catch (e) { console.warn('[dms] cache flush failed:', (e as Error)?.message ?? e); }
+}, 5000);
+const scheduleFlush = (): void => flusher.schedule();
 
 /** Wipe the plaintext DM cache - called on logout so a different account never reads it. */
 export function clearDmCache(): void {

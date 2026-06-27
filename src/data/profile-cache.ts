@@ -6,6 +6,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { debouncedFlush, lruEvictByLastUsed } from './json-store.ts';
 import { verifyNip05 } from '../nostr/nip05.ts';
 import type { Profile } from './profiles.ts';
 
@@ -26,25 +27,12 @@ let hits = 0, misses = 0, staleRefreshes = 0; // lightweight instrumentation
     } catch { /* no cache yet */ }
 })();
 
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleFlush(): void {
-    if (flushTimer) return; // at most one write per window; the Map is current at flush time
-    flushTimer = setTimeout(() => {
-        flushTimer = null;
-        try {
-            mkdirSync(dirname(FILE), { recursive: true });
-            writeFileSync(FILE, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 });
-        } catch (e) { console.warn('[profile-cache] flush failed:', (e as Error)?.message ?? e); }
-    }, 8000);
-}
-
-function evictIfNeeded(): void {
-    if (cache.size <= CAP) return;
-    // Drop the least-recently-used ~10% in one pass (cheap; rarely runs).
-    const oldest = [...cache.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-    const drop = Math.ceil(cache.size - CAP + CAP * 0.1);
-    for (let i = 0; i < drop && i < oldest.length; i++) cache.delete(oldest[i]![0]);
-}
+const flusher = debouncedFlush(() => {
+    try {
+        mkdirSync(dirname(FILE), { recursive: true });
+        writeFileSync(FILE, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 });
+    } catch (e) { console.warn('[profile-cache] flush failed:', (e as Error)?.message ?? e); }
+}, 8000);
 
 const verifying = new Set<string>();
 
@@ -59,7 +47,7 @@ function maybeVerifyNip05(pubkey: string, e: Entry): void {
     void verifyNip05(nip05, pubkey)
         .then((ok) => { e.profile.nip05Verified = ok; })
         .catch(() => { e.profile.nip05Verified = false; })
-        .finally(() => { e.nip05At = Date.now(); verifying.delete(pubkey); scheduleFlush(); });
+        .finally(() => { e.nip05At = Date.now(); verifying.delete(pubkey); flusher.schedule(); });
 }
 
 /** Cached profile (marks it recently used), or undefined. Reads don't trigger a flush. */
@@ -113,6 +101,6 @@ export function putProfile(pubkey: string, profile: Profile): void {
     const e: Entry = { profile, fetchedAt: Date.now(), lastUsed: Date.now(), nip05At };
     cache.set(pubkey, e);
     maybeVerifyNip05(pubkey, e);
-    evictIfNeeded();
-    scheduleFlush();
+    lruEvictByLastUsed(cache, CAP);
+    flusher.schedule();
 }

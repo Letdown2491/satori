@@ -8,7 +8,8 @@
 import type { Pool } from './data/pool.ts';
 import type { Signer } from './data/signer.ts';
 import type { RelayList, NostrEvent, UnsignedEvent } from './nostr/types.ts';
-import { INDEXER_RELAYS } from './nostr/nip65.ts';
+import { INDEXER_RELAYS, writeRelaysFor } from './nostr/nip65.ts';
+import { nowSec } from './nostr/tags.ts';
 import { torRequest } from './data/torfetch.ts';
 import { isPublicHttpUrl } from './ssrf.ts';
 
@@ -16,9 +17,9 @@ const KIND_BLOSSOM_LIST = 10063;
 // Fallback when you haven't set a kind:10063 media-server list, so uploads work
 // out-of-box. Override by adding your own in Settings → Media servers.
 export const DEFAULT_BLOSSOM_SERVER = 'https://blossom.primal.net';
-const now = () => Math.floor(Date.now() / 1000);
+const now = nowSec;
 const trim = (u: string) => u.replace(/\/+$/, '');
-const serverWriteTargets = (r: RelayList | null): string[] => (r && r.write.length ? r.write : INDEXER_RELAYS);
+const serverWriteTargets = (r: RelayList | null): string[] => writeRelaysFor(r);
 
 export interface Upload { url: string; imeta: string[] } // a single NIP-92 imeta tag
 

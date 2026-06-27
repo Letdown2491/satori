@@ -30,14 +30,16 @@ function pic(pubkey: string, profiles?: ProfileMap): string | undefined {
 }
 
 /** NIP-36 content warning: the reason string, '' (tag with no reason), or null. */
-function contentWarning(ev: NostrEvent): string | null {
+export function contentWarning(ev: NostrEvent): string | null {
     const t = ev.tags.find((x) => x[0] === 'content-warning');
     return t ? (t[1] ?? '') : null;
 }
 
-/** Blur the rendered content behind a tap-to-reveal overlay (zero-JS via a hidden
- * checkbox whose label is the overlay; checking reveals + stays, like Satori). */
-function cwWrap(inner: SafeHtml, reason: string, evId: string): SafeHtml {
+/** Blur the rendered content behind a tap-to-reveal overlay (zero-JS via a hidden checkbox whose
+ * label is the overlay). Both the overlay and the corner "hide" pill are labels for the SAME checkbox,
+ * so revealing and re-hiding are both one tap: the overlay (shown while hidden) checks it, the hide
+ * pill (shown while revealed) unchecks it. Re-hideable, unlike the old one-way reveal. */
+export function cwWrap(inner: SafeHtml, reason: string, evId: string): SafeHtml {
     const cwid = `cw-${evId}`;
     return html`
       <div class="cw">
@@ -47,13 +49,14 @@ function cwWrap(inner: SafeHtml, reason: string, evId: string): SafeHtml {
           <span class="cw-reason">${reason ? `Content warning · ${reason}` : 'Content warning'}</span>
           <span class="cw-tap">tap to reveal</span>
         </label>
+        <label class="cw-hide" for="${raw(cwid)}">hide</label>
       </div>`;
 }
 
 /** Estimate whether a note's TEXT is tall enough to clamp (Satori measures pixel
  * height in JS at 400px; with no client JS we approximate from wrapped line count,
  * skipping bare media-URL lines so image/video notes stay fully visible). */
-function isTallText(content: string): boolean {
+export function isTallText(content: string): boolean {
     let lines = 0;
     for (const raw of content.split('\n')) {
         const line = raw.trim();
@@ -85,7 +88,7 @@ function hasTallMedia(ev: NostrEvent): boolean {
 }
 
 /** Clamp tall content behind a "Show more"/"Show less" toggle (zero-JS checkbox). */
-function clampWrap(inner: SafeHtml, evId: string): SafeHtml {
+export function clampWrap(inner: SafeHtml, evId: string): SafeHtml {
     const id = `more-${evId}`;
     return html`
       <div class="clamp">
@@ -95,10 +98,44 @@ function clampWrap(inner: SafeHtml, evId: string): SafeHtml {
       </div>`;
 }
 
+/** FULLY collapse content behind a "Show more"/"Show less" toggle (zero-JS checkbox), the toggle on
+ * TOP so it sits right under whatever precedes it. Unlike clampWrap (which previews ~340px then fades),
+ * this hides the content entirely until asked - for secondary matter like a podcast's show-notes, where
+ * a partial preview is just a wall of text under the payload (the player). */
+export function collapse(inner: SafeHtml, evId: string): SafeHtml {
+    const id = `det-${evId}`;
+    return html`
+      <div class="collapse">
+        <input type="checkbox" class="collapse-toggle" id="${raw(id)}">
+        <label class="show-more collapse-label" for="${raw(id)}"></label>
+        <div class="collapse-inner">${inner}</div>
+      </div>`;
+}
+
+// --- card-kind body helpers (shared by the manifest handlers + the declarative engine) ---------------
+
+/** The card title line (bold, in a .content block), or null when untitled. One place to change the title
+ * treatment for every kind (picture/podcast/calendar/classified/video + the engine). */
+export const cardTitle = (title: string): SafeHtml | null =>
+    title ? html`<div class="content"><strong>${title}</strong></div>` : null;
+
+/** Clamp `rendered` behind Show-more when `clamp` is on and `measure` is tall text; else pass through
+ * (null in → null out). `measure` is separate from `rendered` because some kinds measure the raw source
+ * while rendering a transformed body. */
+export const clampIfTall = (rendered: SafeHtml | null, measure: string, clamp: boolean, evId: string): SafeHtml | null =>
+    rendered && clamp && isTallText(measure) ? clampWrap(rendered, evId) : rendered;
+
+/** Wrap `visual` in the NIP-36 tap-to-reveal CW overlay when the event is content-warned, else pass it
+ * through. The `!== null` test is deliberate: an empty-string reason still warns, so it must still wrap. */
+export const cwIfFlagged = (ev: NostrEvent, visual: SafeHtml): SafeHtml => {
+    const cw = contentWarning(ev);
+    return cw !== null ? cwWrap(visual, cw, ev.id) : visual;
+};
+
 /** Rendered note content: CW reveal if flagged, else a Show-more clamp if the text
  * is long (unless `clamp` is false - the focused thread note shows in full). */
 function noteContent(ev: NostrEvent, profiles?: ProfileMap, clamp = true, media?: MediaPrefs, imeta?: ImetaMap): SafeHtml {
-    const body = renderContent(ev.content, profiles, true, media, imeta, parseEmojiTags(ev));
+    const body = renderContent(ev.content, profiles, true, media, imeta, parseEmojiTags(ev), ev.pubkey);
     const cw = contentWarning(ev);
     if (cw !== null) return cwWrap(body, cw, ev.id);
     return clamp && isTallText(ev.content) ? clampWrap(body, ev.id) : body;
@@ -112,8 +149,20 @@ function authorName(pubkey: string, profiles?: ProfileMap): SafeHtml {
     return html`<a class="author" href="/u/${npub(pubkey)}" h-get h-prefetch="hover" h-scroll="top instant">${withEmoji(displayName(pubkey, profiles), p?.emoji)}${badge}</a>`;
 }
 
-function neventFor(ev: NostrEvent): string {
+export function neventFor(ev: NostrEvent): string {
     try { return neventEncode({ id: ev.id, author: ev.pubkey }); } catch { return ev.id; }
+}
+
+/** The repeated author-avatar link: a boosted, prefetch-on-hover link to the author's profile
+ * wrapping their avatar. `size` passes through to `avatar` (the `sm` byline variant). */
+function authorAvatarLink(pubkey: string, profiles?: ProfileMap, size?: 'sm' | 'xs' | 'lg'): SafeHtml {
+    return html`<a href="/u/${npub(pubkey)}" aria-label="author" h-get h-prefetch="hover" h-scroll="top instant">${avatar(pubkey, pic(pubkey, profiles), size)}</a>`;
+}
+
+/** The repeated "View thread" timestamp link: the `timeAgo` stamp + thread glyph linking to the
+ * conversation. `href` is the target (a note's /t/ thread or an article's /a/); `label` the aria-label. */
+function threadTime(href: string, ts: number, label = 'View thread'): SafeHtml {
+    return html`<a class="time time-thread" href="${href}" aria-label="${label}" h-get h-prefetch="hover" h-scroll="top instant">${timeAgo(ts)}${icon('thread')}</a>`;
 }
 
 /** The "in reply to" card: a link to the parent's thread that lazily loads the
@@ -333,6 +382,29 @@ export function noteCard(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opt
     return renderEvent(ev, 'timeline', { profiles, s, opts });
 }
 
+/** The shared SIMPLE-kind card: the `.note` shell (avatar + head + the kind's action row) around a
+ * kind-specific BODY. A new simple kind supplies only its body + field extraction instead of re-rolling
+ * the shell; bespoke kinds (noteRow/articleRow) stay hand-written. `compact` (embed) drops the actions.
+ * The action row is kind-aware (noteActions reads the kind's declared `actions`), so each kind shows its
+ * own affordances. */
+export function cardShell(ev: NostrEvent, profiles: ProfileMap | undefined, s: Session | undefined, body: SafeHtml, opts: { compact?: boolean; lightboxes?: SafeHtml } = {}): SafeHtml {
+    const nevent = neventFor(ev);
+    // `lightboxes` (the hoisted media overlays, built via mediaOverlays) ride OUTSIDE the `.note` <li> -
+    // its content-visibility would otherwise trap the position:fixed overlay (same hoist noteCard does).
+    return html`
+      <li class="note">
+        ${authorAvatarLink(ev.pubkey, profiles)}
+        <div class="note-body">
+          <div class="note-head">
+            ${authorName(ev.pubkey, profiles)}
+            ${threadTime(`/t/${nevent}`, ev.created_at)}
+          </div>
+          ${body}
+          ${opts.compact ? null : noteActions(ev, nevent, s)}
+        </div>
+      </li>${opts.lightboxes ?? null}`;
+}
+
 /** One note as a feed/thread <li>, in Satori's flex `.note` layout. `depth` indents nested replies
  * (with the thread line), matching the thread view. A `pending` note self-polls /note/tick (countdown
  * → confirm in place / undo). The note/poll timeline render - the registry's fallback handler. */
@@ -348,12 +420,12 @@ export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts
         : opts.mute ? raw(` id="card-${ev.id}"`) : raw(''); // mute glyph dismisses this card by id (ev.id is verified 64-hex via SimplePool verifyEvent → raw()-safe)
     return html`
       <li class="${cls}"${liExtra}>
-        <a href="/u/${npub(ev.pubkey)}" aria-label="author" h-scroll="top instant">${avatar(ev.pubkey, pic(ev.pubkey, profiles))}</a>
+        ${authorAvatarLink(ev.pubkey, profiles)}
         <div class="note-body">
           <div class="note-head">
             ${authorName(ev.pubkey, profiles)}
             ${opts.isPrivate ? html`<span class="private-mark" title="Private reply - only you and the author can see it">${icon('lock')}<span class="sr-only">Private reply</span></span>` : null}
-            ${p || opts.isPrivate ? html`<span class="time">${p ? html`now` : timeAgo(ev.created_at)}</span>` : html`<a class="time time-thread" href="/t/${nevent}" aria-label="View thread" h-get h-prefetch="hover" h-scroll="top instant">${timeAgo(ev.created_at)}${icon('thread')}</a>`}
+            ${p || opts.isPrivate ? html`<span class="time">${p ? html`now` : timeAgo(ev.created_at)}</span>` : threadTime(`/t/${nevent}`, ev.created_at)}
           </div>
           ${parent}
           ${noteContent(ev, profiles, true, s?.media, im)}
@@ -402,7 +474,7 @@ export function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): 
     const a = parseArticle(ev);
     return html`
       <li class="note article-row">
-        <a href="/u/${npub(ev.pubkey)}" aria-label="author" h-scroll="top instant">${avatar(ev.pubkey, pic(ev.pubkey, profiles))}</a>
+        ${authorAvatarLink(ev.pubkey, profiles)}
         <div class="note-body">
           <div class="note-head">
             ${authorName(ev.pubkey, profiles)}
@@ -421,7 +493,7 @@ export function focusedNote(ev: NostrEvent, profiles?: ProfileMap, s?: Session, 
     const im = parseImeta(ev);
     return html`
       <li class="note focused">
-        <a href="/u/${npub(ev.pubkey)}" aria-label="author" h-scroll="top instant">${avatar(ev.pubkey, pic(ev.pubkey, profiles))}</a>
+        ${authorAvatarLink(ev.pubkey, profiles)}
         <div class="note-body">
           <div class="note-head">
             ${authorName(ev.pubkey, profiles)}
@@ -517,7 +589,7 @@ export function articleReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session
         ${cover}
         <h1 class="article-title">${a.title}</h1>
         <div class="article-byline">
-          <a href="/u/${npub(ev.pubkey)}" aria-label="author" h-scroll="top instant">${avatar(ev.pubkey, pic(ev.pubkey, profiles), 'sm')}</a>
+          ${authorAvatarLink(ev.pubkey, profiles, 'sm')}
           ${authorName(ev.pubkey, profiles)}
           <span class="article-byline-meta">· ${timeAgo(a.publishedAt)} · ${readingMinutes(a.content)} min read</span>
         </div>

@@ -15,7 +15,9 @@ export const noteHandler: KindHandler<SatoriDeps> = {
     async prepare(events, s, opts) {
         const ids = events.map((e) => e.id);
         await ensureReplies(s, ids, opts.full);
-        await ensureProfiles(s, replierPubkeys(ids));
+        // Replier avatars are a secondary touch (the reply faces); don't block first paint on them -
+        // they fill from cache or upgrade on the next render, like the custom-emoji warm.
+        void ensureProfiles(s, replierPubkeys(ids)).catch(() => {});
     },
     render(ev, surface, d) {
         if (surface === 'timeline') return noteRow(ev, d.profiles, d.s, d.opts);

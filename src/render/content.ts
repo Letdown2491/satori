@@ -15,6 +15,7 @@ import { torStrict } from '../privacy.ts';
 import type { MediaMeta, ImetaMap } from '../nostr/imeta.ts';
 import type { EmojiMap } from '../nostr/nip30.ts';
 import { refFor } from '../manifest/registry.ts';
+import { isHex64 } from '../nostr/tags.ts';
 
 const SHORTCODE = /:([a-zA-Z0-9_-]+):/g;
 
@@ -40,16 +41,29 @@ export function withEmoji(text: string, emoji?: EmojiMap): SafeHtml {
     return join(out);
 }
 
-function extLink(url: string, label: string): SafeHtml {
+export function extLink(url: string, label: string): SafeHtml {
     // Privacy: strip tracking params from BOTH the click target and the shown text. When the
     // label IS the url (the common case - a bare link), it gets cleaned too; a distinct label
     // (rare) is left as-is. YouTube links are already canonicalized upstream, so this is for
     // every other host's utm_*/fbclid/gclid cruft.
-    const clean = cleanTrackingParams(url);
+    const clean = rewriteToNitter(cleanTrackingParams(url));
     const href = safeUrl(clean);
     const text = label === url ? clean : label;
     if (href === '#') return html`${text}`; // unsafe scheme → inert text
     return html`<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
+
+/** A URL's bare hostname (no `www.`) for a compact link LABEL - the full url stays the href. Falls back
+ * to the raw value if it won't parse as a url, so a malformed source still shows something. */
+export function prettyHost(url: string): string {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
+/** An in-app reference chip: the `.mention`-styled link used for nostr references (quoted notes, article/
+ * listing/etc. refs, author credits) - one place for the markup so the inline tokenizer, the highlight
+ * card, and any future ref site stay in sync. `label` is escaped when a string. */
+export function mentionChip(href: string, label: SafeHtml | string): SafeHtml {
+    return html`<a class="mention" href="${href}" h-scroll="top instant">${label}</a>`;
 }
 
 // Tracking/analytics params we strip from displayed + clicked links. A conservative, well-known
@@ -76,6 +90,25 @@ export function cleanTrackingParams(url: string): string {
     return changed ? u.toString() : url; // toString() drops the trailing '?' when the query empties
 }
 
+// Privacy frontend: send x.com / twitter.com links to xcancel.com (a stable Nitter instance) - no login
+// wall, no JS, no tracking. Nitter mirrors Twitter's path structure, so the path carries over; we also
+// drop Twitter's `s`/`t` share-tracking params (safe to here, since we know the host). This is a pure
+// link rewrite - we render links, never server-fetched previews - so an xcancel outage only affects the
+// click in the reader's browser, never our page (unlike the dropped Piped PROXY seam). Applied at the
+// extLink chokepoint, so it covers link tokens (notes + articles); a URL the tokenizer classifies as media
+// (by file extension) bypasses it - irrelevant for Twitter, whose links never carry a media extension.
+const TWITTER_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com']);
+export function rewriteToNitter(url: string): string {
+    let u: URL;
+    try { u = new URL(url); } catch { return url; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return url;
+    if (!TWITTER_HOSTS.has(u.hostname.toLowerCase())) return url;
+    u.hostname = 'xcancel.com';
+    u.protocol = 'https:';
+    u.searchParams.delete('s'); u.searchParams.delete('t'); // Twitter share-tracking; xcancel ignores them anyway
+    return u.toString();
+}
+
 function mentionLink(pubkey: string, profiles?: ProfileMap): SafeHtml {
     return html`<a class="mention" href="/u/${npub(pubkey)}" h-scroll="top instant">@${withEmoji(displayName(pubkey, profiles), profiles?.get(pubkey)?.emoji)}</a>`;
 }
@@ -92,8 +125,12 @@ export function mentionPubkeys(text: string): string[] {
 /** The src for a DISPLAYED image: routed through our /media proxy so the browser never
  * hits the third-party host (the daemon's fetch honors Privacy Mode). safeUrl-invalid
  * → '#'. Video is not proxied yet (needs Range/streaming), so it stays direct. */
-export function imgSrc(url: string): string {
-    return safeUrl(url) === '#' ? '#' : `/media?u=${encodeURIComponent(url)}`;
+export function imgSrc(url: string, author?: string): string {
+    if (safeUrl(url) === '#') return '#';
+    // NIP-B7: pass the note author so the proxy can heal a dead Blossom-hash url from the author's
+    // other servers (kind:10063). Only a valid hex pubkey rides along; absent → no healing, as before.
+    const a = author && isHex64(author) ? `&author=${author}` : '';
+    return `/media?u=${encodeURIComponent(url)}${a}`;
 }
 
 function image(url: string): SafeHtml {
@@ -121,17 +158,23 @@ function aspectClass(dim?: string): string {
     return d.w > d.h ? 'landscape' : d.w < d.h ? 'portrait' : 'square';
 }
 
-function video(url: string, meta?: MediaMeta): SafeHtml {
+function video(url: string, meta?: MediaMeta, inline = false): SafeHtml {
     const href = safeUrl(url);
     if (href === '#') return extLink(url, url);
     // Strict Privacy Mode: a note video would stream browser→host (the lone CSP gap, leaks your IP). We
     // don't proxy video (Tor can't carry it well); instead suppress it like the YT player - poster + a
-    // deliberate "leaves Tor" open link, nothing auto-loads.
+    // deliberate "leaves Tor" open link, nothing auto-loads. (Overrides the inline pref - Strict wins.)
     if (torStrict()) return videoSuppressed(url, meta);
-    // With a poster (imeta thumb): show the frame; preload="none" so the video itself loads only
-    // on play. Without one: a calm play-facade (no black box) that loads nothing until clicked.
+    // With a poster (imeta thumb): show the frame; preload="none" so the video itself loads only on play -
+    // a real frame with NO fetch, so we use it regardless of the inline pref.
     if (meta?.thumb) {
         return html`<video class="media ${aspectClass(meta.dim)}" src="${href}" controls preload="none" playsinline${dimStyle(meta)} poster="${imgSrc(meta.thumb)}"></video>`;
+    }
+    // No poster. Inline pref ON: load the video so the browser shows its first frame + inline play
+    // (preload="metadata" = an on-load fetch to the host, the deliberate tradeoff). OFF (default): the
+    // calm no-fetch play-facade that loads nothing until clicked.
+    if (inline) {
+        return html`<video class="media ${aspectClass(meta?.dim)}" src="${href}" controls preload="metadata" playsinline${dimStyle(meta)}></video>`;
     }
     return videoFacade(url, meta);
 }
@@ -165,12 +208,13 @@ export function videoEmbed(url: string, dim?: string): SafeHtml {
     return html`<video class="media ${aspectClass(dim)}" src="${href}" controls autoplay playsinline preload="auto"${dimStyle({ dim })}></video>`;
 }
 
-/** Appearance media prefs (from the settings cookie): whether to auto-load images/videos
- * at all. (Video autoplay was removed by design - calm by default, never auto-playing.) */
-export interface MediaPrefs { autoLoad: boolean }
-const DEFAULT_MEDIA: MediaPrefs = { autoLoad: true };
+/** Appearance media prefs (from the settings cookie): whether to auto-load images/videos at all, and
+ * whether to load nostr videos inline (a real frame + inline play, at the cost of an on-load fetch to the
+ * video host) vs the no-fetch play facade. (Video autoplay was removed by design - calm, never auto-playing.) */
+export interface MediaPrefs { autoLoad: boolean; inlineVideo?: boolean }
+const DEFAULT_MEDIA: MediaPrefs = { autoLoad: true, inlineVideo: false };
 
-interface MediaItem { type: 'image' | 'video'; url: string; id: string; meta?: MediaMeta }
+interface MediaItem { type: 'image' | 'video'; url: string; id: string; meta?: MediaMeta; author?: string }
 
 /** A stable per-URL id for the lightbox slide (the tile links to `#<id>`). Two
  * notes sharing an image collide harmlessly (both overlays would open). */
@@ -179,12 +223,12 @@ const mediaId = (url: string): string => `lb-${shortHash(url)}`;
 /** Gather a run of adjacent media starting at `i` (absorbing whitespace-only text
  * between items); returns the run + the index just after it. Shared by renderContent
  * (inline tiles) and mediaRuns (the hoisted overlays), so their slide ids line up. */
-function gatherRun(toks: ReturnType<typeof tokenize>, i: number, imeta?: ImetaMap): { run: MediaItem[]; next: number } {
+function gatherRun(toks: ReturnType<typeof tokenize>, i: number, imeta?: ImetaMap, author?: string): { run: MediaItem[]; next: number } {
     const run: MediaItem[] = [];
     let j = i;
     while (j < toks.length) {
         const t = toks[j]!;
-        if (t.t === 'image' || t.t === 'video') { run.push({ type: t.t, url: t.url, id: mediaId(t.url), meta: imeta?.get(t.url) }); j++; }
+        if (t.t === 'image' || t.t === 'video') { run.push({ type: t.t, url: t.url, id: mediaId(t.url), meta: imeta?.get(t.url), author }); j++; }
         else if (t.t === 'text' && t.value.trim() === '') j++;
         else break;
     }
@@ -211,7 +255,7 @@ function singleImage(m: MediaItem, lightbox: boolean): SafeHtml {
     // aria-label gives the icon/image-only link an accessible name (WCAG H30); the img
     // stays alt="" (or its imeta alt) so it isn't announced twice.
     const label = m.meta?.alt || 'Open image';
-    return html`<a class="media-link" href="${t.href}"${t.attrs} aria-label="${label}"><img class="media" src="${imgSrc(m.url)}" loading="lazy" alt="${m.meta?.alt ?? ''}"${dimStyle(m.meta)}></a>`;
+    return html`<a class="media-link" href="${t.href}"${t.attrs} aria-label="${label}"><img class="media" src="${imgSrc(m.url, m.author)}" loading="lazy" alt="${m.meta?.alt ?? ''}"${dimStyle(m.meta)}></a>`;
 }
 
 /** 2+ adjacent media → a horizontal scroll-snap carousel; each tile opens the
@@ -223,9 +267,9 @@ function gallery(run: MediaItem[], lightbox: boolean): SafeHtml {
         // otherwise a neutral placeholder. Either way the tile is a link into the lightbox.
         const inner = m.type === 'video'
             ? (m.meta?.thumb
-                ? html`<img class="gallery-media" src="${imgSrc(m.meta.thumb)}" loading="lazy" alt="${m.meta?.alt ?? ''}">`
+                ? html`<img class="gallery-media" src="${imgSrc(m.meta.thumb, m.author)}" loading="lazy" alt="${m.meta?.alt ?? ''}">`
                 : html`<div class="gallery-media video-ph"></div>`) // ink placeholder (no fetch); tile links to lightbox
-            : html`<img class="gallery-media" src="${imgSrc(m.url)}" loading="lazy" alt="${m.meta?.alt ?? ''}">`;
+            : html`<img class="gallery-media" src="${imgSrc(m.url, m.author)}" loading="lazy" alt="${m.meta?.alt ?? ''}">`;
         const t = tileHref(m, lightbox);
         const label = m.meta?.alt || (m.type === 'video' ? 'Play video' : 'Open image');
         return html`<a class="gallery-tile" href="${t.href}"${t.attrs} aria-label="${label}">${inner}${m.type === 'video' ? playBadge() : null}</a>`;
@@ -280,6 +324,43 @@ function lightbox(run: MediaItem[]): SafeHtml {
     return html`<div class="lightbox"><div class="lightbox-strip">${join(slides)}</div><a class="lightbox-close" href="#_" aria-label="Close">✕</a></div>`;
 }
 
+// --- reusable media for tag-sourced images (cardShell kinds) ---------------
+// Kinds whose images live in TAGS (NIP-99 `image`, NIP-68 imeta) rather than tokenized content can reuse
+// the SAME gallery/lightbox a note uses, instead of re-rolling it. mediaTiles places the inline tiles;
+// mediaOverlays returns the hoisted lightbox <li> a cardShell kind emits outside its own containment.
+
+/** Build MediaItem[] for tag-sourced images (images only). Entries are bare urls (NIP-99 `image` tags)
+ * or {url, meta} (NIP-92 imeta - so alt/dim ride along and dimStyle still reserves the slot). */
+export function imageItems(entries: Array<string | { url: string; meta?: MediaMeta }>): MediaItem[] {
+    return entries.map((e) => typeof e === 'string'
+        ? { type: 'image', url: e, id: mediaId(e) }
+        : { type: 'image', url: e.url, id: mediaId(e.url), meta: e.meta });
+}
+
+/** Build VIDEO MediaItem[] for tag-sourced videos (NIP-71 imeta). meta.thumb is the poster, meta.dim the
+ * aspect - both flow into the same privacy-aware player notes use. */
+export function videoItems(entries: Array<{ url: string; meta?: MediaMeta }>): MediaItem[] {
+    return entries.map((e) => ({ type: 'video', url: e.url, id: mediaId(e.url), meta: e.meta }));
+}
+
+/** Inline tiles for a set of items - exactly as a note renders them: a single video plays inline (the
+ * privacy-aware player), a single image is one tile, 2+ become the scroll-snap gallery. `lightbox` true
+ * links image/gallery tiles to the in-page overlay; false opens the raw file (embeds). */
+export function mediaTiles(items: MediaItem[], lightbox = true, inlineVideo = false): SafeHtml {
+    if (items.length === 0) return html``;
+    if (items.length >= 2) return gallery(items, lightbox);
+    return items[0]!.type === 'video' ? video(items[0]!.url, items[0]!.meta, inlineVideo) : singleImage(items[0]!, lightbox);
+}
+
+/** The hoisted full-screen lightbox overlays for a set of items, in the lightbox-host <li> so a cardShell
+ * kind can emit them OUTSIDE its content-visibility container (the same hoist mediaLightboxes does). A
+ * single video plays inline, so it gets no overlay (mirrors mediaLightboxes). */
+export function mediaOverlays(items: MediaItem[]): SafeHtml {
+    if (items.length === 0) return html``;
+    if (items.length === 1 && items[0]!.type === 'video') return html``;
+    return html`<li class="lightbox-host">${lightbox(items)}</li>`;
+}
+
 /** A lazily-loaded embed card (helmjs intersect → /embed): the quoted note /
  * article renders inline. The chip inside is the zero-JS + loading fallback. */
 function embedCard(bech: string, as: string, label: string, href: string): SafeHtml {
@@ -305,7 +386,7 @@ function youtubePlaylistCard(list: string): SafeHtml {
 /** Render note content to safe HTML. nostr entities resolve to in-app links;
  * with `embeds` (default) a quoted note / article becomes a lazy inline card.
  * Pass `embeds=false` inside an embed preview to keep one level deep (chips). */
-export function renderContent(text: string, profiles?: ProfileMap, embeds = true, media: MediaPrefs = DEFAULT_MEDIA, imeta?: ImetaMap, emoji?: EmojiMap): SafeHtml {
+export function renderContent(text: string, profiles?: ProfileMap, embeds = true, media: MediaPrefs = DEFAULT_MEDIA, imeta?: ImetaMap, emoji?: EmojiMap, author?: string): SafeHtml {
     const parts: SafeHtml[] = [];
     const toks = tokenize(text);
     let i = 0;
@@ -334,9 +415,9 @@ export function renderContent(text: string, profiles?: ProfileMap, embeds = true
         // content-visibility containment; here we only place the tiles. In an embed
         // preview (embeds=false) tiles open the raw file (no in-note lightbox).
         if (tok.t === 'image' || tok.t === 'video') {
-            const { run, next } = gatherRun(toks, i, imeta);
+            const { run, next } = gatherRun(toks, i, imeta, author);
             if (run.length >= 2) parts.push(gallery(run, embeds));
-            else if (run[0]!.type === 'video') parts.push(video(run[0]!.url, run[0]!.meta)); // single video plays inline
+            else if (run[0]!.type === 'video') parts.push(video(run[0]!.url, run[0]!.meta, media.inlineVideo)); // single video: facade, or inline frame when the pref is on
             else parts.push(singleImage(run[0]!, embeds));
             i = next;
             continue;
@@ -358,11 +439,11 @@ export function renderContent(text: string, profiles?: ProfileMap, embeds = true
         else if (tok.t === 'mention') parts.push(mentionLink(tok.pubkey, profiles));
         else if (tok.t === 'quote') {
             parts.push(embeds ? embedCard(tok.bech, 'quote', '↗ quoted note', `/t/${tok.bech}`)
-                : html`<a class="mention" href="/t/${tok.bech}" h-scroll="top instant">↗ quoted note</a>`);
+                : mentionChip(`/t/${tok.bech}`, '↗ quoted note'));
         } else if (tok.t === 'address') {
             const r = refFor(tok.kind); // the manifest decides how a reference to this addressable kind renders
             if (r) parts.push(embeds ? embedCard(tok.bech, r.as, r.label, r.path(tok.bech))
-                : html`<a class="mention" href="${r.path(tok.bech)}" h-scroll="top instant">${r.label}</a>`);
+                : mentionChip(r.path(tok.bech), r.label));
             else parts.push(html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ event</a>`);
         } else {
             parts.push(html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ ${tok.type}</a>`);
@@ -393,7 +474,7 @@ function inlineEntities(text: string, profiles?: ProfileMap): SafeHtml {
         else if (tok.t === 'url') { const yt = parseYouTube(tok.url); const w = yt ? (yt.kind === 'playlist' ? youtubePlaylistUrl(yt.list) : youtubeWatchUrl(yt.id, yt.start)) : tok.url; parts.push(extLink(w, w)); } // article body: clean the link (no card inline)
         else if (tok.t === 'image' || tok.t === 'video') parts.push(extLink(tok.url, tok.url));
         else if (tok.t === 'mention') parts.push(mentionLink(tok.pubkey, profiles));
-        else if (tok.t === 'quote') parts.push(html`<a class="mention" href="/t/${tok.bech}" h-scroll="top instant">↗ note</a>`);
+        else if (tok.t === 'quote') parts.push(mentionChip(`/t/${tok.bech}`, '↗ note'));
         else if (tok.t === 'address') { const r = refFor(tok.kind); parts.push(r
             ? html`<a class="mention" href="${r.path(tok.bech)}" h-scroll="top instant">${r.label}</a>`
             : html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ event</a>`); }

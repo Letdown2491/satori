@@ -29,7 +29,7 @@ export function notifCaughtUp(hadNew: boolean, olderUntil?: number): SafeHtml {
 function profileLink(pubkey: string, profiles: ProfileMap): SafeHtml {
     let npub = pubkey;
     try { npub = npubEncode(pubkey); } catch { /* keep raw */ }
-    return html`<a class="notif-who" href="/u/${npub}" h-scroll="top instant">${withEmoji(displayName(pubkey, profiles), profiles.get(pubkey)?.emoji)}</a>`;
+    return html`<a class="notif-who" href="/u/${npub}" h-get h-prefetch="hover" h-scroll="top instant">${withEmoji(displayName(pubkey, profiles), profiles.get(pubkey)?.emoji)}</a>`;
 }
 
 function zapRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
@@ -43,7 +43,7 @@ function zapRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
 function pollvoteRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
     const pollId = ev.tags.find((t) => t[0] === 'e' && t[1])?.[1];
     let poll: SafeHtml = html`your poll`;
-    if (pollId) { try { poll = html`<a href="/t/${neventEncode({ id: pollId })}" h-scroll="top instant">your poll</a>`; } catch { /* keep text */ } }
+    if (pollId) { try { poll = html`<a href="/t/${neventEncode({ id: pollId })}" h-get h-prefetch="hover" h-scroll="top instant">your poll</a>`; } catch { /* keep text */ } }
     return html`<li class="notif-row">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'sm')}
         <div class="notif-text">${profileLink(ev.pubkey, profiles)} voted on ${poll} <span class="time">· ${timeAgo(ev.created_at)}</span></div></li>`;
 }
@@ -54,7 +54,7 @@ function reactionRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
     // tags - decode against those (not the reactor's profile). A "+"/empty like normalizes to a heart.
     const react = ev.content === '+' || ev.content === '' ? html`♥` : withEmoji(ev.content, emojiFromTags(ev.tags));
     let note: SafeHtml = html`your note`;
-    if (noteId) { try { note = html`<a href="/t/${neventEncode({ id: noteId })}" h-scroll="top instant">your note</a>`; } catch { /* keep text */ } }
+    if (noteId) { try { note = html`<a href="/t/${neventEncode({ id: noteId })}" h-get h-prefetch="hover" h-scroll="top instant">your note</a>`; } catch { /* keep text */ } }
     return html`<li class="notif-row">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'sm')}
         <div class="notif-text">${profileLink(ev.pubkey, profiles)} reacted ${react} to ${note} <span class="time">· ${timeAgo(ev.created_at)}</span></div></li>`;
 }
@@ -67,7 +67,7 @@ function privateReplyRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
     // the parent is an unpublished private reply, so /t/<parent> would 404. The root is always published.
     const parentId = replyRoot(ev)?.id;
     let note: SafeHtml = html`your note`;
-    if (parentId) { try { note = html`<a href="/t/${neventEncode({ id: parentId })}" h-scroll="top instant">your note</a>`; } catch { /* keep text */ } }
+    if (parentId) { try { note = html`<a href="/t/${neventEncode({ id: parentId })}" h-get h-prefetch="hover" h-scroll="top instant">your note</a>`; } catch { /* keep text */ } }
     return html`<li class="notif-row notif-private">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'sm')}
         <div class="notif-text">${profileLink(ev.pubkey, profiles)} replied privately <span class="private-mark">${icon('lock')}<span class="sr-only">private</span></span> to ${note} <span class="time">· ${timeAgo(ev.created_at)}</span>
         <div class="notif-quote">${ev.content}</div></div></li>`;

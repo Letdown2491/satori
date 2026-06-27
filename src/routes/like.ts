@@ -6,30 +6,26 @@
 // cache key + DOM id stay the target string verbatim (the canonical naddr matches naddrFor).
 
 import { html } from '../html.ts';
-import { decode } from 'nostr-tools/nip19';
+import { decodeNaddr } from '../nostr/nip19.ts';
 import { likeTemplate, articleLikeTemplate, unlikeTemplate, pickReaction } from '../data/reactions.ts';
 import { userEmojiCached } from '../data/emoji-sets.ts';
 import { cachedLikeId, setLike, clearLike } from '../data/engagement-cache.ts';
-import { published, writeRelays } from '../actions.ts';
+import { published } from '../actions.ts';
 import { likeButton } from '../render/actions.ts';
-import { readSignedEvent } from '../nip07.ts';
+import { requireSigned } from '../nip07.ts';
 import { requireLogin } from './common.ts';
 import { readForm, redirect, safeReferer, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
+import { HEX64 } from '../nostr/tags.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
-
-const HEX64 = /^[0-9a-f]{64}$/i;
 
 /** Resolve a like target: a note (hex id) or an article (naddr → address). Returns the author
  * (for the like's p-tag + the rendered button) and, for an article, the `a`-tag inputs. */
 function likeTarget(target: string, formAuthor: string): { author: string; addr?: { address: string; pubkey: string; kind: number } } | null {
     if (target.startsWith('naddr1')) {
-        try {
-            const d = decode(target);
-            if (d.type !== 'naddr') return null;
-            const { kind, pubkey, identifier } = d.data;
-            return { author: pubkey, addr: { address: `${kind}:${pubkey}:${identifier}`, pubkey, kind } };
-        } catch { return null; }
+        const d = decodeNaddr(target);
+        if (!d) return null;
+        return { author: d.pubkey, addr: { address: d.coord, pubkey: d.pubkey, kind: d.kind } };
     }
     if (!HEX64.test(target) || !HEX64.test(formAuthor)) return null;
     return { author: formAuthor };
@@ -65,7 +61,7 @@ export async function postLike(ctx: Ctx): Promise<void> {
     // bunker: sign + publish here.
     try {
         const signed = await s.signer!.signEvent(template);
-        await s.pool.publish(writeRelays(s), signed);
+        if (!await published(s, signed)) throw new Error('no relay accepted it');
         if (op === 'like') setLike(s.me, noteId, signed.id, reaction.emoji, reaction.url); else clearLike(s.me, noteId);
     } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't ${op}: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
@@ -88,11 +84,8 @@ export async function postLikePublish(ctx: Ctx): Promise<void> {
     // note id or a real naddr, so only the safe bech32 charset can flow into the selector.
     if (!likeTarget(noteId, author)) { notFound(ctx); return; }
 
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== (op === 'like' ? 7 : 5)) {
-        sendFragment(ctx, html`<div class="notice error">Couldn't verify the like.</div>`, {}, 400);
-        return;
-    }
+    const signed = await requireSigned(ctx, s.me, op === 'like' ? 7 : 5, 'the like');
+    if (!signed) return;
     if (!await published(s, signed)) {
         sendFragment(ctx, html`<div class="notice error">Couldn't ${op === 'like' ? 'like' : 'unlike'} that - no relay accepted it.</div>`, {}, 502);
         return;

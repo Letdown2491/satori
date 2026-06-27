@@ -61,7 +61,7 @@ export interface Session {
     // cookie on each handler entry so renderers can read them off the session without
     // threading them through every call. Deterministic from the user's cookie, so a
     // concurrent overwrite is benign.
-    media?: { autoLoad: boolean };
+    media?: { autoLoad: boolean; inlineVideo?: boolean };
     // Per-request reaction prefs (refreshed from the cookie alongside media): whether the like
     // button shows on notes/articles, and whether reactions appear in notifications. Both OFF by default.
     reactions?: boolean;
@@ -178,7 +178,14 @@ export function destroySession(id: string): void {
     removePersisted(id);
     const s = sessions.get(id);
     if (!s) return;
-    try { s.signer?.logout(); } catch { /* best effort */ }
-    try { s.pool.closeAll(); } catch { /* best effort */ }
-    sessions.delete(id);
+    sessions.delete(id); // log the user out NOW; the signer logout + pool close finish in the background
+    // Send the NIP-46 logout, THEN close the pool. Closing it first tears down the bunker socket before
+    // the (un-awaited) logout publish can flush, so the signer never sees it. A safety timeout guarantees
+    // the pool still closes if a relay never acks the publish (so a hung publish can't leak the pool).
+    let closed = false;
+    const closePool = (): void => { if (closed) return; closed = true; try { s.pool.closeAll(); } catch { /* best effort */ } };
+    let out: Promise<unknown> | undefined;
+    try { out = s.signer?.logout(); } catch { /* best effort */ }
+    if (out) { out.then(closePool, closePool); setTimeout(closePool, 4000); }
+    else closePool();
 }

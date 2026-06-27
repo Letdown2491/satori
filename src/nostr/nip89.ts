@@ -43,11 +43,11 @@ export function handlerUrl(h: HandlerInfo, bech: string, entity: string): string
 // NIP-89 doesn't standardize kind names, so a small map gives friendlier labels for common kinds;
 // everything else reads as "kind N". Kept modest - this is a courtesy, not a registry.
 const KIND_NAMES: Record<number, string> = {
-    4: 'Direct message', 6: 'Repost', 7: 'Reaction', 16: 'Repost', 1063: 'File',
+    4: 'Direct message', 6: 'Repost', 7: 'Reaction', 16: 'Repost', 21: 'Video', 22: 'Short video', 1063: 'File',
     1111: 'Comment', 1311: 'Live chat', 1984: 'Report', 9735: 'Zap receipt', 9802: 'Highlight',
     10000: 'Mute list', 10002: 'Relay list', 30000: 'Follow set', 30008: 'Profile badges',
     30009: 'Badge', 30311: 'Live event', 30315: 'Status', 30402: 'Listing', 31922: 'Calendar event',
-    31923: 'Calendar event', 31924: 'Calendar', 31925: 'Calendar RSVP', 34235: 'Video', 34550: 'Community',
+    31923: 'Calendar event', 31924: 'Calendar', 31925: 'Calendar RSVP', 34235: 'Video', 34236: 'Short video', 34550: 'Community',
 };
 
 /** A friendly label for an event kind ("Live event", "Zap receipt", ...) or "kind N" as a fallback. */

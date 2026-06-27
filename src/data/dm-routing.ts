@@ -7,6 +7,7 @@
 // The 10-min TTL picks up out-of-band changes; the in-app editor invalidates your entry on save.
 
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { coalesceOne } from './coalesce.ts';
 import { parseDmRelays, KIND_DM_RELAYS } from '../nostr/nip17.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
@@ -25,17 +26,13 @@ export function clearDmRelaysCache(pubkey?: string): void {
 export async function dmRelaysOf(s: Session, pubkey: string): Promise<string[]> {
     const hit = dmRelaysCache.get(pubkey);
     if (hit && Date.now() - hit.at < DM_RELAYS_TTL_MS) return hit.relays;
-    const inf = dmRelaysInflight.get(pubkey);
-    if (inf) return inf;
-    const p = (async (): Promise<string[]> => {
+    return coalesceOne(dmRelaysInflight, pubkey, async (): Promise<string[]> => {
         const ev = await s.pool.get([...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], { kinds: [KIND_DM_RELAYS], authors: [pubkey] }).catch(() => null);
         const list = ev ? parseDmRelays(ev) : [];
         const relays = list.length ? list : INDEXER_RELAYS;
         dmRelaysCache.set(pubkey, { relays, at: Date.now() }); // cache the fallback too (negatives)
         return relays;
-    })();
-    dmRelaysInflight.set(pubkey, p);
-    try { return await p; } finally { dmRelaysInflight.delete(pubkey); }
+    });
 }
 
 /** Where to READ your own incoming wraps: your DM relays ∪ your read relays ∪ indexers.

@@ -2,7 +2,8 @@
 // resolution. No web framework. Run with: node --experimental-strip-types src/server.ts
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join as pathJoin } from 'node:path';
 import { parseCookies, notFound, redirect, setPageRenderer, type Ctx } from './http.ts';
@@ -26,7 +27,7 @@ import { getYtCard, getYtThumb, getYtPlay, getYtPlaylistCard, getYtPlaylistPlay 
 import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postPrivateReplySeal, postPrivateReplyWrap, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
 import { postAppearance, getWallet, postWallet, getMetrics } from './routes/pages.ts';
 import { getBookmarks, getMuted, getListDecrypt, postListDecrypted } from './routes/saved.ts';
-import { getSettings, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postFilters } from './routes/settings.ts';
+import { getSettings, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContent } from './routes/settings.ts';
 import { getProfileEdit, postProfile, postProfilePublish } from './routes/profile.ts';
 import { getNotifications, getNotifUnread } from './routes/notifications.ts';
 import { getMessages, getRequests, getMessagesDot, getNewMessage, getThread as getDmThread, getThreadOlder, postSend, postReadAll, getDmSync, getThreadSync, postDmSeals, postDmRumors, postDmLegacy, postSendSeal, postSendWrap } from './routes/dms.ts';
@@ -39,6 +40,7 @@ import { getZap, postZap, postZapInvoice, postZapPaid } from './routes/zap.ts';
 import { postArticle, postArticlePublish, postDraft, getDrafts, postDraftDelete, postDraftDeleteFinish, postDraftSync, postDraftSyncWrap, postDraftSyncPublish, getDraftsSync, postDraftsSyncApply } from './routes/article.ts';
 import { postComment, postCommentPublish, getCommentForm } from './routes/comment.ts';
 import { getPoll, getPollOption, postPoll, postPollPublish, postPollVote, postPollVotePublish } from './routes/poll.ts';
+import { getCalIcs, getCalRsvp, postCalRsvp, postCalRsvpPublish } from './routes/calendar.ts';
 
 // Inject the app's full-page shell into the HTTP kernel (the one place engine and app fuse).
 // The kernel's sendPage() calls this; with it the kernel no longer imports the app's layout.
@@ -102,6 +104,10 @@ const ROUTES: Route[] = [
     route('GET', '/poll/:id', getPoll),
     route('POST', '/poll/vote/:pollid', postPollVote),
     route('POST', '/poll/vote/:pollid/publish', postPollVotePublish),
+    route('GET', '/cal/ics/:naddr', getCalIcs),
+    route('GET', '/cal/rsvp/:naddr', getCalRsvp),
+    route('POST', '/cal/rsvp/:naddr', postCalRsvp),
+    route('POST', '/cal/rsvp/:naddr/publish', postCalRsvpPublish),
     route('GET', '/profile/edit', getProfileEdit),
     route('POST', '/profile/edit', postProfile),
     route('POST', '/profile/edit/publish', postProfilePublish),
@@ -117,7 +123,7 @@ const ROUTES: Route[] = [
     route('GET', '/settings', getSettings),
     route('POST', '/settings/appearance', postAppearance),
     route('POST', '/settings/privacy', postPrivacy),
-    route('POST', '/settings/filters', postFilters),
+    route('POST', '/settings/content', postContent),
     route('GET', '/settings/privacy/status', getPrivacyStatus),
     route('POST', '/settings/relays/edit', postRelaysEdit),
     route('POST', '/settings/relays', postRelays),
@@ -217,16 +223,29 @@ const STATIC: Record<string, { file: string; type: string }> = {
     '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
 };
 
-// Local single-user dev daemon: serve assets uncompressed (helm.js is ~12 KB) and
-// `no-cache` so editing styles.css / swapping in a new helm.js shows on reload -
-// no stale-cache or out-of-sync .gz footguns.
-async function serveStatic(_req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
+// Gzip on the fly, cached by mtime: the first request (or the first after an edit)
+// compresses + caches both buffers; later requests are a Map hit. Keyed by mtime so
+// editing styles.css / swapping in a new helm.js is picked up automatically - no
+// stale .gz on disk to keep in sync, and no manual re-gzip step. `no-cache` keeps the
+// live-edit-shows-on-reload behavior; `Vary` so a proxy can't cross-serve encodings.
+const staticCache = new Map<string, { mtimeMs: number; raw: Buffer; gz: Buffer }>();
+async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
     const entry = STATIC[path];
     if (!entry) return false;
     try {
-        const buf = await readFile(pathJoin(PUBLIC, entry.file));
-        res.writeHead(200, { 'Content-Type': entry.type, 'Cache-Control': 'no-cache' });
-        res.end(buf);
+        const full = pathJoin(PUBLIC, entry.file);
+        const { mtimeMs } = await stat(full);
+        let c = staticCache.get(entry.file);
+        if (!c || c.mtimeMs !== mtimeMs) {
+            const raw = await readFile(full);
+            c = { mtimeMs, raw, gz: gzipSync(raw) };
+            staticCache.set(entry.file, c);
+        }
+        const gzip = (req.headers['accept-encoding'] ?? '').includes('gzip');
+        const headers: Record<string, string> = { 'Content-Type': entry.type, 'Cache-Control': 'no-cache', 'Vary': 'Accept-Encoding' };
+        if (gzip) headers['Content-Encoding'] = 'gzip';
+        res.writeHead(200, headers);
+        res.end(gzip ? c.gz : c.raw);
         return true;
     } catch {
         return false;
@@ -254,6 +273,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const path = url.pathname;
 
     if (method === 'GET' && await serveStatic(req, res, path)) return;
+
+    // Per-request timing for the routed paths (statics already returned). Off by default; set
+    // SATORI_REQ_LOG=1 to surface real navigation cost in `docker logs` - which GET /t/ or /u/ is slow.
+    if (process.env.SATORI_REQ_LOG) {
+        const started = Date.now();
+        res.on('finish', () => console.log(`[req] ${method} ${path} ${res.statusCode} ${Date.now() - started}ms`));
+    }
 
     const cookies = parseCookies(req.headers.cookie);
     const ctx: Ctx = {

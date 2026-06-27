@@ -7,6 +7,7 @@
 // nip17.ts. Deletion (NIP-37) = re-publish the wrap with an empty `.content`.
 
 import type { NostrEvent, UnsignedEvent } from './types.ts';
+import { relayTags } from './tags.ts';
 
 export const KIND_DRAFT = 31234;          // the encrypted draft wrap (parameterized replaceable)
 export const KIND_DRAFT_RELAYS = 10013;   // NIP-51 "draft relays" list (where to publish/read wraps)
@@ -45,5 +46,4 @@ export const draftId = (ev: NostrEvent): string => ev.tags.find((t) => t[0] === 
 export const isDeletedDraft = (ev: NostrEvent): boolean => ev.content.trim() === '';
 
 /** Parse a kind:10013 draft-relay list into relay urls (`relay` tags), capped. */
-export const parseDraftRelays = (ev: NostrEvent): string[] =>
-    [...new Set(ev.tags.filter((t) => t[0] === 'relay' && t[1]).map((t) => t[1]!))].slice(0, 8);
+export const parseDraftRelays = (ev: NostrEvent): string[] => relayTags(ev);

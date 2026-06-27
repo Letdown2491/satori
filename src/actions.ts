@@ -14,7 +14,8 @@
 // overwrites unreadable private content (no data loss).
 
 import { decode } from 'nostr-tools/nip19';
-import { INDEXER_RELAYS } from './nostr/nip65.ts';
+import { INDEXER_RELAYS, writeRelaysFor } from './nostr/nip65.ts';
+import { HEX64 } from './nostr/tags.ts';
 import type { NostrEvent, UnsignedEvent } from './nostr/types.ts';
 import type { Session } from './session.ts';
 import { signsOnServer } from './session.ts';
@@ -76,20 +77,21 @@ export function mutedPubkeys(s: Session): Set<string> {
     return set;
 }
 
-const HEX64 = /^[0-9a-f]{64}$/;
-
 /** Resolve a URL target token to the (tag, value) it toggles. follow/mute target
  * a pubkey (`p`). bookmark/pin target a note (`e`, hex id) or - for an naddr - an
- * article by address (`a`, `kind:pubkey:d`), matching Satori's article actions. */
+ * article by address (`a`, `kind:pubkey:d`), matching Satori's article actions.
+ * The shared HEX64 is case-INSENSITIVE, so canonicalize a hex `p`/`e` target to
+ * lowercase here - the value is stored as a tag, and a mixed-case dupe must not
+ * sit alongside the lowercase one (toggle-off would then miss it). */
 export function resolveTarget(name: ActionName, target: string): { tag: string; value: string } {
-    if (name === 'follow' || name === 'mute') return { tag: 'p', value: target };
+    if (name === 'follow' || name === 'mute') return { tag: 'p', value: HEX64.test(target) ? target.toLowerCase() : target };
     if (target.startsWith('naddr1')) {
         try {
             const d = decode(target);
             if (d.type === 'naddr') return { tag: 'a', value: `${d.data.kind}:${d.data.pubkey}:${d.data.identifier}` };
         } catch { /* fall through */ }
     }
-    return { tag: 'e', value: target };
+    return { tag: 'e', value: HEX64.test(target) ? target.toLowerCase() : target };
 }
 
 /** Validate a URL target for an action (pubkey hex, note id hex, or article naddr). */
@@ -101,7 +103,7 @@ export function isValidTarget(name: ActionName, target: string): boolean {
 }
 
 export function writeRelays(s: Session): string[] {
-    return s.myRelays?.write?.length ? s.myRelays.write : INDEXER_RELAYS;
+    return writeRelaysFor(s.myRelays);
 }
 
 /** Publish a signed event to `relays` (default: your write relays) and report whether at least one

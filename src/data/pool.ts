@@ -8,6 +8,10 @@ import { toPoolUrls, fromPoolUrl } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 
+/** True if at least one relay accepted a publish (a settled fan-out succeeds on any acceptance). Lives
+ * here (the pool, the one place we publish) so publishers can import it without a publish.ts cycle. */
+export const anyAccepted = (results: PromiseSettledResult<unknown>[]): boolean => results.some((r) => r.status === 'fulfilled');
+
 export interface SubHandlers {
     onevent?: (e: NostrEvent) => void;
     oneose?: () => void;
@@ -58,16 +62,55 @@ export class Pool {
         this.authRelays = new Set(toPoolUrls(relays).map(normUrl));
     }
 
-    query(relays: string[], filter: Filter): Promise<NostrEvent[]> {
+    // Resolves on all-relay EOSE or maxWait (the safe, complete default). `opts.fast` ALSO resolves once
+    // the event stream goes QUIET (no new event for `quiet` ms after data starts) - because all-EOSE rarely
+    // fires under wide outbox fan-out (one slow/dead relay never EOSEs), so a complete query rides the full
+    // maxWait even when the page's events arrived in the first few hundred ms. `fast` is ONLY safe where the
+    // data is redundant across relays (the 2x-routed feed, a profile's notes on the author's relays): a
+    // straggler relay adds nothing a fast one didn't. NEVER use it for non-redundant fetches (gift-wrapped
+    // DMs/drafts live on one relay set; a read-modify-write of your own lists must see every version) -
+    // there an early resolve silently DROPS events. That asymmetry is why complete is the default.
+    query(relays: string[], filter: Filter, opts: { fast?: boolean } = {}): Promise<NostrEvent[]> {
         const tor = relaysViaTor();
+        const maxWait = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
+        const quiet = tor ? 1800 : 700;
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
-        return this.raw.querySync(toPoolUrls(relays), filter, { maxWait: tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT }) as Promise<NostrEvent[]>;
+        return new Promise<NostrEvent[]>((resolve) => {
+            const events = new Map<string, NostrEvent>();
+            let settled = false;
+            let quietTimer: ReturnType<typeof setTimeout> | undefined;
+            let hardTimer: ReturnType<typeof setTimeout>;
+            let sub: { close: (reason?: string) => void } | undefined;
+            const finish = (): void => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(quietTimer);
+                clearTimeout(hardTimer);
+                try { sub?.close(); } catch { /* already closed */ }
+                resolve([...events.values()]);
+            };
+            hardTimer = setTimeout(finish, maxWait);
+            try {
+                sub = this.raw.subscribeMany(toPoolUrls(relays), filter as never, {
+                    onevent: (e: NostrEvent) => {
+                        if (events.has(e.id)) return;
+                        events.set(e.id, e);
+                        if (opts.fast) { clearTimeout(quietTimer); quietTimer = setTimeout(finish, quiet); }
+                    },
+                    oneose: () => finish(), // every relay EOSE'd → nothing more is coming
+                    maxWait,
+                } as never) as { close: (reason?: string) => void };
+            } catch { finish(); }
+        });
     }
 
-    get(relays: string[], filter: Filter): Promise<NostrEvent | null> {
+    // `maxWait` (clearnet only) lets a best-effort caller shorten the wait - a decorative quote
+    // preview shouldn't hold a relay connection for the full 6s when the event isn't there. Tor keeps
+    // its own (longer) cap since circuits are slow and a too-short wait would just always miss.
+    get(relays: string[], filter: Filter, maxWait?: number): Promise<NostrEvent | null> {
         const tor = relaysViaTor();
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
-        return this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : GET_MAX_WAIT }) as Promise<NostrEvent | null>;
+        return this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : (maxWait ?? GET_MAX_WAIT) }) as Promise<NostrEvent | null>;
     }
 
     publish(relays: string[], event: NostrEvent): Promise<PromiseSettledResult<string>[]> {

@@ -7,6 +7,7 @@
 import type { Session } from '../session.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { coalesceOne } from './coalesce.ts';
 import { emojiFromTags, type EmojiMap } from '../nostr/nip30.ts';
 
 export const KIND_USER_EMOJI = 10030; // the user's emoji list (a/emoji tags)
@@ -34,42 +35,33 @@ export async function ensureUserEmoji(s: Session): Promise<void> {
     const me = s.me;
     const hit = cache.get(me);
     if (hit && Date.now() - hit.at < TTL_MS) return;
-    let p = inflight.get(me);
-    if (!p) {
-        p = (async () => {
-            try {
-                const relays = relaysFor(s);
-                const lists = await s.pool.query(relays, { authors: [me], kinds: [KIND_USER_EMOJI], limit: 1 }).catch(() => [] as NostrEvent[]);
-                const list = lists.sort((a, b) => b.created_at - a.created_at)[0];
-                const map: EmojiMap = {};
-                if (list) {
-                    Object.assign(map, emojiFromTags(list.tags) ?? {}); // direct emoji tags on the 10030 itself
-                    // `a` tags = referenced sets, coords "30030:pubkey:identifier".
-                    const coords = list.tags.filter((t) => t[0] === 'a' && t[1]?.startsWith(`${KIND_EMOJI_SET}:`)).map((t) => t[1]!);
-                    if (coords.length) {
-                        const want = new Set(coords);
-                        const authors = [...new Set(coords.map((c) => c.split(':')[1]).filter((x): x is string => !!x))];
-                        const ds = [...new Set(coords.map((c) => c.split(':')[2]).filter((x): x is string => !!x))];
-                        const sets = await s.pool.query(relays, { kinds: [KIND_EMOJI_SET], authors, '#d': ds, limit: 50 }).catch(() => [] as NostrEvent[]);
-                        const newest = new Map<string, NostrEvent>(); // newest per referenced coord
-                        for (const ev of sets) {
-                            const d = ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
-                            const coord = `${KIND_EMOJI_SET}:${ev.pubkey}:${d}`;
-                            if (!want.has(coord)) continue; // ignore sets we didn't ask for
-                            const prev = newest.get(coord);
-                            if (!prev || ev.created_at > prev.created_at) newest.set(coord, ev);
-                        }
-                        for (const ev of newest.values()) Object.assign(map, emojiFromTags(ev.tags) ?? {});
-                    }
+    await coalesceOne(inflight, me, async () => {
+        const relays = relaysFor(s);
+        const lists = await s.pool.query(relays, { authors: [me], kinds: [KIND_USER_EMOJI], limit: 1 }).catch(() => [] as NostrEvent[]);
+        const list = lists.sort((a, b) => b.created_at - a.created_at)[0];
+        const map: EmojiMap = {};
+        if (list) {
+            Object.assign(map, emojiFromTags(list.tags) ?? {}); // direct emoji tags on the 10030 itself
+            // `a` tags = referenced sets, coords "30030:pubkey:identifier".
+            const coords = list.tags.filter((t) => t[0] === 'a' && t[1]?.startsWith(`${KIND_EMOJI_SET}:`)).map((t) => t[1]!);
+            if (coords.length) {
+                const want = new Set(coords);
+                const authors = [...new Set(coords.map((c) => c.split(':')[1]).filter((x): x is string => !!x))];
+                const ds = [...new Set(coords.map((c) => c.split(':')[2]).filter((x): x is string => !!x))];
+                const sets = await s.pool.query(relays, { kinds: [KIND_EMOJI_SET], authors, '#d': ds, limit: 50 }).catch(() => [] as NostrEvent[]);
+                const newest = new Map<string, NostrEvent>(); // newest per referenced coord
+                for (const ev of sets) {
+                    const d = ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
+                    const coord = `${KIND_EMOJI_SET}:${ev.pubkey}:${d}`;
+                    if (!want.has(coord)) continue; // ignore sets we didn't ask for
+                    const prev = newest.get(coord);
+                    if (!prev || ev.created_at > prev.created_at) newest.set(coord, ev);
                 }
-                cache.set(me, { map, at: Date.now() });
-            } finally {
-                inflight.delete(me);
+                for (const ev of newest.values()) Object.assign(map, emojiFromTags(ev.tags) ?? {});
             }
-        })();
-        inflight.set(me, p);
-    }
-    await p;
+        }
+        cache.set(me, { map, at: Date.now() });
+    });
 }
 
 /** Clear on logout (the next account must not inherit it). */

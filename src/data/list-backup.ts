@@ -6,7 +6,7 @@
 
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
-import { INDEXER_RELAYS, normalizeRelayUrl } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, normalizeRelayUrl, readRelaysFor as readRelaysForList } from '../nostr/nip65.ts';
 
 export interface BackupListDef { kind: number; label: string; }
 
@@ -30,9 +30,10 @@ export interface BackupFile {
 }
 export const BACKUP_VERSION = 1;
 
-/** Relays to query when gathering the current list events for export. */
+/** Relays to query when gathering the current list events for export (thin wrapper over the
+ * shared read∪write∪indexer helper, applied to your own relay list). */
 function readRelaysFor(s: Session): string[] {
-    return [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? []), ...INDEXER_RELAYS])];
+    return readRelaysForList(s.myRelays);
 }
 
 /** Fetch the live signed list events for `kinds` (newest replaceable per kind). */

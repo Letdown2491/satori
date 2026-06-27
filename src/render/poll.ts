@@ -3,14 +3,10 @@
 // then results (bars). Voting is a real <form> POST, so it works with JS off; the
 // box also lazily hydrates (h-trigger="intersect once") to correct voted/ended polls.
 
-import { neventEncode } from 'nostr-tools/nip19';
 import { html, join, raw, type SafeHtml } from '../html.ts';
 import { parsePollOptions, parsePollType, isPollEnded, type PollTally } from '../nostr/nip88.ts';
+import { neventFor } from './note.ts';
 import type { NostrEvent } from '../nostr/types.ts';
-
-function neventFor(ev: NostrEvent): string {
-    try { return neventEncode({ id: ev.id, author: ev.pubkey }); } catch { return ev.id; }
-}
 
 /** Results view - bars + counts (Satori's pollResultRow + poll-meta). */
 function pollResults(poll: NostrEvent, tally: PollTally): SafeHtml {

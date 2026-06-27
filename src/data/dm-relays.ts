@@ -8,6 +8,7 @@ import type { Signer } from './signer.ts';
 import type { UnsignedEvent, NostrEvent } from '../nostr/types.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { KIND_DM_RELAYS, parseDmRelays } from '../nostr/nip17.ts';
+import { anyAccepted } from './pool.ts';
 
 /** Fetch your own published kind:10050 list ([] if none - the editor wants the real
  * published set, NOT the indexer fallback that the DM read-path uses). */
@@ -38,7 +39,7 @@ function publishTargets(urls: string[], writeRelays: string[]): string[] {
 export async function publishDmRelayListSigned(pool: Pool, signed: NostrEvent, writeRelays: string[]): Promise<string[]> {
     const next = parseDmRelays(signed);
     const results = await pool.publish(publishTargets(next, writeRelays), signed);
-    if (!results.some((r) => r.status === 'fulfilled')) throw new Error('Failed to publish DM relay list to any relay');
+    if (!anyAccepted(results)) throw new Error('Failed to publish DM relay list to any relay');
     return next;
 }
 
@@ -47,6 +48,6 @@ export async function publishDmRelayListSigned(pool: Pool, signed: NostrEvent, w
 export async function publishDmRelayList(pool: Pool, signer: Signer, me: string, urls: string[], writeRelays: string[]): Promise<string[]> {
     const signed = await signer.signEvent(dmRelayListTemplate(me, urls)) as NostrEvent;
     const results = await pool.publish(publishTargets(urls, writeRelays), signed);
-    if (!results.some((r) => r.status === 'fulfilled')) throw new Error('Failed to publish DM relay list to any relay');
+    if (!anyAccepted(results)) throw new Error('Failed to publish DM relay list to any relay');
     return urls;
 }

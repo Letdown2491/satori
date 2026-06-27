@@ -15,6 +15,12 @@ export function composeFileInput(oob = false): SafeHtml {
     return html`<input type="file" id="compose-file" name="file" accept="image/*,video/*" aria-label="Add photo or video"${oob ? raw(' h-oob="true"') : raw('')}>`;
 }
 
+/** The modal-head ✕ close button: clears #modal via /compose/close. Shared by every modal head
+ * (compose, zap, profile-edit, new-message). */
+export function modalClose(): SafeHtml {
+    return html`<button class="modal-close" h-get="/compose/close" h-target="#modal" h-swap="inner" h-push-url="false" title="Close" aria-label="Close">✕</button>`;
+}
+
 /** One uploaded item: a single hidden input carrying the NIP-92 imeta tag (which
  * holds the url + mime - the one source of truth POST /note reads back), plus a
  * thumbnail and a ✕ that removes just this item (helmjs outer-swap with empty). */

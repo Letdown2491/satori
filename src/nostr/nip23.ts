@@ -2,6 +2,7 @@
 // body is Markdown. Pure metadata helpers - no DOM, no network.
 
 import type { NostrEvent } from './types.ts';
+import { tag1 } from './tags.ts';
 
 export const KIND_ARTICLE = 30023;
 
@@ -15,16 +16,14 @@ export interface Article {
     content: string;     // markdown body
 }
 
-const tagVal = (ev: NostrEvent, name: string) => ev.tags.find((t) => t[0] === name)?.[1] ?? '';
-
 export function parseArticle(ev: NostrEvent): Article {
-    const published = Number(tagVal(ev, 'published_at'));
+    const published = Number(tag1(ev, 'published_at'));
     return {
-        title: tagVal(ev, 'title') || '(untitled)',
-        summary: tagVal(ev, 'summary'),
-        image: tagVal(ev, 'image'),
+        title: tag1(ev, 'title') || '(untitled)',
+        summary: tag1(ev, 'summary'),
+        image: tag1(ev, 'image'),
         publishedAt: Number.isFinite(published) && published > 0 ? published : ev.created_at,
-        identifier: tagVal(ev, 'd'),
+        identifier: tag1(ev, 'd'),
         topics: ev.tags.filter((t) => t[0] === 't' && t[1]).map((t) => t[1]!),
         content: ev.content,
     };
@@ -32,7 +31,7 @@ export function parseArticle(ev: NostrEvent): Article {
 
 /** The addressable id `kind:pubkey:d` for an article event. */
 export function articleAddress(ev: NostrEvent): string {
-    return `${KIND_ARTICLE}:${ev.pubkey}:${tagVal(ev, 'd')}`;
+    return `${KIND_ARTICLE}:${ev.pubkey}:${tag1(ev, 'd')}`;
 }
 
 /** Estimated reading time in whole minutes (≥1), at ~220 wpm. */

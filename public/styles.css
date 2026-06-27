@@ -343,9 +343,14 @@
             width: 100%; box-sizing: border-box; resize: vertical; min-height: 84px;
             padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
             background: var(--panel); color: var(--text); font-family: monospace; font-size: 13px; line-height: 1.5;
+            margin-bottom: 18px;
         }
         .filter-box:focus { outline: none; border-color: var(--accent); }
         .filter-subhead { margin-top: 24px; }
+        /* Divider between the show-allowlist (compose) and the content-filtering (suppress) halves. */
+        .filter-divide { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--border); }
+        /* The 1fr label pushes the Feed/Profile columns to the right edge - right-aligned + symmetric,
+           and both grids' columns line up there. */
         .filter-grid { display: grid; grid-template-columns: 1fr auto auto; gap: 12px 24px; align-items: center; margin: 6px 0 4px; }
         .filter-col-head { color: var(--muted); font-size: 12px; text-align: center; }
         .filter-head-left { color: var(--muted); font-size: 12px; } /* the post-type column header, left-aligned */
@@ -409,7 +414,10 @@
         /* Floating compose button + its fan (Note / Poll) + modal */
         .fab-wrap[hidden] { display: none; }
         .fab-wrap {
-            position: fixed; right: max(24px, calc(50vw - 360px + 24px)); bottom: 28px; z-index: 15;
+            /* Hang in the right gutter, ~24px PAST the 720px column's edge (50vw-360-56-24), so it clears
+               the timeline on wide screens; the 24px min snaps it back to the corner when the gutter is
+               too narrow to fit it beside the content. */
+            position: fixed; right: max(24px, calc(50vw - 440px)); bottom: 28px; z-index: 15;
             display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
             pointer-events: none; /* the wrap spans the (hidden) options area - don't let it
                                      swallow clicks meant for the jump-to-top button behind it */
@@ -435,7 +443,8 @@
            hash links, so no request fires). Default state is fully shown, so where
            scroll-driven animations aren't supported the button stays usable. */
         .scroll-top {
-            position: fixed; right: max(32px, calc(50vw - 360px + 32px)); bottom: 96px; z-index: 15;
+            /* Same gutter anchor as the FAB, +8px so the two stay CENTER-aligned (40px vs 56px wide). */
+            position: fixed; right: max(32px, calc(50vw - 432px)); bottom: 96px; z-index: 15;
             width: 40px; height: 40px; border-radius: 50%; padding: 0;
             display: inline-flex; align-items: center; justify-content: center; text-decoration: none;
             font-size: 18px; line-height: 1; font-weight: 700;
@@ -728,6 +737,12 @@
            into a tidy grid instead of one endless row. */
         .react-palette { flex-direction: row; flex-wrap: wrap; width: max-content; max-width: 240px; }
         .note-act.like .emoji { width: 17px; height: 17px; vertical-align: middle; }
+        /* Optimistic reaction feedback (h-optimistic adds .reacting on submit, before the relay round-trip).
+           Pick: collapse the picker + seal the smiley with the accent. Retract: empty the heart at once.
+           The response swap replaces the whole form with the real state; an h:error reverts .reacting. */
+        .act-form.react.reacting .react-palette { display: none; }
+        .act-form.react.reacting .react-more { color: var(--accent); }
+        .act-form.react.reacting .note-act.like.active { color: var(--muted); }
         /* Reply/quote you've already engaged with: a filled glyph in text color -
            visible (not muted) but quieter than the accent of like/bookmark/pin. The
            icon ships filled (icon(name, true)); this lifts it out of the muted gray. */
@@ -1070,6 +1085,13 @@
         .show-more:hover { text-decoration: underline; }
         .show-more::before { content: 'Show more'; }
         .clamp-toggle:checked ~ .show-more::before { content: 'Show less'; }
+        /* Full collapse (collapse()): toggle on top, content hidden until checked. Reuses .show-more
+           styling for the label; the content reveals BELOW the toggle so the button stays anchored to
+           whatever precedes it (e.g. a podcast player). */
+        .collapse-toggle { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+        .collapse-inner { display: none; }
+        .collapse-toggle:checked ~ .collapse-inner { display: block; }
+        .collapse-toggle:checked ~ .collapse-label::before { content: 'Show less'; }
         .content a, .quote-text a { color: var(--accent); text-decoration: none; word-break: break-all; }
         .content a:hover, .quote-text a:hover { text-decoration: underline; }
         .media {
@@ -1077,6 +1099,51 @@
             border-radius: 10px; border: 1px solid var(--border);
             object-fit: contain; background: var(--panel);
         }
+        /* Podcast audio: native control bar, NOT .media - .media's height:auto + object-fit
+           are for img/video and collapse an <audio> widget's UA-default bar height to nothing.
+           Let the native bar keep its own height; we only set width + a calm margin. */
+        .audio-player { display: block; width: 100%; margin-top: 8px; margin-bottom: 12px; }
+        /* NIP-68 picture location: a quiet dateline under the image, never a scoreboard. */
+        .picture-loc { color: var(--muted); font-size: 0.85em; margin-top: 6px; }
+        /* NIP-99 classified listing: price-forward meta, a sold badge, an image strip, a contact CTA. */
+        .listing-meta { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+        .listing-price { font-size: 1.15em; font-weight: 600; color: var(--accent); }
+        .listing-loc { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 0.95em; }
+        .listing-loc .icon { width: 15px; height: 15px; }
+        .listing-sold { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--err); border: 1px solid var(--err); border-radius: 999px; padding: 2px 9px; }
+        .listing-contact { display: inline-block; margin: 2px 0 16px; padding: 8px 16px; border-radius: 999px; background: var(--accent); color: var(--bg); text-decoration: none; font-size: 14px; font-weight: 500; }
+        .listing-contact:hover { opacity: 0.9; }
+        /* Declarative engine: generic label:value field lines (calendar's meta, generalized). */
+        .field-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+        .field { display: flex; gap: 8px; font-size: 0.95em; }
+        .field-label { color: var(--muted); flex-shrink: 0; }
+        .field-value { color: var(--text); min-width: 0; word-break: break-word; }
+        /* NIP-84 highlight card: the quoted passage leads (a serif blockquote with the vermilion rule),
+           then a small muted source citation. The passage IS the content, so it sits first, not under a label. */
+        .hl-quote { margin: 0; padding: 2px 0 2px 16px; border-left: 3px solid var(--accent); font-family: var(--serif); font-size: 1.12em; line-height: 1.5; white-space: pre-wrap; color: var(--text); }
+        .hl-mark { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); padding: 0 2px; border-radius: 2px; }
+        .hl-cite { margin-top: 8px; font-size: 0.85em; color: var(--muted); }
+        .hl-cite a { color: var(--muted); }
+        .hl-cite a:hover { color: var(--accent); }
+        /* NIP-52 calendar event when/where: icon + text lines, sitting under the title as the payload. */
+        .cal-meta { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+        .cal-line { display: flex; align-items: flex-start; gap: 8px; font-size: 0.95em; }
+        .cal-line .icon { flex-shrink: 0; margin-top: 1px; color: var(--muted); }
+        /* Calendar actions: RSVP (Going/Maybe/Can't go) + an Add-to-calendar link. Calm, not a scoreboard. */
+        .cal-actions { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+        .rsvp-buttons { display: flex; gap: 6px; }
+        .rsvp-form { display: contents; }
+        .rsvp-btn {
+            cursor: pointer; padding: 6px 14px; border-radius: 999px; font: inherit; font-size: 13px;
+            background: var(--panel); border: 1px solid var(--border); color: var(--text);
+        }
+        .rsvp-btn:hover { border-color: var(--accent); }
+        .rsvp-btn.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+        .rsvp-count { font-variant-numeric: tabular-nums; opacity: 0.65; }
+        .rsvp-count::before { content: '·'; margin: 0 5px; opacity: 0.6; }
+        .rsvp-accepted.active { border-color: var(--ok, var(--accent)); background: color-mix(in srgb, var(--ok, var(--accent)) 16%, transparent); color: var(--ok, var(--accent)); }
+        .cal-ics { color: var(--muted); font-size: 13px; text-decoration: none; border-bottom: 1px dotted var(--border); }
+        .cal-ics:hover { color: var(--accent); border-color: var(--accent); }
         /* Poster-less video play facade: a calm ink panel + play glyph that swaps in the
            <video> on click (no fetch until then). Aspect class reserves rough orientation. */
         .video-facade {
@@ -1108,18 +1175,30 @@
            a hidden checkbox (its label is the overlay): checking it lifts the blur
            and hides the overlay, and it stays revealed independently per note (no
            `:target`, so the media lightbox can't steal it back). */
-        .cw { position: relative; min-height: 64px; border-radius: 10px; margin-top: 4px; }
+        .cw { position: relative; min-height: 64px; border-radius: 10px; margin-top: 4px; overflow: hidden; }
+        /* While hidden, cap the box so a tall NSFW image doesn't sprawl as a giant blurred void;
+           revealing (checkbox checked) drops the cap and the media shows at full height. */
+        .cw:has(.cw-toggle:not(:checked)) { max-height: 360px; }
         .cw-toggle { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-        .cw-toggle:not(:checked) ~ :not(.cw-overlay) { filter: blur(26px); pointer-events: none; user-select: none; }
+        .cw-toggle:not(:checked) ~ :not(.cw-overlay) { filter: blur(40px); transform: scale(1.05); pointer-events: none; user-select: none; }
         .cw-toggle:checked ~ .cw-overlay { display: none; }
         .cw-overlay {
             position: absolute; inset: 0; z-index: 1; cursor: pointer; text-decoration: none;
             display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center;
-            background: color-mix(in srgb, var(--bg) 50%, transparent);
+            background: color-mix(in srgb, var(--bg) 86%, transparent);
             border: 1px dashed var(--border); border-radius: 10px; color: var(--text);
         }
         .cw-reason { font-weight: 600; font-size: 14px; }
         .cw-tap { color: var(--muted); font-size: 12px; }
+        /* The re-hide pill: only present once revealed (checkbox checked); a tap unchecks → re-blurs. */
+        .cw-hide {
+            position: absolute; top: 8px; right: 8px; z-index: 2; cursor: pointer;
+            padding: 3px 11px; border-radius: 999px; font-size: 12px; line-height: 1.5;
+            background: color-mix(in srgb, var(--bg) 70%, transparent);
+            border: 1px solid var(--border); color: var(--muted); text-decoration: none;
+        }
+        .cw-hide:hover { color: var(--text); border-color: var(--accent); }
+        .cw-toggle:not(:checked) ~ .cw-hide { display: none; }
         /* NIP-23 article preview cards (naddr refs, profile strip, bookmarks) */
         .article-card {
             display: flex; flex-direction: column; margin: 10px 0 4px;
@@ -1246,7 +1325,7 @@
            "open thread" affordance as the timestamp glyph). */
         .quote-label .icon { display: inline-block; width: 12px; height: 12px; opacity: 0.5; margin-left: 5px; vertical-align: -2px; } /* override global .icon{display:block} so the glyph rides inline next to the label */
         .quote-label:hover .icon, .quote-label:focus-visible .icon { opacity: 1; }
-        .quote-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+        .quote-head { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
         .avatar-xs { width: 20px; height: 20px; border-width: 0; }
         .quote-author { font-size: 13px; }
         .quote-time { color: var(--muted); font-size: 12px; }
@@ -1630,7 +1709,7 @@ html[data-webln] .webln-off { display: none; }
 .comment-reply-slot:not(:empty) { margin-top: 8px; }
 
 /* Relay trust scores off (default): hide the chips. A display:none chip never fires its
-   h-trigger="intersect once", so the trustedrelays.xyz fetch never happens either. */
+   h-trigger="intersect once", so the trust-assertion lookup never happens either. */
 .settings-page.no-trust .relay-score { display: none; }
 
 /* Settings - Backup tab (lists export/import). */

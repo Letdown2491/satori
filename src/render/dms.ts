@@ -7,7 +7,8 @@
 import { html, join, type SafeHtml } from '../html.ts';
 import { avatar, displayName, npub, timeAgo, type ProfileMap } from './util.ts';
 import { withEmoji } from './content.ts';
-import { enso, icon } from './svg.ts';
+import { modalClose } from './compose.ts';
+import { emptyItem, enso, icon } from './svg.ts';
 import { quote } from './quotes.ts';
 import type { Conversation, DmMessage, DmInbox } from '../data/dms.ts';
 
@@ -42,7 +43,7 @@ function threadSyncShell(peer: string): SafeHtml {
 export function dmPrewarm(): SafeHtml {
     // delay:3s so the DM decrypt prompt doesn't race the list-primer's at login - the feed
     // settles and the private lists decrypt first, then this warms the DM cache in the background.
-    return html`<div id="dm-prewarm" h-get="/messages/sync" h-trigger="load delay:3s" h-target="#dm-prewarm" h-swap="none" h-push-url="false" aria-hidden="true"></div>`;
+    return html`<div id="dm-prewarm" h-get="/messages/sync?warm=1" h-trigger="load delay:3s" h-target="#dm-prewarm" h-swap="none" h-push-url="false" aria-hidden="true"></div>`;
 }
 
 /** Nudge when you have no kind-10050 DM relay list, so others can't reliably reach you. */
@@ -85,7 +86,7 @@ export function convList(inbox: DmInbox, profiles: ProfileMap): SafeHtml {
 
 /** The Requests bucket body (strangers). */
 export function reqList(reqs: Conversation[], profiles: ProfileMap): SafeHtml {
-    const body = reqs.length ? join(reqs.map((c) => convRow(c, profiles))) : html`<li class="empty">${enso(40, true)}<span>No requests.</span></li>`;
+    const body = reqs.length ? join(reqs.map((c) => convRow(c, profiles))) : emptyItem('No requests.');
     return html`<ul class="feed dm-conv-list" id="dm-conv-list">${body}</ul>`;
 }
 
@@ -192,7 +193,7 @@ export function dmThreadPage(peer: string, messages: DmMessage[], profiles: Prof
           <a class="dm-peer" href="/u/${npub(peer)}" h-scroll="top instant">${avatar(peer, profiles.get(peer)?.picture, 'sm')}<span class="dm-peer-name">${name}</span>${secure ? secureBadge : null}</a>
         </div>
         <ul class="dm-messages" id="dm-messages">${inner}</ul>
-        <form class="dm-compose" action="/messages/${npub(peer)}" method="post" h-post h-target="#dm-messages" h-swap="append" h-focus=".dm-compose textarea">
+        <form class="dm-compose" action="/messages/${npub(peer)}" method="post" h-post h-target="#dm-messages" h-swap="append" h-reset h-focus=".dm-compose textarea">
           <textarea name="text" required placeholder="Message…" rows="1" autocomplete="off"></textarea>
           <button type="submit" class="dm-send busy-btn"><span class="btn-label">Send</span><span class="btn-busy">…</span></button>
         </form>
@@ -218,7 +219,7 @@ export function newMessageModal(query: string, results: { pubkey: string }[], pr
     return html`
       <div class="modal-overlay" id="dm-new-modal">
         <div class="modal dm-new-modal">
-          <div class="modal-head"><span class="page-title">New message</span><button class="modal-close" h-get="/compose/close" h-target="#modal" h-swap="inner" h-push-url="false" title="Close" aria-label="Close">✕</button></div>
+          <div class="modal-head"><span class="page-title">New message</span>${modalClose()}</div>
           <form class="dm-search-form" action="/messages/new" method="get" h-get="/messages/new" h-target="#dm-pick-results" h-swap="inner" h-push-url="false">
             <input id="dm-search-input" name="q" type="search" value="${query}" placeholder="Search people…" autocomplete="off">
           </form>

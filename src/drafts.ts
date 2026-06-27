@@ -89,9 +89,18 @@ function writeAll(all: Store): void {
     }
 }
 
+// Per-author cap: drafts autosave constantly and are ephemeral, so when a NEW draft would exceed the cap
+// we evict the author's OLDEST (LRU by savedAt) rather than reject - you never lose recent work, and one
+// account can't grow the shared store without bound on a multi-user instance.
+const MAX_PER_USER = 50;
 export function saveDraft(me: string, d: Draft): void {
     const all = readAll();
-    (all[me] ??= {})[d.id] = d;
+    const mine = (all[me] ??= {});
+    if (!(d.id in mine) && Object.keys(mine).length >= MAX_PER_USER) {
+        const oldest = Object.values(mine).sort((a, b) => a.savedAt - b.savedAt)[0];
+        if (oldest) delete mine[oldest.id];
+    }
+    mine[d.id] = d;
     writeAll(all);
 }
 

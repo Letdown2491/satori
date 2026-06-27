@@ -9,7 +9,8 @@ import {
     isPrivateList, buildPrivateToggle, applyPrivatePublished, resolveTarget, writeRelays, published, type ActionName,
 } from '../actions.ts';
 import { actionButton } from '../render/actions.ts';
-import { readSignedEvent, readSignResult } from '../nip07.ts';
+import { readSignResult, requireSigned } from '../nip07.ts';
+import { isHex64 } from '../nostr/tags.ts';
 import { requireLogin } from './common.ts';
 import { redirect, safeReferer, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
@@ -23,7 +24,7 @@ const placeBtn = (action: ActionName, target: string) => ({ 'H-Reswap': 'outer',
  * swapping the button - an empty body retargeted at `#card-<eventId>` (outer-swap = remove). */
 function dismissCard(ctx: Ctx): string | null {
     const c = ctx.query.get('card');
-    return c && /^[0-9a-f]{64}$/.test(c) ? c : null;
+    return c && isHex64(c) ? c : null;
 }
 const placeDismiss = (eventId: string) => ({ 'H-Reswap': 'outer', 'H-Retarget': `#card-${eventId}` });
 /** Emit the card-dismissal (empty body retargeted at the card) when `?card=` is present. Used at the
@@ -126,6 +127,7 @@ export async function postAction(ctx: Ctx): Promise<void> {
         const signed = await s.signer!.signEvent(template);
         if (!await published(s, signed)) throw new Error('no relay accepted it');
         applyPublished(s, signed);
+        if (signed.kind === 3) { s.followsRoute = null; s.followersRoute = null; } // follow set changed → rebuild feed + DM routing
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         sendFragment(ctx, html`<div class="notice error">Couldn't ${action}: ${msg}</div>`, {}, 502);
@@ -142,16 +144,14 @@ export async function postActionPublish(ctx: Ctx): Promise<void> {
     if (!p) { notFound(ctx); return; }
     const { action, target } = p;
 
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== actionKind(action)) {
-        sendFragment(ctx, html`<div class="notice error">Couldn't verify the signed ${action}.</div>`, {}, 400);
-        return;
-    }
+    const signed = await requireSigned(ctx, s.me, actionKind(action), `the signed ${action}`);
+    if (!signed) return;
     if (!await published(s, signed)) {
         sendFragment(ctx, html`<div class="notice error">Couldn't ${action}: no relay accepted it.</div>`, {}, 502);
         return;
     }
     applyPublished(s, signed);
+    if (signed.kind === 3) { s.followsRoute = null; s.followersRoute = null; } // follow set changed → rebuild feed + DM routing
     // The continuation is the lib's own fetch (no H-Request); the lib swaps it into
     // the originating form via the seam. Re-assert placement: the sign-request set
     // H-Reswap:none (don't swap the JSON template), which mutates the request's swap
@@ -202,11 +202,8 @@ export async function postActPrivateSign(ctx: Ctx): Promise<void> {
     if (!s) return;
     const p = parsePrivate(ctx);
     if (!p) { sendFragment(ctx, html`<div class="notice error">Couldn’t complete that action. Try again.</div>`, {}, 400); return; }
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== actionKind(p.action)) {
-        sendFragment(ctx, html`<div class="notice error">Couldn’t verify the signed ${p.action}.</div>`, {}, 400);
-        return;
-    }
+    const signed = await requireSigned(ctx, s.me, actionKind(p.action), `the signed ${p.action}`);
+    if (!signed) return;
     await s.pool.publish(writeRelays(s), signed).catch(() => {});
     applyPrivatePublished(s, signed, p.action, p.target, p.on ?? true);
     if (emitDismiss(ctx)) return; // mute-from-a-row (nip07): drop the card instead of swapping the button

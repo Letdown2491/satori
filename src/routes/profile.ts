@@ -7,17 +7,18 @@
 
 import { fetchProfileContent } from '../data/profiles.ts';
 import type { Profile } from '../data/profiles.ts';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { profileEditModal, profileEditPage, type ProfileEditCtx } from '../render/profile-edit.ts';
 import { profileHeader } from '../render/note.ts';
 import { npub } from '../render/util.ts';
-import { readSignedEvent } from '../nip07.ts';
+import { requireSigned } from '../nip07.ts';
 import { requireLogin, chromeFor } from './common.ts';
 import { html } from '../html.ts';
 import { readForm, redirect, sendPage, sendFragment, sendSignRequest, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
 import { published } from '../actions.ts';
+import { putProfile } from '../data/profile-cache.ts';
 
 const KIND_METADATA = 0;
 const PLACE_HEADER = { 'H-Reswap': 'outer', 'H-Retarget': '#profile-header' };
@@ -32,8 +33,7 @@ function profileRelays(s: Session & { me: string }): string[] {
     return [...new Set([...r.read, ...r.write, ...INDEXER_RELAYS])];
 }
 function writeTargets(s: Session & { me: string }): string[] {
-    const write = s.myRelays?.write?.length ? s.myRelays.write : INDEXER_RELAYS;
-    return [...new Set([...write, ...INDEXER_RELAYS])];
+    return [...new Set([...writeRelaysFor(s.myRelays), ...INDEXER_RELAYS])];
 }
 
 /** The cache Profile derived from full kind:0 content (so the header refreshes). */
@@ -103,7 +103,9 @@ export async function postProfile(ctx: Ctx): Promise<void> {
     try {
         const signed = await s.signer!.signEvent(template);
         if (!await published(s, signed, writeTargets(s))) throw new Error('no relay accepted the profile update');
-        s.profiles.set(s.me, profileFromContent(content));
+        const p = profileFromContent(content);
+        s.profiles.set(s.me, p);
+        putProfile(s.me, p); // keep the process-wide profile cache in step (other tabs / post-restart reads)
     } catch (err) {
         const c = ctxFromForm(s.me, form);
         c.status = err instanceof Error ? err.message : 'Could not publish.';
@@ -119,18 +121,15 @@ export async function postProfile(ctx: Ctx): Promise<void> {
 export async function postProfilePublish(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== KIND_METADATA) {
-        sendFragment(ctx, html`<div class="notice error">Couldn’t verify the signed profile.</div>`, {}, 400);
-        return;
-    }
+    const signed = await requireSigned(ctx, s.me, KIND_METADATA, 'the signed profile');
+    if (!signed) return;
     try {
         if (!await published(s, signed, writeTargets(s))) throw new Error('no relay accepted the profile update');
     } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn’t publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
         return;
     }
-    try { s.profiles.set(s.me, profileFromContent(JSON.parse(signed.content))); } catch { /* keep old cache */ }
+    try { const p = profileFromContent(JSON.parse(signed.content)); s.profiles.set(s.me, p); putProfile(s.me, p); } catch { /* keep old cache */ }
     sendFragment(
         ctx,
         html`${profileHeader(s.me, s.profiles.get(s.me), s.profiles, s, true)}<div id="modal" h-oob="true"></div>`,

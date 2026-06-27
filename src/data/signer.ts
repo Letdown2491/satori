@@ -6,11 +6,20 @@ import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure
 import { getConversationKey, encrypt, decrypt } from 'nostr-tools/nip44';
 import type { Pool } from './pool.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
+import { HEX64 } from '../nostr/tags.ts';
 
 const NIP46_KIND = 24133;
 // No bunker traffic for this long ⇒ the transport socket may be a zombie (a
 // resume from sleep kills it silently) - rebuild it before/around a request.
 const STALE_MS = 90_000;
+
+// NIP-46 client identity + the methods we use, sent in the `connect` request (the bunker:// token carries
+// no identity), so the signer shows "Satori" on the approval and can pre-authorize these in ONE grant
+// instead of prompting per action. Bare `sign_event` requests signing of all kinds (Satori signs many:
+// notes, reactions, lists, gift-wrapped DMs, profile...); a signer that doesn't honor it just falls back
+// to per-action prompts (today's behavior), so requesting it has no downside.
+const CLIENT_METADATA = JSON.stringify({ name: 'Satori' });
+const REQUESTED_PERMS = 'sign_event,nip44_encrypt,nip44_decrypt,nip04_decrypt';
 
 const toHex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 const fromHex = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)!.map((b) => parseInt(b, 16)));
@@ -32,7 +41,7 @@ export function parseBunkerUri(uri: string): BunkerUri {
     const trimmed = uri.trim();
     if (!trimmed.startsWith('bunker://')) throw new Error('Not a bunker:// URI');
     const [pubkey, query = ''] = trimmed.slice('bunker://'.length).split('?');
-    if (!pubkey || !/^[0-9a-f]{64}$/i.test(pubkey)) {
+    if (!pubkey || !HEX64.test(pubkey)) {
         throw new Error('bunker URI is missing a valid 64-char hex signer pubkey');
     }
     const params = new URLSearchParams(query);
@@ -92,7 +101,9 @@ export class BunkerSigner implements Signer {
         onStatus('Subscribing to bunker relays…');
         this._subscribe();
         onStatus('Sending connect request. Approve it in your signer…');
-        const result = await this.request('connect', [remotePubkey, secret ?? ''], 120_000);
+        // Params are positional per NIP-46: [signer_pubkey, secret, requested_perms, client_metadata].
+        // perms must hold position 3 (empty would still need to be present) so the metadata lands in 4.
+        const result = await this.request('connect', [remotePubkey, secret ?? '', REQUESTED_PERMS, CLIENT_METADATA], 120_000);
         if (result !== 'ack') throw new Error(`Unexpected connect result: ${JSON.stringify(result)}`);
     }
 

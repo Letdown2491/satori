@@ -26,6 +26,7 @@ import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
 import { FEED_KINDS } from '../manifest/feed-config.ts';
+import { feedKinds } from '../data/content-prefs.ts';
 import { prepareEvents } from '../manifest/registry.ts';
 import type { FeedTab } from '../render/layout.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -81,7 +82,9 @@ function privKindParam(ctx: Ctx): number | null {
 const PATHS: Record<FeedTab, string> = { following: '/', followers: '/followers', commons: '/commons', longform: '/longform' };
 const paginates = (tab: FeedTab) => tab !== 'commons';
 const pageSize = (tab: FeedTab) => (tab === 'longform' ? LONGFORM_PAGE : PAGE);
-const kindsFor = (tab: FeedTab) => (tab === 'longform' ? FEED_KINDS.longform : FEED_KINDS.note);
+// The longform feed is the dedicated articles surface (always articles); every other timeline feed uses
+// the user's per-kind visibility prefs (notes/polls by default, rich kinds opt-in).
+const kindsFor = (tab: FeedTab, me: string) => (tab === 'longform' ? FEED_KINDS.longform : feedKinds(me));
 
 /** The outbox route for a tab (cached on the session). Beyond has no route. */
 async function routeFor(s: Session & { me: string }, tab: FeedTab): Promise<Map<string, Set<string>>> {
@@ -98,7 +101,7 @@ async function routeFor(s: Session & { me: string }, tab: FeedTab): Promise<Map<
 async function fetchPage(s: Session & { me: string }, tab: FeedTab, until?: number, limit?: number): Promise<NostrEvent[]> {
     if (tab === 'commons') return fetchTrendingPage(s.pool).catch(() => [] as NostrEvent[]);
     const route = await routeFor(s, tab);
-    return fetchRoutedPage(s.pool, route, limit ?? pageSize(tab), until, kindsFor(tab)).catch(() => [] as NostrEvent[]);
+    return fetchRoutedPage(s.pool, route, limit ?? pageSize(tab), until, kindsFor(tab, s.me)).catch(() => [] as NostrEvent[]);
 }
 
 /** Infinite-scroll sentinel for a tab (delegates to the shared pager sentinel). */
@@ -272,12 +275,18 @@ async function serveFollowing(ctx: Ctx, s: Session & { me: string }, until?: num
 }
 
 /** GET /feed/seen?ts= - the caught-up clearing's intersect target: reaching the end of the new set
- * advances your last-visit high-water (clearing the new-notes dot). No body (h-swap="none"). */
+ * advances your last-visit high-water AND clears the new-notes dot in the chrome right away (an OOB
+ * swap of #notes-home), instead of waiting for its next 60s poll. The clearing itself is untouched
+ * (its own h-swap="none"); the OOB element is the only thing that lands. */
 export async function getFeedSeen(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const ts = Number(ctx.query.get('ts'));
-    if (ctx.isPartial && Number.isFinite(ts) && ts > 0) markFeedSeen(ctx, s, 'following', ts);
+    if (ctx.isPartial && Number.isFinite(ts) && ts > 0) {
+        markFeedSeen(ctx, s, 'following', ts); // sets the cookie - MUST run before the response head below
+        sendFragment(ctx, notesHome(false, false, true)); // OOB-clear the dot (re-arms the poller, no `load`)
+        return;
+    }
     ctx.res.writeHead(204);
     ctx.res.end();
 }
@@ -305,7 +314,7 @@ export async function getNotesDot(ctx: Ctx): Promise<void> {
     // near the threshold (+slack for muted) - instead of pulling a full timeline page every 60s.
     // Content-filtered notes don't count toward the dot (they won't show in the feed anyway).
     const route = await routeFor(s, 'following');
-    const events = await fetchRoutedPage(s.pool, route, threshold + 5, undefined, kindsFor('following'), seen).catch(() => [] as NostrEvent[]);
+    const events = await fetchRoutedPage(s.pool, route, threshold + 5, undefined, kindsFor('following', s.me), seen).catch(() => [] as NostrEvent[]);
     const count = events.filter((e) => e.created_at > seen && !muted.has(e.pubkey) && !filt.hide(e)).length;
     sendFragment(ctx, notesHome(count >= threshold));
 }
@@ -315,11 +324,14 @@ export const getFollowers = (ctx: Ctx) => serveFeed(ctx, 'followers');
 export const getCommons = (ctx: Ctx) => serveFeed(ctx, 'commons');
 export const getLongform = (ctx: Ctx) => serveFeed(ctx, 'longform');
 
-/** The full Following-feed document - used by sign-in / post-note continuations.
- * `extra` (e.g. the undo toast) is placed inside the body so a body-swap keeps it. */
+/** The full Following-feed document - used by sign-in / post-note continuations. Renders the BATCHED
+ * "caught up" boundary view (followingFirstView), the same as the GET / landing - NOT buildFeed's infinite
+ * scroll, which would flatten the boundary (a sign-in / post-note must not turn the feed back into an
+ * endless reverse-chron stream). `extra` (e.g. the undo toast) is placed in the body so a body-swap keeps it. */
 export async function feedDocument(ctx: Ctx, s: Session & { me: string }, extra?: SafeHtml): Promise<SafeHtml> {
-    const { content, newestTs } = await buildFeed(s, 'following');
-    return page(html`${content}${extra ?? html``}`, chromeFor(ctx, s, { active: 'feed', feedTab: 'following', notesSince: newestTs }));
+    const { inner, newestTs } = await followingFirstView(s, followingBoundary(ctx, s.me));
+    const primer = pendingPrivateKinds(s).length ? listPrimer({ tab: 'following' }) : null;
+    return page(html`<ul class="feed" id="feed">${inner}</ul>${extra ?? html``}${primer ?? html``}`, chromeFor(ctx, s, { active: 'feed', feedTab: 'following', notesSince: newestTs }));
 }
 
 /** GET /notes/list-prime - kick off the private-list decrypt chain (nip07). Returns

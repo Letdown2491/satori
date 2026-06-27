@@ -205,6 +205,18 @@ export function redirect(ctx: Ctx, location: string, status = 303): void {
     ctx.res.end();
 }
 
+/** Send a text body as a file download (Content-Disposition: attachment). `filename` is sanitized to a
+ * safe ASCII subset so it can't break the header or smuggle directives. */
+export function sendDownload(ctx: Ctx, body: string, filename: string, contentType: string): void {
+    const safe = filename.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100) || 'download';
+    ctx.res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${safe}"`,
+        ...securityHeaders(),
+    });
+    ctx.res.end(body);
+}
+
 /** The originating page to bounce back to after an action, but ONLY if it's our own
  * origin - returned as a relative path so a forged Referer can't drive an open
  * redirect to an external site. Falls back to "/". */

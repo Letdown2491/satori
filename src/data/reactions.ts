@@ -6,8 +6,9 @@
 
 import type { UnsignedEvent } from '../nostr/types.ts';
 import type { EmojiMap } from '../nostr/nip30.ts';
+import { nowSec } from '../nostr/tags.ts';
 
-const now = () => Math.floor(Date.now() / 1000);
+const now = nowSec;
 
 /** The curated unicode reaction palette (NIP-25 content). `+` is a plain heart; the rest are a small,
  * deliberately-limited set - a picker, not an engagement-maximizing keyboard. The user's NIP-30 custom

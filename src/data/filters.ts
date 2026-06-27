@@ -11,8 +11,8 @@
 // refuse dangerous nested-quantifier shapes at compile time and (b) cap the matched content
 // length. Compile-once + try/catch + count/length caps still apply.
 
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import { jsonStore } from './json-store.ts';
 import { replyParent } from '../nostr/nip10.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
@@ -37,23 +37,9 @@ const MAX_MATCH_LEN = 8192; // cap note content fed to user regexes (ReDoS: boun
 const FILE = process.env.SATORI_FILTERS_FILE || join(process.cwd(), '.data', 'filters.json');
 type Store = Record<string, unknown>;
 
-// mtime-keyed parse cache: getFilters() runs on every feed render (compileFilters), so avoid a
-// read+JSON.parse each time - re-parse only when filters.json actually changed (settings edit).
-let parsed: { mtime: number; data: Store } | null = null;
-function readAll(): Store {
-    try {
-        const mtime = statSync(FILE).mtimeMs;
-        if (parsed && parsed.mtime === mtime) return parsed.data;
-        const data = JSON.parse(readFileSync(FILE, 'utf8')) as Store;
-        parsed = { mtime, data };
-        return data;
-    } catch { parsed = null; return {}; }
-}
-function writeAll(all: Store): void {
-    try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(all), { mode: 0o600 }); }
-    catch (e) { console.warn('[filters] persist failed:', (e as Error)?.message ?? e); }
-    parsed = null; // re-read fresh next time (the in-memory copy may have been the source object)
-}
+// mtime-cached read / 0o600 write (getFilters() runs on every feed render, so avoid a read+JSON.parse
+// each time - jsonStore re-parses only when filters.json actually changed).
+const { readAll, writeAll } = jsonStore<Store>(FILE, 'filters');
 
 const flagsOf = (o: unknown): SurfaceFlags => {
     const x = (o ?? {}) as Partial<SurfaceFlags>;

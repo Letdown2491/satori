@@ -6,7 +6,7 @@
 
 import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { KIND_POLL, KIND_POLL_RESPONSE } from '../nostr/nip88.ts';
 
 export type NotifType = 'reply' | 'mention' | 'pollvote' | 'zap' | 'reaction' | 'privateReply';
@@ -15,14 +15,14 @@ export interface NotifWindow { since?: number; until?: number; limit: number }
 
 /** Your poll ids (kind:1068), so vote-notifications can be paged alongside the rest. */
 export async function fetchMyPollIds(pool: Pool, me: string, myRelays: RelayList | null): Promise<string[]> {
-    const write = myRelays?.write.length ? myRelays.write : INDEXER_RELAYS;
+    const write = writeRelaysFor(myRelays);
     const polls = await pool.query(write, { kinds: [KIND_POLL], authors: [me], limit: 50 }).catch(() => [] as NostrEvent[]);
     return polls.map((p) => p.id);
 }
 
 /** Fetch notifications addressed to `me` within a time window, newest first. */
 export async function fetchNotifications(
-    pool: Pool, me: string, myRelays: RelayList | null, pollIds: string[], win: NotifWindow, includeReactions = false,
+    pool: Pool, me: string, myRelays: RelayList | null, pollIds: string[] | Promise<string[]>, win: NotifWindow, includeReactions = false,
 ): Promise<Notif[]> {
     const read = myRelays?.read.length ? myRelays.read : INDEXER_RELAYS;
     const bounds = {
@@ -35,11 +35,14 @@ export async function fetchNotifications(
     // ABOVE each stream's own oldest, so the `until` cursor for the next page can't skip events in
     // the gap between the two streams' tails (the feed paginates the same way). One round-trip each.
     const fetchLimit = win.limit * 2;
+    // The tagged stream (replies/mentions/zaps) doesn't depend on your poll ids, so it starts now; the
+    // poll-vote query waits only on `pollIds` (which may still be in flight) and runs concurrently with it.
     const [tagged, votes] = await Promise.all([
         pool.query(read, { kinds: taggedKinds, '#p': [me], limit: fetchLimit, ...bounds }).catch(() => [] as NostrEvent[]),
-        pollIds.length
-            ? pool.query(read, { kinds: [KIND_POLL_RESPONSE], '#e': pollIds, limit: fetchLimit, ...bounds }).catch(() => [] as NostrEvent[])
-            : Promise.resolve([] as NostrEvent[]),
+        Promise.resolve(pollIds).then((ids) =>
+            ids.length
+                ? pool.query(read, { kinds: [KIND_POLL_RESPONSE], '#e': ids, limit: fetchLimit, ...bounds }).catch(() => [] as NostrEvent[])
+                : [] as NostrEvent[]),
     ]);
 
     const items: Notif[] = [];

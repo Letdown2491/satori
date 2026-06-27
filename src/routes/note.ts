@@ -8,12 +8,12 @@
 // tags, content-warning, mention p-tags, and relay-hint/inbox routing - both modes
 // go through it, so there's one source of truth for note construction.
 
-import { signNote, publishSigned, type Prepared, type ReplyTo, type QuoteRef } from '../data/publish.ts';
+import { signNote, publishSigned, captureSigner, type Prepared, type ReplyTo, type QuoteRef } from '../data/publish.ts';
 import { fetchRelayLists } from '../data/relays.ts';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { decode } from 'nostr-tools/nip19';
-import type { Signer } from '../data/signer.ts';
-import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
+import { decodeNaddr } from '../nostr/nip19.ts';
+import type { NostrEvent } from '../nostr/types.ts';
 import { html, raw, type SafeHtml } from '../html.ts';
 import { displayName } from '../render/util.ts';
 import { icon } from '../render/svg.ts';
@@ -29,7 +29,7 @@ import { sendPrivateReply, syntheticReply } from '../data/dms.ts';
 import { beginPrivateReplySend, sealStep, wrapPrivateReplyStep } from '../data/dms-nip07.ts';
 import { page } from '../render/layout.ts';
 import { requireLogin, chromeFor, ensureProfiles, LAND_ON_FEED } from './common.ts';
-import { readSignedEvent } from '../nip07.ts';
+import { requireSigned } from '../nip07.ts';
 import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, type Ctx } from '../http.ts';
 import { feedDocument } from './feed.ts';
 import { pollComposeFields } from '../render/poll.ts';
@@ -198,8 +198,9 @@ function decodeQuote(entity: string): QuoteRef | null {
         const d = decode(entity);
         if (d.type === 'nevent') return { id: d.data.id, pubkey: d.data.author, relays: d.data.relays ?? [] };
         if (d.type === 'note') return { id: d.data };
-        if (d.type === 'naddr') return { id: '', address: `${d.data.kind}:${d.data.pubkey}:${d.data.identifier}`, pubkey: d.data.pubkey, relays: d.data.relays ?? [] };
     } catch { /* */ }
+    const na = decodeNaddr(entity);
+    if (na) return { id: '', address: na.coord, pubkey: na.pubkey, relays: na.relays };
     return null;
 }
 
@@ -346,10 +347,6 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
     render('Draft saved ✓', syncEl);
 }
 
-/** A no-op signer that returns the template unsigned, so signNote builds the exact
- * tags for the nip07 path (the extension does the real signing). */
-const captureSigner = { signEvent: async (t: UnsignedEvent) => t as unknown as NostrEvent } as unknown as Signer;
-
 export async function postNote(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
@@ -433,7 +430,9 @@ export async function postNote(ctx: Ctx): Promise<void> {
     try {
         const prepared = await signNote(s.signer!, s.pool, s.me, s.myRelays!, opts);
         if (scheduledAt) { // hold the signed note for the sweep instead of publishing
-            addScheduled({ token: newDraftId(), pubkey: s.me, signed: prepared.signed, scheduledAt, writeTargets: prepared.writeTargets });
+            if (!addScheduled({ token: newDraftId(), pubkey: s.me, signed: prepared.signed, scheduledAt, writeTargets: prepared.writeTargets })) {
+                back('You have reached the maximum of 100 scheduled posts. Cancel some to schedule more.', 400); return;
+            }
             redirect(ctx, '/drafts');
             return;
         }
@@ -463,11 +462,8 @@ async function replyInbox(s: Session & { me: string }, replyNevent: string): Pro
 export async function postNotePublish(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== 1) {
-        sendFragment(ctx, html`<div class="notice error">Couldn't verify the signed note.</div>`, {}, 400);
-        return;
-    }
+    const signed = await requireSigned(ctx, s.me, 1, 'the signed note');
+    if (!signed) return;
 
     // Scheduled (nip07): the extension signed our future-dated note; store it for the sweep.
     // Re-validate the client-supplied schedule time server-side: only hold it if it's actually in
@@ -475,8 +471,11 @@ export async function postNotePublish(ctx: Ctx): Promise<void> {
     // created_at is already frozen by the signature, so this only governs broadcast timing.
     const schedule = Number(ctx.query.get('schedule')) || 0;
     if (schedule > Math.floor(Date.now() / 1000)) {
-        const writeTargets = s.myRelays?.write?.length ? s.myRelays.write : INDEXER_RELAYS;
-        addScheduled({ token: newDraftId(), pubkey: s.me, signed: signed as NostrEvent, scheduledAt: schedule, writeTargets });
+        const writeTargets = writeRelaysFor(s.myRelays);
+        if (!addScheduled({ token: newDraftId(), pubkey: s.me, signed: signed as NostrEvent, scheduledAt: schedule, writeTargets })) {
+            sendFragment(ctx, html`<div class="notice error">You have reached the maximum of 100 scheduled posts. Cancel some to schedule more.</div>`, {}, 400);
+            return;
+        }
         sendFragment(ctx, page(draftsScreen(listScheduled(s.me), listDrafts(s.me)), chromeFor(ctx, s as Session & { me: string }, { active: 'drafts', title: 'Drafts' })),
             { 'H-Push-Url': '/drafts', 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' });
         return;
@@ -484,7 +483,7 @@ export async function postNotePublish(ctx: Ctx): Promise<void> {
 
     const replyNevent = ctx.query.get('reply');
     const inthread = (replyNevent && ctx.query.get('inthread')) || null;
-    const writeTargets = s.myRelays?.write?.length ? s.myRelays.write : INDEXER_RELAYS;
+    const writeTargets = writeRelaysFor(s.myRelays);
     const inboxTargets = replyNevent ? await replyInbox(s, replyNevent) : [];
     const prepared: Prepared = { signed: signed as NostrEvent, isReply: !!replyNevent, writeTargets, inboxTargets };
     if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, false, inthread ?? undefined)) return; // nip07 = always JS

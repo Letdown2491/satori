@@ -5,26 +5,26 @@
 // nip07 public zaps sign-and-resubmit through POST /zap/invoice.
 
 import { html, type SafeHtml } from '../html.ts';
-import { decode } from 'nostr-tools/nip19';
 import { resolveLnurlPay, zapRequestTemplate, anonZapRequest, fetchZapInvoice, type ZapRef } from '../data/zap.ts';
 import { writeRelays } from '../actions.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { decodeNaddr } from '../nostr/nip19.ts';
+import { HEX64 } from '../nostr/tags.ts';
 import { zapModal, invoiceView, zappedToast, ZAP_MAX, type ZapCtx } from '../render/zap.ts';
 import { zapButton, articleZapButton } from '../render/note.ts';
 import { markZapped } from '../zaps.ts';
-import { readSignedEvent } from '../nip07.ts';
+import { requireSigned } from '../nip07.ts';
 import { requireLogin, ensureProfiles, chromeFor } from './common.ts';
 import { readAppearance } from '../theme.ts';
 import { readForm, readJson, sendPage, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
 
-const HEX64 = /^[0-9a-f]{64}$/i;
 const zapRelays = (s: Session & { me: string }) => [...new Set([...writeRelays(s), ...INDEXER_RELAYS])].slice(0, 6);
 
 /** A zap target's naddr → its `a`-tag address (`kind:pubkey:identifier`), or null if not a naddr. */
 function naddrAddress(naddr: string): string | null {
-    try { const d = decode(naddr); return d.type === 'naddr' ? `${d.data.kind}:${d.data.pubkey}:${d.data.identifier}` : null; } catch { return null; }
+    return decodeNaddr(naddr)?.coord ?? null;
 }
 
 /** Send the modal as a fragment (helmjs) or a full page (zero-JS baseline). */
@@ -113,11 +113,8 @@ export async function postZapInvoice(ctx: Ctx): Promise<void> {
     // depth: same-origin relative path + Node's CRLF guard + /zap/paid re-validation already contain it.
     if (!HEX64.test(recipient) || sats <= 0 || (eventId && !HEX64.test(eventId)) || (naddr && !naddrAddress(naddr))) { notFound(ctx); return; }
 
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== 9734) {
-        sendFragment(ctx, html`<div class="notice error">Couldn’t verify the zap request.</div>`, { 'H-Reswap': 'inner', 'H-Retarget': '#modal' }, 400);
-        return;
-    }
+    const signed = await requireSigned(ctx, s.me, 9734, 'the zap request', { 'H-Reswap': 'inner', 'H-Retarget': '#modal' });
+    if (!signed) return;
     try {
         const info = await resolveLnurlPay(lud16);
         const invoice = await fetchZapInvoice(info, sats * 1000, signed);

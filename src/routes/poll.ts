@@ -3,29 +3,26 @@
 // through the same builders - bunker signs server-side; nip07 returns H-Nostr-Sign
 // and a continuation publishes the extension-signed event.
 
-import { signPoll, publishSigned, type Prepared } from '../data/publish.ts';
+import { signPoll, publishSigned, captureSigner, type Prepared } from '../data/publish.ts';
 import { fetchPollResponses } from '../data/polls.ts';
 import {
     KIND_POLL, KIND_POLL_RESPONSE, parsePollOptions, parsePollRelays,
     buildResponseTags, tallyResponses, isPollEnded,
 } from '../nostr/nip88.ts';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, readRelaysFor } from '../nostr/nip65.ts';
 import { published, writeRelays } from '../actions.ts';
 import { pollSection, pollOptionRow, POLL_DURATION_DAYS } from '../render/poll.ts';
-import { readSignedEvent } from '../nip07.ts';
+import { readSignedEvent, requireSigned } from '../nip07.ts';
 import { decode } from 'nostr-tools/nip19';
-import type { Signer } from '../data/signer.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import { html } from '../html.ts';
+import { isHex64 } from '../nostr/tags.ts';
 import { requireLogin, LAND_ON_FEED } from './common.ts';
 import { feedDocument } from './feed.ts';
 import { tryUndoWindow } from './undo-window.ts';
 import { readForm, redirect, safeReferer, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
-
-const HEX64 = /^[0-9a-f]{64}$/;
-const captureSigner = { signEvent: async (t: UnsignedEvent) => t as unknown as NostrEvent } as unknown as Signer;
 
 /** GET /compose/poll-option - one more option input (helmjs "+ Add option"). */
 export function getPollOption(ctx: Ctx): void {
@@ -67,12 +64,9 @@ export async function postPoll(ctx: Ctx): Promise<void> {
 export async function postPollPublish(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== KIND_POLL) {
-        sendFragment(ctx, html`<div class="notice error">Couldn't verify the poll.</div>`, {}, 400);
-        return;
-    }
-    const prepared: Prepared = { signed: signed as NostrEvent, isReply: false, writeTargets: writeRelays(s), inboxTargets: [] };
+    const signed = await requireSigned(ctx, s.me, KIND_POLL, 'the poll');
+    if (!signed) return;
+    const prepared: Prepared = { signed, isReply: false, writeTargets: writeRelays(s), inboxTargets: [] };
     if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, false)) return; // nip07 = always JS
     try { await publishSigned(s.pool, prepared); } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
@@ -109,7 +103,7 @@ export async function postPollVote(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const pollId = ctx.params.pollid ?? '';
-    if (!HEX64.test(pollId)) { notFound(ctx); return; }
+    if (!isHex64(pollId)) { notFound(ctx); return; }
     const form = await readForm(ctx.req);
     const poll = await fetchPoll(s, pollId, []);
     if (!poll) { sendFragment(ctx, html`<div class="notice error">Poll not found.</div>`, {}, 404); return; }
@@ -155,7 +149,7 @@ export async function postPollVotePublish(ctx: Ctx): Promise<void> {
 // --- helpers ---------------------------------------------------------------
 
 function readRelays(s: Session, extra: string[] = []): string[] {
-    return [...new Set([...extra, ...INDEXER_RELAYS, ...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? [])])];
+    return [...new Set([...extra, ...readRelaysFor(s.myRelays)])];
 }
 
 async function fetchPoll(s: Session & { me: string }, id: string, relays: string[]): Promise<NostrEvent | null> {

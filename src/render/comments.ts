@@ -57,7 +57,7 @@ function renderNode(node: CNode, profiles: ProfileMap, ra: string, rp: string): 
     return html`
       <li class="comment" id="c-${ev.id}">
         <div class="comment-head">
-          <a href="/u/${npub(ev.pubkey)}" aria-label="author" h-scroll="top instant">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'xs')}</a>
+          <a href="/u/${npub(ev.pubkey)}" aria-label="author" h-get h-prefetch="hover" h-scroll="top instant">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'xs')}</a>
           <span class="comment-author">${withEmoji(displayName(ev.pubkey, profiles), profiles.get(ev.pubkey)?.emoji)}</span>
           <span class="time">· ${timeAgo(ev.created_at)}</span>
         </div>

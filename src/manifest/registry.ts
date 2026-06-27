@@ -66,6 +66,12 @@ export function handlerFor(kind: number): AnyHandler | undefined {
     return handlers.get(kind) ?? fallback ?? undefined;
 }
 
+/** Every kind with a registered (non-fallback) handler - used by the boot audit that checks the content
+ * catalog covers everything renderable. */
+export function registeredKinds(): number[] {
+    return [...handlers.keys()];
+}
+
 /** The inline-reference descriptor for a kind, or undefined (→ a generic external link). Uses the
  * REGISTERED handler only (not the fallback): a clean in-app reference link is opt-in per kind. */
 export function refFor(kind: number): RefDescriptor | undefined {

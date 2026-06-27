@@ -9,7 +9,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { naddrEncode } from 'nostr-tools/nip19';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { debouncedFlush } from './json-store.ts';
+import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import { emojiFromTags } from '../nostr/nip30.ts';
 import { parseZapReceipt } from './notifications.ts';
@@ -46,7 +47,7 @@ const FILE = process.env.SATORI_ENGAGEMENT_CACHE || join(process.cwd(), '.data',
 const WINDOW_MS = 6 * 30 * 24 * 60 * 60 * 1000; // ~6 months for the initial (cold) sync
 const STALE_MS = 5 * 60 * 1000;                 // re-sync (incremental) at most this often
 const LIMIT = 2000;                             // cap per query (covers recent engagement)
-const writeRelays = (r: RelayList | null) => (r && r.write.length ? r.write : INDEXER_RELAYS);
+const writeRelays = (r: RelayList | null) => writeRelaysFor(r);
 
 const users = new Map<string, UE>();
 let synced = 0, lookups = 0; // lightweight instrumentation
@@ -69,19 +70,14 @@ function ue(me: string): UE {
     return u;
 }
 
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleFlush(): void {
-    if (flushTimer) return;
-    flushTimer = setTimeout(() => {
-        flushTimer = null;
-        try {
-            const out: Record<string, unknown> = {};
-            for (const [pk, u] of users) out[pk] = { liked: [...u.liked], reposted: [...u.reposted], replied: [...u.replied], zapped: [...u.zapped], lastSync: u.lastSync, zapSync: u.zapSync };
-            mkdirSync(dirname(FILE), { recursive: true });
-            writeFileSync(FILE, JSON.stringify(out), { mode: 0o600 });
-        } catch (e) { console.warn('[engagement-cache] flush failed:', (e as Error)?.message ?? e); }
-    }, 8000);
-}
+const flusher = debouncedFlush(() => {
+    try {
+        const out: Record<string, unknown> = {};
+        for (const [pk, u] of users) out[pk] = { liked: [...u.liked], reposted: [...u.reposted], replied: [...u.replied], zapped: [...u.zapped], lastSync: u.lastSync, zapSync: u.zapSync };
+        mkdirSync(dirname(FILE), { recursive: true });
+        writeFileSync(FILE, JSON.stringify(out), { mode: 0o600 });
+    } catch (e) { console.warn('[engagement-cache] flush failed:', (e as Error)?.message ?? e); }
+}, 8000);
 
 // --- reads (the hot path) --------------------------------------------------
 
@@ -96,9 +92,9 @@ export function cachedZapped(me: string, key: string): boolean { return ue(me).z
 
 // --- optimistic mutations (keep the cache correct the instant you act) -----
 
-export function setLike(me: string, noteId: string, reactionId: string, emoji = '+', url?: string): void { ue(me).liked.set(noteId, { id: reactionId, emoji, ...(url ? { url } : {}) }); scheduleFlush(); }
-export function clearLike(me: string, noteId: string): void { ue(me).liked.delete(noteId); scheduleFlush(); }
-export function addZapped(me: string, key: string): void { ue(me).zapped.add(key); scheduleFlush(); }
+export function setLike(me: string, noteId: string, reactionId: string, emoji = '+', url?: string): void { ue(me).liked.set(noteId, { id: reactionId, emoji, ...(url ? { url } : {}) }); flusher.schedule(); }
+export function clearLike(me: string, noteId: string): void { ue(me).liked.delete(noteId); flusher.schedule(); }
+export function addZapped(me: string, key: string): void { ue(me).zapped.add(key); flusher.schedule(); }
 
 // --- sync ------------------------------------------------------------------
 
@@ -168,7 +164,7 @@ async function syncEngagement(pool: Pool, me: string, myRelays: RelayList | null
         u.zapSync = Date.now();
         u.lastSync = Date.now();
         synced++;
-        scheduleFlush();
+        flusher.schedule();
     } finally {
         u.syncing = false;
     }

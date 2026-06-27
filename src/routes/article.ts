@@ -5,26 +5,22 @@
 
 import { randomBytes } from 'node:crypto';
 import { naddrEncode } from 'nostr-tools/nip19';
-import { signArticle, publishSigned, type ArticleFields } from '../data/publish.ts';
+import { signArticle, publishSigned, captureSigner, type ArticleFields } from '../data/publish.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import { articleReader } from '../render/note.ts';
 import { articleComposePage, draftsView, draftsScreen, draftRow, draftsSyncShell, draftDomId, draftSyncStatus, autoSyncTrigger, type ArticleComposeCtx } from '../render/article-compose.ts';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type ArticleDraft, type Draft } from '../drafts.ts';
 import { listScheduled } from '../data/scheduled.ts';
 import { syncDraft, unsyncDraft, fetchSyncedDrafts, draftToEvent, publishDraftWrap, fetchDraftWraps, draftFromDecrypted } from '../data/draft-sync.ts';
-import { serializeDraft, draftWrapTemplate } from '../nostr/nip37.ts';
+import { serializeDraft, draftWrapTemplate, KIND_DRAFT } from '../nostr/nip37.ts';
 import { page } from '../render/layout.ts';
 import { html, type SafeHtml } from '../html.ts';
-import { readSignedEvent, readSignResult, verifySigned } from '../nip07.ts';
+import { readSignedEvent, readSignResult, verifySigned, requireSigned } from '../nip07.ts';
 import { requireLogin, ensureProfiles, chromeFor } from './common.ts';
 import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
-import type { Signer } from '../data/signer.ts';
-import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
-
-/** No-op signer: signArticle builds the exact tags, the extension signs (nip07). */
-const captureSigner = { signEvent: async (t: UnsignedEvent) => t as unknown as NostrEvent } as unknown as Signer;
+import type { NostrEvent } from '../nostr/types.ts';
 
 function readFields(form: URLSearchParams): ArticleFields {
     return {
@@ -203,7 +199,9 @@ export async function postDraftSyncPublish(ctx: Ctx): Promise<void> {
     if (!s) return;
     const id = ctx.params.id ?? '';
     const signed = await readSignedEvent(ctx.req);
-    if (signed && signed.pubkey === s.me) {
+    // Assert the draft-wrap kind (KIND_DRAFT/31234), not just the pubkey: without it the signer could
+    // return any kind for us to publish. Best-effort re-render on mismatch (no bespoke error fragment).
+    if (signed && signed.pubkey === s.me && signed.kind === KIND_DRAFT) {
         const ok = await publishDraftWrap(s, signed).catch(() => false);
         const cur = getDraft(s.me, id);
         if (ok && cur && cur.synced) saveDraft(s.me, { ...cur, syncedAt: cur.savedAt });
@@ -289,7 +287,8 @@ export async function postDraftDeleteFinish(ctx: Ctx): Promise<void> {
     if (!s) return;
     const id = ctx.params.id ?? '';
     const signed = await readSignedEvent(ctx.req);
-    if (signed && signed.pubkey === s.me) await publishDraftWrap(s, signed).catch(() => false);
+    // Assert the draft-wrap kind (KIND_DRAFT/31234), not just the pubkey, before publishing the blank.
+    if (signed && signed.pubkey === s.me && signed.kind === KIND_DRAFT) await publishDraftWrap(s, signed).catch(() => false);
     deleteDraft(s.me, id);
     sendFragment(ctx, html``, PLACE_ROW(id)); // swap the row out
 }

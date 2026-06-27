@@ -1,11 +1,13 @@
 // SSRF guard for server-side fetches of USER-CONTROLLED urls (avatar proxy, lnurl /
 // zap endpoints, nip05, …). A malicious profile - an avatar URL, a lightning address,
 // a nip05 domain - must not be able to make this daemon fetch internal services. We
-// block non-http(s) schemes and private / loopback / link-local hosts. DNS rebinding
-// is NOT covered (acceptable for a local single-user daemon); callers that follow
-// redirects should re-check the final url with this too.
+// block non-http(s) schemes and private / loopback / link-local hosts. `isPublicHttpUrl`
+// screens IP LITERALS at request time; `safeLookup` (below) closes DNS rebinding at
+// CONNECT time, for EXPOSED multi-user instances. Callers that follow redirects re-check
+// each hop's url with isPublicHttpUrl too.
 
 import net from 'node:net';
+import { lookup as dnsLookup, type LookupAddress, type LookupOptions } from 'node:dns';
 
 export function isPublicHttpUrl(raw: string): boolean {
     let u: URL;
@@ -43,4 +45,33 @@ function isPublicIPv6(ip: string): boolean {
     if (/^f[cd]/.test(h)) return false;   // fc00::/7 unique-local
     if (/^fe[89ab]/.test(h)) return false; // fe80::/10 link-local
     return true;
+}
+
+/** True iff an IP literal (v4 or v6) is public. A non-IP string → false (safeLookup only ever feeds IPs). */
+function isPublicIP(host: string): boolean {
+    if (net.isIPv4(host)) return isPublicIPv4(host);
+    if (net.isIPv6(host)) return isPublicIPv6(host);
+    return false;
+}
+
+/** A DNS `lookup` (drop-in for node http/https' `lookup` option) that REJECTS resolution to a private /
+ * loopback / link-local address - the DNS-REBINDING defense. isPublicHttpUrl only screens IP LITERALS, so
+ * a user-set hostname that resolves to 169.254.169.254 (cloud metadata) or a LAN IP would otherwise slip
+ * through. Because the socket connects to the address THIS returns, validating here PINS it and closes the
+ * check-vs-connect (TOCTOU) gap. Used only on the DIRECT (non-Tor) path; under Tor the SOCKS proxy resolves
+ * remotely. Matters on an EXPOSED multi-user instance (a member's avatar/upload/lnurl host pointing inward). */
+export function safeLookup(
+    hostname: string,
+    options: LookupOptions,
+    callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
+): void {
+    dnsLookup(hostname, { ...options, all: true }, (err, addresses) => {
+        if (err) { callback(err, '', 0); return; }
+        if (!addresses.length) { callback(new Error(`no address for ${hostname}`), '', 0); return; }
+        const bad = addresses.find((a) => !isPublicIP(a.address));
+        if (bad) { callback(new Error(`SSRF blocked: ${hostname} resolves to non-public ${bad.address}`), '', 0); return; }
+        if (options.all) { callback(null, addresses); return; }
+        const a = addresses[0]!;
+        callback(null, a.address, a.family);
+    });
 }

@@ -21,8 +21,10 @@ export type Inline =
     | { t: 'link'; text: string; href: string }
     | { t: 'image'; url: string; alt: string };
 
-// Image/link URLs may carry an optional Markdown title: `(url "title")`.
-const IMG_ONLY = /^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/;
+// Image/link URLs may carry an optional Markdown title: `(url "title")`. Per CommonMark the destination
+// may be wrapped in optional whitespace - `]( url )` is valid - so allow `\s*` around it (sloppy authors
+// write `]( https://…)` with a leading space, which a spec-compliant renderer still shows).
+const IMG_ONLY = /^!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)$/;
 const HR = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const LIST = /^\s*([-*+]|\d+\.)\s+/;
@@ -75,8 +77,8 @@ export function parseBlocks(md: string): Block[] {
 }
 
 // Groups: 1 code · 2 image · 3 link · 4 angle-bracket autolink · 5/6 strong · 7/8 em.
-const INLINE = /(`[^`]+`)|(!\[[^\]]*\]\([^)\s]+(?:\s+"[^"]*")?\))|(\[[^\]]+\]\([^)\s]+(?:\s+"[^"]*")?\))|(<https?:\/\/[^>\s]+>)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)/g;
-const LINK_PARTS = /^\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/;
+const INLINE = /(`[^`]+`)|(!\[[^\]]*\]\(\s*[^)\s]+(?:\s+"[^"]*")?\s*\))|(\[[^\]]+\]\(\s*[^)\s]+(?:\s+"[^"]*")?\s*\))|(<https?:\/\/[^>\s]+>)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)/g;
+const LINK_PARTS = /^\[([^\]]+)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)$/;
 
 export function parseInline(text: string): Inline[] {
     const out: Inline[] = [];

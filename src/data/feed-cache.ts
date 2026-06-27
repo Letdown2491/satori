@@ -12,10 +12,11 @@
 
 import type { NostrEvent } from '../nostr/types.ts';
 
-// Per-tab TTL: following/longform are your live timeline (short 25s - others' new posts matter);
-// The Commons (key 'commons') is a 7d trending page from ONE external relay - barely moves, so cache
-// 10min (re-fetching on every visit just hammers the external relay for week-scale data).
-const TTL_MS: Record<string, number> = { following: 25_000, longform: 25_000, commons: 600_000 };
+// Per-tab TTL: `following` is your live note timeline (short 25s - others' new posts matter); `longform`
+// moves far slower (articles publish on a daily/weekly cadence, not by-the-minute), so 90s is plenty and
+// spares the re-fetch on a tab re-visit. The Commons (key 'commons') is a 7d trending page from ONE external
+// relay - barely moves, so cache 10min (re-fetching every visit just hammers it for week-scale data).
+const TTL_MS: Record<string, number> = { following: 25_000, longform: 90_000, commons: 600_000 };
 const cache = new Map<string, { events: NostrEvent[]; at: number }>();
 const key = (me: string, tab: string): string => `${me}:${tab}`;
 

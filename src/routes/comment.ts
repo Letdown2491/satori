@@ -4,23 +4,20 @@
 // GET /comment/form loads an inline reply form under a comment.
 
 import { html } from '../html.ts';
-import { signComment, publishSigned, type CommentTarget, type CommentRef } from '../data/publish.ts';
+import { signComment, publishSigned, captureSigner, type CommentTarget, type CommentRef } from '../data/publish.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import { KIND_COMMENT } from '../nostr/nip22.ts';
 import { commentUpdate, commentForm } from '../render/comments.ts';
 import { writeRelays } from '../actions.ts';
-import { readSignedEvent } from '../nip07.ts';
+import { requireSigned } from '../nip07.ts';
 import { requireLogin, ensureProfiles, notePubkeys } from './common.ts';
 import { readForm, redirect, safeReferer, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
-import type { Signer } from '../data/signer.ts';
+import { HEX64 } from '../nostr/tags.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
-import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
+import type { NostrEvent } from '../nostr/types.ts';
 import type { SafeHtml } from '../html.ts';
-
-const captureSigner = { signEvent: async (t: UnsignedEvent) => t as unknown as NostrEvent } as unknown as Signer;
-const HEX64 = /^[0-9a-f]{64}$/i;
 // Success: morph the list in place (no avatar reflash / preserved scroll); the count
 // and top-level form ride along OOB. Errors replace the whole section with the notice.
 const PLACE = { 'H-Reswap': 'morph', 'H-Retarget': '#comment-list' };
@@ -85,13 +82,11 @@ export async function postCommentPublish(ctx: Ctx): Promise<void> {
     if (!s) return;
     const ra = ctx.query.get('ra') ?? '';
     const rp = ctx.query.get('rp') ?? '';
-    const signed = await readSignedEvent(ctx.req);
-    if (!signed || signed.pubkey !== s.me || signed.kind !== KIND_COMMENT || !HEX64.test(rp)) {
-        sendFragment(ctx, html`<div class="notice error">Couldn't verify the comment.</div>`, ERR_PLACE, 400);
-        return;
-    }
-    await publishSigned(s.pool, { signed: signed as NostrEvent, isReply: true, writeTargets: writeRelays(s), inboxTargets: [] }).catch(() => { /* best effort */ });
-    sendFragment(ctx, await renderSection(s, ra, rp, signed as NostrEvent), PLACE);
+    if (!HEX64.test(rp)) { sendFragment(ctx, html`<div class="notice error">Couldn't verify the comment.</div>`, ERR_PLACE, 400); return; }
+    const signed = await requireSigned(ctx, s.me, KIND_COMMENT, 'the comment', ERR_PLACE);
+    if (!signed) return;
+    await publishSigned(s.pool, { signed, isReply: true, writeTargets: writeRelays(s), inboxTargets: [] }).catch(() => { /* best effort */ });
+    sendFragment(ctx, await renderSection(s, ra, rp, signed), PLACE);
 }
 
 /** GET /comment/form - an inline reply form under a comment (helmjs). */

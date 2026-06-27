@@ -1,7 +1,7 @@
 // NIP-19 / NIP-21: decode a bare bech32 entity (the part after `nostr:`) into a
 // shape the content renderer can use. Thin wrapper over nostr-tools' decode.
 
-import { decode } from 'nostr-tools/nip19';
+import { decode, neventEncode, naddrEncode } from 'nostr-tools/nip19';
 
 export interface AddrPointer { kind: number; pubkey: string; identifier: string; relays: string[] }
 
@@ -27,4 +27,42 @@ export function decodeEntity(bech: string): DecodedEntity | null {
         return { kind: 'address', addr: { kind: d.kind, pubkey: d.pubkey, identifier: d.identifier, relays: d.relays ?? [] }, bech };
     }
     return { kind: 'other', type, bech };
+}
+
+const HEX64_RE = /^[0-9a-f]{64}$/i;
+
+/** A bare 64-hex / npub / nprofile → hex pubkey, or null. One decoder for every route that takes a
+ * "who" param (closes the npub-only sites that silently dropped nprofile). */
+export function pubkeyFromBech(s: string): string | null {
+    if (HEX64_RE.test(s)) return s.toLowerCase();
+    try {
+        const d = decode(s);
+        if (d.type === 'npub') return d.data as string;
+        if (d.type === 'nprofile') return (d.data as { pubkey: string }).pubkey;
+    } catch { /* fall through */ }
+    return null;
+}
+
+const COORD_RE = /^(\d+):([0-9a-f]{64}):(.*)$/i;
+
+/** Encode an `e`-tag event id (hex) as an `nevent`, or null if it isn't a 64-hex id. The inverse of the
+ * `quote` decode above - lets a raw tag value become a `nostr:` reference the content renderer can link. */
+export function neventFromId(id: string): string | null {
+    return HEX64_RE.test(id) ? neventEncode({ id: id.toLowerCase() }) : null;
+}
+
+/** Encode an `a`-tag coordinate (`kind:pubkey:identifier`) as an `naddr`, or null if malformed. */
+export function naddrFromCoord(coord: string): string | null {
+    const m = COORD_RE.exec(coord);
+    return m ? naddrEncode({ kind: Number(m[1]), pubkey: m[2]!.toLowerCase(), identifier: m[3]! }) : null;
+}
+
+/** Decode an naddr into its address pointer + the `kind:pubkey:identifier` coordinate, or null. */
+export function decodeNaddr(bech: string): (AddrPointer & { coord: string }) | null {
+    try {
+        const d = decode(bech);
+        if (d.type !== 'naddr') return null;
+        const a = d.data as { kind: number; pubkey: string; identifier: string; relays?: string[] };
+        return { kind: a.kind, pubkey: a.pubkey, identifier: a.identifier, relays: a.relays ?? [], coord: `${a.kind}:${a.pubkey}:${a.identifier}` };
+    } catch { return null; }
 }

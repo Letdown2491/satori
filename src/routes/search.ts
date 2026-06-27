@@ -2,7 +2,7 @@
 // rendering People (kind:0) + Notes (kind:1). The form is a boosted GET so it's a
 // snappy partial nav with JS and a real navigation without.
 
-import { decode } from 'nostr-tools/nip19';
+import { pubkeyFromBech } from '../nostr/nip19.ts';
 import { searchNotes, searchPeople, parseSearchQuery } from '../data/search.ts';
 import { searchPage, searchResults } from '../render/search.ts';
 import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
@@ -27,8 +27,8 @@ function nameScore(p: Profile, q: string): number {
  * the profile cache, else a NIP-50 people search RANKED by name match (so a bare NAME resolves to the
  * right person even when unfollowed). Null only when nothing matches at all. */
 async function resolvePubkey(s: Session & { me: string }, relays: string[], raw: string): Promise<string | null> {
-    if (/^[0-9a-f]{64}$/i.test(raw)) return raw.toLowerCase();
-    try { const d = decode(raw); if (d.type === 'npub') return d.data; if (d.type === 'nprofile') return d.data.pubkey; } catch { /* not bech32 */ }
+    const direct = pubkeyFromBech(raw); // hex / npub / nprofile
+    if (direct) return direct;
     const q = raw.toLowerCase();
     let sub: string | null = null;
     for (const [pk, p] of s.profiles) {

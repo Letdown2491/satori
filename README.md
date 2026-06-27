@@ -1,179 +1,94 @@
-# Satori — hypermedia edition
+# Satori
 
-A full-featured [nostr](https://github.com/nostr-protocol/nostr) client built as a
-**server-rendered hypermedia (HATEOAS) application** instead of a client-side SPA —
-a faithful re-imagining of the SPA client [Satori](../nostr-client), with the same
-look, feel, and design philosophy, rebuilt on a fundamentally different machine.
+Satori is a nostr client that runs on the server instead of in your browser. No SPA, no
+framework, no application JavaScript: the server sends HTML, the browser renders it, and
+you move around with links and forms. The only client code is two small libraries
+(helm.js and hext.js), and nothing else of mine ships to the browser.
 
-It is, deliberately, a **showcase**: proof that hypermedia — server-rendered HTML,
-links and forms, progressively enhanced — can deliver a *modern* web-app experience
-(optimistic UI, in-place updates, infinite scroll, live regions, a full-screen
-media lightbox) without shipping a single line of application-specific JavaScript.
-HATEOAS isn't the norm anymore; this is an argument that it doesn't have to be a
-downgrade — and a pile of reusable patterns for doing the same.
+It still behaves like a modern client. Likes register the moment you tap them, the feed
+scrolls without paging, images open full-screen, the composer completes `@`-mentions and
+`:`emoji as you type. That is plain HTML and CSS with those two libraries doing the work.
+With JavaScript off you can still read, post, zap, and message.
 
-The browser runs exactly **two** scripts, both general-purpose libraries, neither
-app-specific:
+## Why it's built this way
 
-- **[helmjs](../helmjs)** (`public/helm.js`) — an htmx-style hypermedia engine.
-- **[hateoas-extensions](../hateoas-extensions)** (`public/hext.js`) — bridges
-  browser *credentials/capabilities* into the hypermedia flow: NIP-07 signing and
-  WebLN payment, via a sign/pay-and-resubmit primitive.
+A nostr key is your whole identity, so I didn't want Satori anywhere near mine. It never
+sees your key: you sign with a NIP-46 bunker or a NIP-07 extension, and the server only
+ever handles the signed result. No nsec login, no stored secrets, no Lightning spending
+key. Keeping the browser thin is part of the same idea, less code running there is less
+that can leak or be turned against you, and a strict CSP stops the page from loading
+anything off-origin or running inline script.
 
-Everything else is server-rendered HTML + CSS.
+It also doesn't fish for your attention. There are no like or repost counts, reactions
+are off by default, and the home feed ends: when you're caught up it says so instead of
+refilling forever. The look is sumi-e, ink on paper, and the build follows the Taoist
+uncarved block, leave out whatever doesn't need to be there.
 
-## Philosophy
+And it's yours to run. Satori is a single-user daemon that lives on your own machine, and
+you can reach it from anywhere over Tor as a hidden service only your key can open.
 
-Three invariants drive every decision:
+## How it works
 
-1. **Satori's look & feel** — the Sumi-e visual language (ink on washi), the calm
-   uncluttered UX, the ensō, the copy. The CSS is a verbatim port.
-2. **Satori's values** — minimalism, *no vanity metrics* (no like/repost counts),
-   the full NIP-65 outbox model, privacy-first (**the signing key never touches
-   this server**; no spending key is ever stored), progressive disclosure.
-3. **The HATEOAS layer** (additive) — a zero-JS baseline that *degrades
-   gracefully*, with helmjs as the engine (not a fallback) and the server as the
-   single source of truth for application state.
+The browser loads two scripts. I wrote both for Satori, but neither depends on it:
 
-Internal code does **not** mirror Satori's SPA structure — it can't, and shouldn't.
-Where hypermedia expresses something more cleanly than a literal translation of
-client-side JavaScript, that's the design.
+- [helm.js](https://github.com/Letdown2491/helmjs) is a small htmx-style hypermedia
+  engine: swap a fragment, poll, toggle a class. It works on any server-rendered site.
+- [hext.js](https://github.com/Letdown2491/hextjs) wires your signer and wallet into the
+  page without giving them up: the server sends an unsigned event, your bunker or
+  extension signs it, and the signed copy comes back to be verified and published. Any
+  HATEOAS nostr app can use it for NIP-07 signing and WebLN payment.
 
-## Features
+The rest is ordinary hypermedia. An action returns new HTML and helm.js swaps it into
+place. An optimistic state is just a CSS class flipped on click and corrected when the
+server replies. Infinite scroll is an "older" link that fires when it scrolls into view;
+the lightbox is pure CSS. Because none of it is custom client code, it degrades to plain
+links and forms, and it is all reusable.
 
-Login (bunker or extension) · four feeds (Following · Followers · Beyond · Longform,
-all outbox-routed with infinite scroll + a live "new notes" pill) · profiles (with
-pinned + articles strips, and a kind:0 editor) · threads · the NIP-23 article reader
-& composer · rich compose (notes, replies, quotes, content warnings, polls, media
-upload, @-mention & :emoji autocomplete) · likes · zaps (NIP-57 invoices + WebLN
-one-tap) · a no-custody wallet · notifications (with an unread bell) · NIP-22 article
-comments · drafts · bookmarks · follows · mutes (with feed/thread/notif filtering) ·
-media galleries + a full-screen lightbox · NIP-36 content-warning blur · long-note
-clamping · `.onion` relays over Tor · an undo window before publishing.
+## What's in it
 
-**Optimistic UI:** like / bookmark / pin / follow / mute / poll-vote all flip
-**instantly** on click, then reconcile against the server's authoritative response
-(and roll back on failure) — see below.
+Close to a full client: feeds, threads, profiles, long-form articles, polls, private DMs,
+search, zaps, notifications, drafts, bookmarks, follows, and mutes. Pictures, video,
+calendar events, classifieds, podcasts, and highlights render as proper cards instead of
+sending you off to another app. Media goes through the daemon so your browser never
+connects to a stranger's host (and a dead image can be refetched by its hash), anything
+the server fetches can be routed over Tor, and a short undo window holds a post before it
+is actually sent.
 
-## Reusable hypermedia patterns
+## Run it
 
-The point of the project. Each "modern" interaction is expressed declaratively in
-server HTML + helmjs attributes — no bespoke client code — so they're liftable.
-
-| Interaction | How it's done (zero app JS) |
-|---|---|
-| **In-place updates** | a `<form>`/`<a>` returns the new fragment; `h-target`/`h-swap` place it. Underneath: real form POST + 303 redirect. |
-| **Optimistic actions** | `h-optimistic="class:active"` flips the control's state class the instant you click; the response-swap reconciles, an `h:error` reverts. The on-state look is CSS-driven so the flip is real. |
-| **Sign-and-resubmit** | the server returns an *unsigned* event + a continuation URL (`H-Nostr-Sign`); hateoas-extensions has the extension sign it and POSTs it back to verify + publish. The key never leaves the browser. |
-| **Pending vs. success** | for extension (NIP-07) signing the optimistic flip reads as *pending* during the prompt; it reconciles on approve, reverts on reject/timeout — honest, not fake. |
-| **WebLN one-tap zap** | the invoice response carries `H-Webln-Pay` + a continuation; hateoas-extensions pays via `window.webln` and resubmits the preimage. The secret stays in the extension. |
-| **Infinite scroll** | a real `older →` link, upgraded to `h-trigger="intersect once"` — fetches the next page + a fresh sentinel. |
-| **Lazy hydration** | embed cards, the poll box, profile strips and relay trust-scores load via `h-trigger="intersect"/"load"`, replacing a zero-JS fallback in place. |
-| **Live regions** | the "new notes" pill and unread bell poll with `h-trigger="every Ns"`. |
-| **Full-screen lightbox** | pure CSS `:target` + `:has()` — a tile is an `#id` link; the overlay shows while its slide is targeted; ‹ › are neighbour links. No JS. |
-| **CW blur / Show-more** | a hidden checkbox whose label is the overlay; CSS reveals on `:checked`. Persistent, independent, zero-JS. |
-| **Undo window** | the server *holds* the signed event; a countdown toast polls `/note/tick`, which publishes at the deadline or is cancelled by `/note/undo`. Closing the tab = cancel (matches Satori). |
-| **Caret editing** | `@`/`:` autocomplete uses helmjs `h-selection` (sends the caret) + `h-insert` (splices at the caret) + `h-combobox` (arrow/enter nav). |
-| **Theme without flash** | appearance lives in a server cookie (SSR), so there's no FOUC; a theme change returns `H-Refresh`. |
-
-## Signing — the key never touches the server
-
-Two modes, both keeping the key off this process:
-
-- **NIP-46 bunker** (`bunker://…`) — the server is the NIP-46 *client*; the bunker
-  signs. Works with **JavaScript disabled**. The server also does NIP-42 relay AUTH
-  for bunker sessions.
-- **NIP-07 extension** (Alby, nos2x, …) — the extension signs in the browser via
-  hateoas-extensions; the server only builds the unsigned template, verifies the
-  signed result, and publishes (outbox routing stays server-side). A JS-only
-  enhancement (an extension can't sign without JS).
-
-> **Server obligation — escaping.** Unsigned-event bodies are serialized with `&`,
-> `<`, `>` escaped (`signRequestBody`, `src/http.ts`): helmjs runs a boosted form's
-> response through `DOMParser` before the sign hook, which would otherwise corrupt
-> the JSON the extension signs. `JSON.parse` decodes the escapes transparently.
-
-## Run
-
-No build step — Node runs the TypeScript directly via type-stripping.
+No build step. Node runs the TypeScript directly.
 
 ```bash
 npm install
-npm start            # → http://127.0.0.1:8787
-npm run dev          # same, with --watch
-npm run typecheck    # tsc --noEmit (strict)
+npm start          # http://127.0.0.1:8787
 ```
 
-**Requirements:** Node ≥ 22.6 (global `WebSocket`, native TS type-stripping).
-Runtime deps: `nostr-tools`, plus `ws` + `socks-proxy-agent` (for Tor `.onion`
-relays). Sign in with a `bunker://` string **or** a NIP-07 extension.
+Requires Node 22.6 or newer. Sign in with a `bunker://` string or a NIP-07 extension
+(Alby, nos2x, and friends).
 
-### Docker (+ Tor)
+Prefer Docker? This also brings up a Tor sidecar for `.onion` relays:
 
 ```bash
-docker compose up -d --build            # build + start (http://127.0.0.1:8787)
-docker compose logs -f satori   # follow logs
-docker compose down                     # stop
+docker compose up -d --build     # http://127.0.0.1:8787
+docker compose logs -f satori
 ```
 
-`src/` and `public/` are bind-mounted under `node --watch`, so edits auto-restart
-the daemon (rebuild only on dependency changes). The compose stack includes a **Tor
-SOCKS5 sidecar**; `.onion` relays added in Settings are routed through it
-(`TOR_SOCKS=socks5h://tor:9050`). Clearnet relays connect directly. Remove
-`TOR_SOCKS` to disable Tor (onion relays then simply fail).
+`npm run dev` restarts on change; `npm run typecheck` is the gate.
 
-### Self-hosting (production + a Tor `.onion`)
+## Self-hosting
 
-The compose above is dev-flavored (bind-mounts + a file watcher). To run it for real,
-and optionally reach your own client from anywhere over Tor as a `.onion` hidden
-service locked to your Nostr identity (sign-in is owner-only; only the login page is
-reachable unauthenticated), see **[SELF-HOSTING.md](SELF-HOSTING.md)**
-(`docker-compose.prod.yml`).
+Run the production stack and it is yours:
 
-It's a **local single-user daemon**: the browser hits localhost, the bunker
-connection lives in an in-memory session keyed by an httpOnly `sid` cookie, and the
-port is published only on `127.0.0.1`.
-
-## Architecture
-
-```
-src/
-  server.ts     owned Node http server: route table, static assets, sessions
-  http.ts       request context, cookies, form/multipart parsing, response + sign helpers
-  html.ts       owned templating: html`` tagged template, escapes by construction
-  session.ts    in-memory single-user session store (bunker link, per-request caches)
-  theme.ts      appearance prefs in a cookie (SSR, no flash)
-  undo.ts       server-held events for the undo window
-  nip07.ts      NIP-07 challenge + signed-event verification
-  nostr/        pure protocol core, vendored from Satori (NIP-10/19/22/23/65/88,
-                content tokenizer, markdown) — kept verbatim for upstream syncability
-  data/         data services (pool, signer, feeds, relays, profiles, publish,
-                reactions, zap, trust, profile-extras, ws-tor) — ours to shape
-  render/       server-side renderers (string-emitting): content, note, layout,
-                actions, compose, settings, poll, zap, comments, …
-  routes/       login, feed, read, note, poll, like, actions, zap, comment, article,
-                profile, settings, notifications, suggest, upload, pages
-public/         helm.js + hext.js (the only client scripts), styles.css (verbatim
-                Sumi-e port, both themes)
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-**`html`` vs `h()`:** Satori's `h()` returns DOM nodes (safe by construction); here
-`html\`\`` returns escaped HTML strings (safe by construction). The content
-tokenizer and markdown parser are shared verbatim; the renderers emit strings over
-them, so `@mentions → <a href="/u/npub1…">`, quotes → `/t/…`, articles → `/a/…`,
-with strict escaping throughout.
+Lock sign-in to yourself with `SATORI_OWNER=npub1you` (or let the first sign-in claim
+it). To reach it from anywhere, the stack publishes a Tor `.onion`, and port 8787 never
+touches the internet. Add Tor client authorization (`sh tor/gen-client-auth.sh`) and the
+address becomes invisible to anyone without your key. Everything except the login page
+requires a session, so a stranger who finds the address meets a wall, not your data.
 
-### Security posture
+## License
 
-- **Escape-by-default templating.** The only un-escaped paths are `raw()` and nested
-  `html\`\`` templates; all user/relay content flows through escaping. URLs are
-  scheme-checked (`safeUrl`) so `javascript:`/`data:` can't execute.
-- **CSP** `script-src 'self'` (no inline scripts), httpOnly `SameSite=Lax` session
-  cookie, `no-referrer`.
-- **No secrets on the server:** no signing key (bunker/extension hold it), no
-  Lightning spending key (WebLN keeps it in the extension).
-
----
-
-Sibling projects (reference): [Satori](../nostr-client) (the SPA this ports),
-[helmjs](../helmjs), [hateoas-extensions](../hateoas-extensions).
+[MIT](LICENSE) © 2026 Letdown2491 · changes are tracked in [CHANGELOG.md](CHANGELOG.md).

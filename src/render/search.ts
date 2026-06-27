@@ -17,7 +17,7 @@ import type { Session } from '../session.ts';
 function personRow(pubkey: string, profile: Profile, profiles: ProfileMap): SafeHtml {
     return html`
       <li class="search-person">
-        <a class="search-person-link" href="/u/${npub(pubkey)}" h-scroll="top instant">
+        <a class="search-person-link" href="/u/${npub(pubkey)}" h-get h-prefetch="hover" h-scroll="top instant">
           ${avatar(pubkey, profile.picture, 'sm')}
           <span class="search-person-text">
             <span class="search-person-name">${withEmoji(displayName(pubkey, profiles), profile.emoji)}${profile.nip05Verified ? html`<span class="badge">✓</span>` : null}</span>

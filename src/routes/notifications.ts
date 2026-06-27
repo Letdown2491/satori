@@ -56,7 +56,9 @@ async function prepareNotifs(s: Session & { me: string }, items: Notif[]): Promi
 export async function getNotifications(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    if (!s.myPollIds) s.myPollIds = await fetchMyPollIds(s.pool, s.me, s.myRelays).catch(() => []);
+    // Don't block on the poll-id lookup: hand fetchNotifications a promise so its tagged-stream query
+    // starts immediately and the poll-id round-trip overlaps it (cached on the session once resolved).
+    const pollIdsP = s.myPollIds ?? fetchMyPollIds(s.pool, s.me, s.myRelays).then((ids) => (s.myPollIds = ids)).catch(() => [] as string[]);
 
     const untilParam = ctx.query.get('until');
     const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;
@@ -69,7 +71,7 @@ export async function getNotifications(ctx: Ctx): Promise<void> {
         else sendPage(ctx, html`<ul class="feed" id="feed">${frag}</ul>`, chromeFor(ctx, s, { active: 'notifications', title: 'Notifications' }));
     };
 
-    const fetched = await fetchNotifications(s.pool, s.me, s.myRelays, s.myPollIds, { until, limit: PAGE }, !!s.reactionNotifs);
+    const fetched = await fetchNotifications(s.pool, s.me, s.myRelays, pollIdsP, { until, limit: PAGE }, !!s.reactionNotifs);
     // Fold in private replies from the local DM cache (not on relays), re-sort, and re-slice to a page so
     // the `oldest` cursor and pager stay consistent across the merged stream.
     const items = [...fetched, ...cachedPrivateReplyNotifs(s, { until })].sort((a, b) => b.event.created_at - a.event.created_at).slice(0, PAGE);
@@ -114,9 +116,9 @@ export async function getNotifUnread(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     if (!ctx.isPartial) { redirect(ctx, '/notifications'); return; }
-    if (!s.myPollIds) s.myPollIds = await fetchMyPollIds(s.pool, s.me, s.myRelays).catch(() => []);
+    const pollIdsP = s.myPollIds ?? fetchMyPollIds(s.pool, s.me, s.myRelays).then((ids) => (s.myPollIds = ids)).catch(() => [] as string[]);
     const [items] = await Promise.all([
-        fetchNotifications(s.pool, s.me, s.myRelays, s.myPollIds, { since: readReadState(ctx, s.me).notif + 1, limit: 10 }, !!s.reactionNotifs),
+        fetchNotifications(s.pool, s.me, s.myRelays, pollIdsP, { since: readReadState(ctx, s.me).notif + 1, limit: 10 }, !!s.reactionNotifs),
         ensureLists(s, ['mute']),
     ]);
     const muted = mutedPubkeys(s);

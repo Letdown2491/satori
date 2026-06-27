@@ -12,7 +12,9 @@ import { privacyMode, torAvailable, type PrivacyMode } from '../privacy.ts';
 import type { RelayEntry } from '../nostr/types.ts';
 import type { Appearance, Theme } from '../theme.ts';
 import type { FeedFilters, SurfaceFlags } from '../data/filters.ts';
+import { CONTENT_TYPES, type ContentPrefs } from '../data/content-prefs.ts';
 import { BACKUP_LISTS } from '../data/list-backup.ts';
+import type { TrustScore } from '../data/trust.ts';
 
 /** Everything the settings page renders from. The network editors (relays now,
  * media servers in 7b) carry their draft here so a zero-JS add/remove can
@@ -31,8 +33,25 @@ export interface SettingsView {
     searchNoteDraft: string[];    // NIP-50 note-search relays (editable list)
     searchProfileDraft: string[]; // NIP-50 people-search relays
     filters: FeedFilters;         // server-side feed content filters
+    contentPrefs: ContentPrefs;   // per-kind feed/profile visibility
     backupStatus?: string;        // lists backup/restore result message
     backupErr?: boolean;
+}
+
+/** The shared Save footer for a form-as-state relay editor: the busy-btn (with the section's own
+ * `saveLabel`) + the status span. `status`/`statusErr` light the "Saved ✓" tint or the error message,
+ * exactly as the four sections did inline. */
+function relaySaveFooter(status?: string, statusErr = false, saveLabel = 'Save'): SafeHtml {
+    return html`<div class="relay-save">
+            <button type="submit" class="busy-btn${status && !statusErr ? ' saved' : ''}"><span class="btn-label">${saveLabel}</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
+            ${status && statusErr ? html`<span class="settings-status err">${status}</span>` : html`<span class="settings-status"></span>`}
+          </div>`;
+}
+
+/** The shared ✕ remove button for a relay-editor row. `editPath` is the section's stateless
+ * re-render route (e.g. /settings/relays/edit); `sectionId` the element it swaps (e.g. relay-section). */
+function relayRemoveBtn(url: string, editPath: string, sectionId: string): SafeHtml {
+    return html`<button class="remove-relay ghost" name="op" value="remove:${url}" formaction="${editPath}" h-post="${editPath}" h-target="#${sectionId}" h-swap="outer" title="Remove" aria-label="Remove">✕</button>`;
 }
 
 /** The Appearance section: theme (segmented), over the
@@ -54,6 +73,7 @@ function appearanceSection(a: Appearance): SafeHtml {
 /** Persisted on/off prefs (over the appearance cookie), keyed by field name. */
 const PREF_LABELS = {
     autoLoadMedia: 'Auto-load images & videos',
+    inlineVideo: 'Load nostr videos inline (fetches a frame on load)',
     trustScores: 'Show trusted relay assertions in settings',
     reactions: 'Show reactions button on notes & articles',
     reactionNotifs: 'Show reactions in notifications',
@@ -121,29 +141,51 @@ function behaviorPanel(a: Appearance): SafeHtml {
  * rides in a hidden field; add/remove re-render this section, Save writes the cookie. */
 /** Server-side feed content filters: a keyword/regex box + structural toggles. The whole
  * section re-renders on save (helmjs swaps #filters-section; zero-JS reloads). */
-export function filtersSection(f: FeedFilters, status?: string): SafeHtml {
-    // Keyword/regex patterns are global; the structural toggles are set per surface (Feed vs
-    // Profile) - a 2-column checkbox grid. Each row: a label + a Feed checkbox + a Profile one.
+// Shared grid header (Type | Feed | Profile) for both the show-allowlist and the hide-grid.
+const gridHead = (): SafeHtml => html`<span class="filter-head-left">Type</span><span class="filter-col-head">Feeds</span><span class="filter-col-head">Profile</span>`;
+
+/** "Show these kinds" FIELDS (no form/button) - the allowlist grid. Checked = SHOWN. */
+function showKindsFields(prefs: ContentPrefs): SafeHtml {
+    const row = (id: string, label: string): SafeHtml => html`
+      <span class="filter-grid-label">${label}</span>
+      <label class="filter-cell"><input type="checkbox" name="feed_${id}" value="1"${prefs.feed[id] ? raw(' checked') : raw('')}></label>
+      <label class="filter-cell"><input type="checkbox" name="profile_${id}" value="1"${prefs.profile[id] ? raw(' checked') : raw('')}></label>`;
+    return html`
+      <h3>Show these kinds</h3>
+      <p class="filter-help">Pick which kinds of post appear in your timeline and on profiles. Pictures default off in the feed - most are posted as ordinary notes. Choices apply only to what you see; they never leave this machine.</p>
+      <div class="filter-grid">${gridHead()}${join(CONTENT_TYPES.map((c) => row(c.id, c.label)))}</div>`;
+}
+
+/** "Content filtering" FIELDS (no form/button) - keyword/regex box + the hide-post-types grid. The hide
+ * grid is the OPPOSITE polarity (checked = HIDDEN), kept a distinct section under the filtering heading. */
+function filterFields(f: FeedFilters): SafeHtml {
     const row = (label: string, flag: keyof SurfaceFlags): SafeHtml => html`
       <span class="filter-grid-label">${label}</span>
       <label class="filter-cell"><input type="checkbox" name="feed_${flag}" value="1"${f.feed[flag] ? raw(' checked') : raw('')}></label>
       <label class="filter-cell"><input type="checkbox" name="profile_${flag}" value="1"${f.profile[flag] ? raw(' checked') : raw('')}></label>`;
     return html`
-      <section id="filters-section">
-        <form action="/settings/filters" method="post" h-post h-target="#filters-section" h-swap="outer">
-          <h3>Keywords &amp; regex</h3>
-          <p class="filter-help">Hide posts containing a word, or matching a /regex/. Applied everywhere; case-insensitive, and matching runs on the daemon, so your filters never leave this machine.</p>
-          <textarea class="filter-box" name="patterns" rows="4" spellcheck="false" autocapitalize="none" placeholder="One filter per line. Plain text matches anywhere; wrap in /slashes/ for a regex.">${f.patterns.join('\n')}</textarea>
-          <h3 class="filter-subhead">Event types</h3>
-          <p class="filter-help">Hide whole categories of post, set independently for your timeline and profile pages.</p>
-          <div class="filter-grid">
-            <span class="filter-head-left">Label</span><span class="filter-col-head">Feed</span><span class="filter-col-head">Profile</span>
-            ${row('Hide replies', 'hideReplies')}
-            ${row('Hide quote posts', 'hideQuotes')}
-            ${row('Hide link-only posts', 'hideLinkOnly')}
-          </div>
+      <h3 class="filter-divide">Content filtering</h3>
+      <p class="filter-help">Hide posts containing a word, or matching a /regex/. Applied everywhere; case-insensitive, and matching runs on the daemon, so your filters never leave this machine.</p>
+      <textarea class="filter-box" name="patterns" rows="4" spellcheck="false" autocapitalize="none" placeholder="One filter per line. Plain text matches anywhere; wrap in /slashes/ for a regex.">${f.patterns.join('\n')}</textarea>
+      <p class="filter-help">Or hide whole categories of post, set independently for your timeline and profile pages.</p>
+      <div class="filter-grid">
+        ${gridHead()}
+        ${row('Hide replies', 'hideReplies')}
+        ${row('Hide quote posts', 'hideQuotes')}
+        ${row('Hide link-only posts', 'hideLinkOnly')}
+      </div>`;
+}
+
+/** The whole Content tab: the show-allowlist + the filtering controls in ONE form with ONE Save - so a
+ * change to kinds AND a keyword can't lose one half to the other form's button (the prior two-form trap). */
+export function contentTabPanel(prefs: ContentPrefs, f: FeedFilters, status?: string): SafeHtml {
+    return html`
+      <section id="content-tab">
+        <form action="/settings/content" method="post" h-post h-target="#content-tab" h-swap="outer">
+          ${showKindsFields(prefs)}
+          ${filterFields(f)}
           <div class="row-controls">
-            <button type="submit" class="busy-btn${status ? ' saved' : ''}"><span class="btn-label">Save filters</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
+            <button type="submit" class="busy-btn${status ? ' saved' : ''}"><span class="btn-label">Save</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
           </div>
         </form>
       </section>`;
@@ -185,7 +227,7 @@ export function searchRelayEditor(kind: 'note' | 'profile', urls: string[], stat
               <input type="hidden" name="relay" value="${url}">
               ${relayScoreChip(url, undefined, `rscore-${kind}-${shortHash(url)}`)}
               <span class="relay-url" title="${url}">${shortRelay(url)}</span>
-              <button class="remove-relay ghost" name="op" value="remove:${url}" formaction="/settings/search/edit" h-post="/settings/search/edit" h-target="#${raw(id)}" h-swap="outer" title="Remove" aria-label="Remove">✕</button>
+              ${relayRemoveBtn(url, '/settings/search/edit', id)}
             </li>`);
     return html`
       <section id="${raw(id)}">
@@ -197,10 +239,7 @@ export function searchRelayEditor(kind: 'note' | 'profile', urls: string[], stat
             <input type="text" name="newurl" placeholder="wss://search.example" autocomplete="off" spellcheck="false">
             <button class="ghost" name="op" value="add" formaction="/settings/search/edit" h-post="/settings/search/edit" h-target="#${raw(id)}" h-swap="outer">Add</button>
           </div>
-          <div class="relay-save">
-            <button type="submit" class="busy-btn${status && !statusErr ? ' saved' : ''}"><span class="btn-label">Save</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
-            ${status && statusErr ? html`<span class="settings-status err">${status}</span>` : html`<span class="settings-status"></span>`}
-          </div>
+          ${relaySaveFooter(status, statusErr)}
         </form>
       </section>`;
 }
@@ -279,7 +318,7 @@ export function settingsPage(v: SettingsView): SafeHtml {
         <div class="tabset-list" role="tablist">
           <label for="set-appearance" class="tabset-tab" role="tab">Appearance &amp; Behavior</label>
           <label for="set-backup" class="tabset-tab" role="tab">Backup</label>
-          <label for="set-filters" class="tabset-tab" role="tab">Filters</label>
+          <label for="set-filters" class="tabset-tab" role="tab">Content</label>
           <label for="set-privacy" class="tabset-tab" role="tab">Privacy</label>
           <label for="set-relays" class="tabset-tab" role="tab">Relays</label>
           <label for="set-search" class="tabset-tab" role="tab">Search</label>
@@ -289,16 +328,17 @@ export function settingsPage(v: SettingsView): SafeHtml {
           <section>
             <h3>Media</h3>
             ${prefToggle('autoLoadMedia', v.a.autoLoadMedia)}
+            ${prefToggle('inlineVideo', v.a.inlineVideo)}
           </section>
           ${behaviorPanel(v.a)}
           <section>
             <h3>Trusted relay assertions</h3>
             ${prefToggle('trustScores', v.a.trustScores)}
-            <p class="filter-help">When on, the relay editors fetch a trust assertion from trustedrelays.xyz for each relay in your lists, routed over Tor when Privacy Mode is enabled.</p>
+            <p class="filter-help">When on, display relay trust assertions in relay settings. Fetched from public relays, and routed over Tor when Privacy Mode is enabled.</p>
           </section>
         </div>
         <div class="tabset-panel panel-backup" role="tabpanel" aria-label="Backup">${backupSection(v.backupStatus, v.backupErr)}</div>
-        <div class="tabset-panel panel-filters" role="tabpanel" aria-label="Filters">${filtersSection(v.filters)}</div>
+        <div class="tabset-panel panel-filters" role="tabpanel" aria-label="Content">${contentTabPanel(v.contentPrefs, v.filters)}</div>
         <div class="tabset-panel panel-privacy" role="tabpanel" aria-label="Privacy">
           ${privacySection()}
         </div>
@@ -323,16 +363,28 @@ function rwChip(name: string, value: string, label: string, on: boolean): SafeHt
 /** A stable element id for a relay's score chip (so it can self-swap). */
 const scoreId = (url: string): string => `rscore-${shortHash(url)}`;
 
-/** The trust-score chip (trustedrelays.xyz). With `score` undefined it's a lazy
- * loader (helmjs intersect → /settings/relay-score → swaps in the resolved chip);
- * `null` = no score; a number colours by tier. Mirrors Satori's relayTrustScore. */
-export function relayScoreChip(url: string, score?: number | null, id: string = scoreId(url)): SafeHtml {
+/** A human tooltip for a trust assertion: "Trust 88/100 · reliability 78 · quality 97 · accessibility 92 ·
+ * high confidence · specialized" (missing components omitted). */
+function scoreTitle(s: TrustScore): string {
+    const parts = [`Trust ${s.score}/100`];
+    if (s.reliability !== undefined) parts.push(`reliability ${s.reliability}`);
+    if (s.quality !== undefined) parts.push(`quality ${s.quality}`);
+    if (s.accessibility !== undefined) parts.push(`accessibility ${s.accessibility}`);
+    if (s.confidence) parts.push(`${s.confidence} confidence`);
+    if (s.policy) parts.push(s.policy);
+    return parts.join(' · ');
+}
+
+/** The trust-score chip (trustedrelays, read from on-nostr kind:30385 assertions). With `score` undefined
+ * it's a lazy loader (helmjs intersect → /settings/relay-score → swaps in the resolved chip); `null` = no
+ * score (unevaluated/unreachable); an evaluated assertion colours by tier and tooltips the breakdown. */
+export function relayScoreChip(url: string, score?: TrustScore | null, id: string = scoreId(url)): SafeHtml {
     if (score === undefined) {
-        return html`<span class="relay-score score-unknown" id="${raw(id)}" h-get="/settings/relay-score?url=${encodeURIComponent(url)}&id=${encodeURIComponent(id)}" h-trigger="intersect once" h-target="#${raw(id)}" h-swap="outer" h-push-url="false" title="Trust score (trustedrelays.xyz)">?</span>`;
+        return html`<span class="relay-score score-unknown" id="${raw(id)}" h-get="/settings/relay-score?url=${encodeURIComponent(url)}&id=${encodeURIComponent(id)}" h-trigger="intersect once" h-target="#${raw(id)}" h-swap="outer" h-push-url="false" title="Trust score (trustedrelays)">?</span>`;
     }
     if (score === null) return html`<span class="relay-score score-unknown" id="${raw(id)}" title="No trust score">?</span>`;
-    const tier = score >= 75 ? 'high' : score >= 50 ? 'mid' : 'low';
-    return html`<span class="relay-score score-${tier}" id="${raw(id)}" title="Trust score (trustedrelays.xyz)">${String(score)}</span>`;
+    const tier = score.score >= 75 ? 'high' : score.score >= 50 ? 'mid' : 'low';
+    return html`<span class="relay-score score-${tier}" id="${raw(id)}" title="${scoreTitle(score)}">${String(score.score)}</span>`;
 }
 
 /** The relays section (kind:10002 NIP-65). `draft` is the current editable list;
@@ -346,7 +398,7 @@ export function relaySection(draft: RelayEntry[], status?: string, statusErr = f
               ${relayScoreChip(r.url)}
               <span class="relay-url" title="${r.url}">${shortRelay(r.url)}</span>
               <div class="rw-group">${rwChip('read', r.url, 'Read', r.read)}${rwChip('write', r.url, 'Write', r.write)}</div>
-              <button class="remove-relay ghost" name="op" value="remove:${r.url}" formaction="/settings/relays/edit" h-post="/settings/relays/edit" h-target="#relay-section" h-swap="outer" title="Remove" aria-label="Remove">✕</button>
+              ${relayRemoveBtn(r.url, '/settings/relays/edit', 'relay-section')}
             </li>`);
     return html`
       <section id="relay-section">
@@ -358,10 +410,7 @@ export function relaySection(draft: RelayEntry[], status?: string, statusErr = f
             <div class="rw-group">${rwChip('newread', '1', 'read', true)}${rwChip('newwrite', '1', 'write', true)}</div>
             <button class="ghost" name="op" value="add" formaction="/settings/relays/edit" h-post="/settings/relays/edit" h-target="#relay-section" h-swap="outer">Add</button>
           </div>
-          <div class="relay-save">
-            <button type="submit" class="busy-btn${status && !statusErr ? ' saved' : ''}"><span class="btn-label">Save relay list</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
-            ${status && statusErr ? html`<span class="settings-status err">${status}</span>` : html`<span class="settings-status"></span>`}
-          </div>
+          ${relaySaveFooter(status, statusErr, 'Save relay list')}
         </form>
       </section>`;
 }
@@ -377,7 +426,7 @@ export function dmRelaySection(draft: string[], status?: string, statusErr = fal
               <input type="hidden" name="dmrelay" value="${url}">
               ${relayScoreChip(url, undefined, `rscore-dm-${shortHash(url)}`)}
               <span class="relay-url" title="${url}">${shortRelay(url)}</span>
-              <button class="remove-relay ghost" name="op" value="remove:${url}" formaction="/settings/dm-relays/edit" h-post="/settings/dm-relays/edit" h-target="#dm-relay-section" h-swap="outer" title="Remove" aria-label="Remove">✕</button>
+              ${relayRemoveBtn(url, '/settings/dm-relays/edit', 'dm-relay-section')}
             </li>`);
     return html`
       <section id="dm-relay-section">
@@ -389,10 +438,7 @@ export function dmRelaySection(draft: string[], status?: string, statusErr = fal
             <input type="text" name="newurl" placeholder="wss://relay.example (or .onion)" autocomplete="off" spellcheck="false">
             <button class="ghost" name="op" value="add" formaction="/settings/dm-relays/edit" h-post="/settings/dm-relays/edit" h-target="#dm-relay-section" h-swap="outer">Add</button>
           </div>
-          <div class="relay-save">
-            <button type="submit" class="busy-btn${status && !statusErr ? ' saved' : ''}"><span class="btn-label">Save DM relays</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
-            ${status && statusErr ? html`<span class="settings-status err">${status}</span>` : html`<span class="settings-status"></span>`}
-          </div>
+          ${relaySaveFooter(status, statusErr, 'Save DM relays')}
         </form>
       </section>`;
 }
@@ -405,7 +451,7 @@ export function mediaSection(draft: string[], _a: Appearance, status?: string, s
             <li class="relay-edit-row">
               <input type="hidden" name="server" value="${url}">
               <span class="relay-url" title="${url}">${url.replace(/^https?:\/\//, '')}</span>
-              <button class="remove-relay ghost" name="op" value="remove:${url}" formaction="/settings/media/edit" h-post="/settings/media/edit" h-target="#media-section" h-swap="outer" title="Remove" aria-label="Remove">✕</button>
+              ${relayRemoveBtn(url, '/settings/media/edit', 'media-section')}
             </li>`);
     return html`
       <section id="media-section">
@@ -416,10 +462,7 @@ export function mediaSection(draft: string[], _a: Appearance, status?: string, s
             <input type="text" name="newurl" placeholder="https://blossom.example" autocomplete="off" spellcheck="false">
             <button class="ghost" name="op" value="add" formaction="/settings/media/edit" h-post="/settings/media/edit" h-target="#media-section" h-swap="outer">Add</button>
           </div>
-          <div class="relay-save">
-            <button type="submit" class="busy-btn${status && !statusErr ? ' saved' : ''}"><span class="btn-label">Save media servers</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
-            ${status && statusErr ? html`<span class="settings-status err">${status}</span>` : html`<span class="settings-status"></span>`}
-          </div>
+          ${relaySaveFooter(status, statusErr, 'Save media servers')}
         </form>
       </section>`;
 }

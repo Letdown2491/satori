@@ -8,6 +8,7 @@
 
 import { html, type SafeHtml } from '../html.ts';
 import { avatar } from './util.ts';
+import { modalClose } from './compose.ts';
 
 export interface ProfileEditCtx {
     me: string;
@@ -57,7 +58,7 @@ export function profileEditModal(c: ProfileEditCtx): SafeHtml {
     return html`
       <div class="modal-overlay" id="profile-edit-modal">
         <div class="modal">
-          <div class="modal-head"><span class="page-title">Edit profile</span><button class="modal-close" h-get="/compose/close" h-target="#modal" h-swap="inner" h-push-url="false" title="Close" aria-label="Close">✕</button></div>
+          <div class="modal-head"><span class="page-title">Edit profile</span>${modalClose()}</div>
           ${profileEditForm(c)}
         </div>
       </div>`;

@@ -9,6 +9,7 @@
 import { generateSecretKey, getEventHash, finalizeEvent } from 'nostr-tools/pure';
 import { getConversationKey, encrypt as nip44encrypt } from 'nostr-tools/nip44';
 import type { NostrEvent, UnsignedEvent } from './types.ts';
+import { relayTags } from './tags.ts';
 
 export const KIND_DM = 14;          // the chat message (rumor, never signed/published as-is)
 export const KIND_SEAL = 13;        // sender-signed, NIP-44 to recipient
@@ -89,5 +90,5 @@ export const rumorRecipients = (r: Rumor): string[] => r.tags.filter((t) => t[0]
 
 /** Parse a kind-10050 DM-relay-list event into inbox relay urls (`relay` tags). */
 export function parseDmRelays(ev: NostrEvent): string[] {
-    return [...new Set(ev.tags.filter((t) => t[0] === 'relay' && t[1]).map((t) => t[1]!))].slice(0, 8);
+    return relayTags(ev);
 }

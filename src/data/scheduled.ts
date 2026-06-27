@@ -4,8 +4,10 @@
 // daemon does it. `signed.created_at` == the scheduled time, broadcast AT that moment so it reads
 // as ≈now and relays don't reject future-dating. Mirrors undo-store.ts. File 0600 under .data/.
 
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import { jsonStore } from './json-store.ts';
+import { anyAccepted } from './pool.ts';
+import { nowSec } from '../nostr/tags.ts';
 import type { Pool } from './pool.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
@@ -21,27 +23,19 @@ export interface ScheduledPost {
 const FILE = process.env.SATORI_SCHEDULED_FILE || join(process.cwd(), '.data', 'scheduled.json');
 const GIVE_UP_SECS = 3600; // stop retrying a post that keeps failing after 1h past its time
 
-// mtime-keyed parse cache: the 30s sweep calls readAll() every tick, but the file only changes when
-// we add/cancel/drop. Re-parse only when mtime moved (a statSync is far cheaper than read+JSON.parse,
-// which matters for the common zero-scheduled-posts case running forever). Writes null the cache.
-let parsed: { mtime: number; data: Record<string, ScheduledPost> } | null = null;
-function readAll(): Record<string, ScheduledPost> {
-    try {
-        const mtime = statSync(FILE).mtimeMs;
-        if (parsed && parsed.mtime === mtime) return parsed.data;
-        const data = JSON.parse(readFileSync(FILE, 'utf8')) as Record<string, ScheduledPost>;
-        parsed = { mtime, data };
-        return data;
-    } catch { parsed = null; return {}; }
-}
-function writeAll(all: Record<string, ScheduledPost>): void {
-    try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(all), { mode: 0o600 }); }
-    catch (e) { console.warn('[scheduled] could not persist:', (e as Error)?.message ?? e); }
-    parsed = null; // the in-memory copy may have been mutated by the caller; re-read fresh next time
-}
+// mtime-cached read (the 30s sweep calls readAll() every tick, but the file only changes when we
+// add/cancel/drop - jsonStore re-parses only when mtime moved) + 0o600 write.
+const { readAll, writeAll } = jsonStore<Record<string, ScheduledPost>>(FILE, 'scheduled');
 
-export function addScheduled(p: ScheduledPost): void {
-    const all = readAll(); all[p.token] = p; writeAll(all);
+// Per-author cap: bounds the SHARED store so one account can't bloat the file (and the sweep's in-memory
+// copy) for everyone on a multi-user instance. A normal user is nowhere near it - it only stops a runaway.
+const MAX_PER_USER = 100;
+/** Hold a signed post for the sweep. Returns false (the caller surfaces an error) if the author is at cap. */
+export function addScheduled(p: ScheduledPost): boolean {
+    const all = readAll();
+    if (!(p.token in all) && Object.values(all).filter((x) => x.pubkey === p.pubkey).length >= MAX_PER_USER) return false;
+    all[p.token] = p; writeAll(all);
+    return true;
 }
 export function listScheduled(me: string): ScheduledPost[] {
     return Object.values(readAll()).filter((p) => p.pubkey === me).sort((a, b) => a.scheduledAt - b.scheduledAt);
@@ -63,7 +57,7 @@ export async function sweepScheduled(pool: Pool): Promise<void> {
     if (sweeping) return; // never overlap a slow sweep
     sweeping = true;
     try {
-        const now = Math.floor(Date.now() / 1000);
+        const now = nowSec();
         // Skip any entry whose stored pubkey doesn't match its signed event (corrupt store): the
         // signed event is self-authenticating, but don't waste a broadcast on a mismatch.
         const due = Object.values(readAll()).filter((p) => p.scheduledAt <= now && p.signed?.pubkey === p.pubkey);
@@ -73,7 +67,7 @@ export async function sweepScheduled(pool: Pool): Promise<void> {
             let ok = false;
             try {
                 const results = await pool.publish(targets, p.signed);
-                ok = results.some((r) => r.status === 'fulfilled');
+                ok = anyAccepted(results);
             } catch (e) { console.warn('[scheduled] publish failed', p.token, (e as Error)?.message ?? e); }
             if (ok) remove.push(p.token);
             else if (now - p.scheduledAt > GIVE_UP_SECS) { console.warn('[scheduled] giving up on', p.token); remove.push(p.token); }

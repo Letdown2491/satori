@@ -54,9 +54,9 @@ function muteRow(s: Session & { me: string }, pubkey: string): SafeHtml {
     const nip05 = s.profiles.get(pubkey)?.nip05;
     return html`
       <li class="mute-row">
-        <a href="/u/${npub(pubkey)}" aria-label="profile" h-scroll="top instant">${avatar(pubkey, s.profiles.get(pubkey)?.picture, 'sm')}</a>
+        <a href="/u/${npub(pubkey)}" aria-label="profile" h-get h-prefetch="hover" h-scroll="top instant">${avatar(pubkey, s.profiles.get(pubkey)?.picture, 'sm')}</a>
         <div class="mute-meta">
-          <a class="mute-name" href="/u/${npub(pubkey)}" h-scroll="top instant">${withEmoji(displayName(pubkey, s.profiles), s.profiles.get(pubkey)?.emoji)}</a>
+          <a class="mute-name" href="/u/${npub(pubkey)}" h-get h-prefetch="hover" h-scroll="top instant">${withEmoji(displayName(pubkey, s.profiles), s.profiles.get(pubkey)?.emoji)}</a>
           ${nip05 ? html`<span class="mute-nip05">${nip05}</span>` : null}
         </div>
         ${muteButton(s, pubkey)}

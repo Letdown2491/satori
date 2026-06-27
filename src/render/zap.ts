@@ -5,6 +5,7 @@
 
 import { html, type SafeHtml } from '../html.ts';
 import { avatar, displayName } from './util.ts';
+import { modalClose } from './compose.ts';
 import { DEFAULT_ZAP_PRESETS } from '../theme.ts';
 import type { Session } from '../session.ts';
 
@@ -19,7 +20,7 @@ function wrap(head: SafeHtml, body: SafeHtml): SafeHtml {
     return html`
       <div class="modal-overlay" id="zap-modal">
         <div class="modal">
-          <div class="modal-head zap-head">${head}<button class="modal-close" h-get="/compose/close" h-target="#modal" h-swap="inner" h-push-url="false" title="Close" aria-label="Close">✕</button></div>
+          <div class="modal-head zap-head">${head}${modalClose()}</div>
           ${body}
         </div>
       </div>`;
@@ -42,7 +43,10 @@ export function zapModal(s: Session, c: ZapCtx): SafeHtml {
         <!-- Presets SET the amount (h-insert replaces the hero value); they must be
              type="button" so they don't submit - only Zap submits. -->
         <div class="zap-presets">${presets.map((v) => html`<button type="button" class="zap-preset" h-insert="${v}" h-insert-target="#zap-hero" h-insert-replace="^.*$">${v.toLocaleString()}</button>`)}</div>
-        <input class="zap-comment" type="text" name="comment" placeholder="Message (optional)" maxlength="200" autocomplete="off">
+        <input class="zap-comment" id="zap-comment" type="text" name="comment" placeholder="Message (optional)" maxlength="200" autocomplete="off"
+          h-get="/compose/suggest?target=%23zap-comment&emoji=1" h-trigger="input debounce:150" h-include="#zap-comment" h-busy="false"
+          h-selection="" h-target="#zap-suggest" h-swap="inner" h-push-url="false" h-combobox="#zap-suggest">
+        <div id="zap-suggest" class="mention-box" role="listbox" aria-label="Emoji suggestions"></div>
         <div class="zap-privacy">
           <label class="zap-priv"><input type="radio" name="privacy" value="public" checked> Public</label>
           <label class="zap-priv"><input type="radio" name="privacy" value="anonymous"> Anonymous</label>

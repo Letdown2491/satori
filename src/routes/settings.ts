@@ -5,8 +5,9 @@
 // here; nip07 sign-and-continues. A relay save also updates s.myRelays + invalidates
 // the routed-feed caches and persists, so the whole app uses the new list.
 
-import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, filtersSection, backupSection, type SettingsView } from '../render/settings.ts';
+import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, contentTabPanel, backupSection, type SettingsView } from '../render/settings.ts';
 import { getFilters, saveFilters } from '../data/filters.ts';
+import { getContentPrefs, saveContentPrefs, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { privacyMode, setPrivacyMode, isPrivacyMode } from '../privacy.ts';
 import { accountMenu } from '../render/layout.ts';
 import { html } from '../html.ts';
@@ -22,6 +23,7 @@ import { requireLogin, chromeFor, meFor } from './common.ts';
 import { readAppearance, writeAppearance, parseRelayList } from '../theme.ts';
 import { parseRelayList as parseRelayListEvent } from '../nostr/nip65.ts';
 import { BACKUP_KINDS, BACKUP_VERSION, gatherBackup, restoreTemplate, restoreTargets } from '../data/list-backup.ts';
+import { anyAccepted } from '../data/pool.ts';
 import { SEARCH_NOTE_RELAYS, SEARCH_PROFILE_RELAYS } from '../data/search.ts';
 import { readForm, readUpload, readBatchResults, sendPage, sendFragment, sendSignRequest, notFound, redirect, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
@@ -91,14 +93,20 @@ async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<Sett
     const searchNoteDraft = ov.searchNoteDraft ?? a.searchNoteRelays;
     const searchProfileDraft = ov.searchProfileDraft ?? a.searchProfileRelays;
     const filters = ov.filters ?? getFilters(s.me);
-    return { a, relayDraft, mediaDraft, dmRelayDraft, searchNoteDraft, searchProfileDraft, filters, ...ov };
+    const contentPrefs = ov.contentPrefs ?? getContentPrefs(s.me);
+    return { a, relayDraft, mediaDraft, dmRelayDraft, searchNoteDraft, searchProfileDraft, filters, contentPrefs, ...ov };
 }
 
-/** POST /settings/filters - save the feed content filters, re-render the section. */
-export async function postFilters(ctx: Ctx): Promise<void> {
+/** POST /settings/content - the whole Content tab in one save: per-kind visibility AND the filters
+ * (keywords + hide-types) persist together, so neither half is lost to a separate form's button. */
+export async function postContent(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const form = await readForm(ctx.req);
+    // Show-these-kinds allowlist.
+    const pick = (p: 'feed' | 'profile') => Object.fromEntries(CONTENT_TYPES.map((c) => [c.id, form.get(`${p}_${c.id}`) === '1']));
+    saveContentPrefs(s.me, { feed: pick('feed'), profile: pick('profile') });
+    // Content filtering: keyword/regex patterns + hide-post-types flags.
     const patterns = (form.get('patterns') ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
     const flags = (p: 'feed' | 'profile') => ({
         hideReplies: form.get(`${p}_hideReplies`) === '1',
@@ -106,7 +114,7 @@ export async function postFilters(ctx: Ctx): Promise<void> {
         hideLinkOnly: form.get(`${p}_hideLinkOnly`) === '1',
     });
     saveFilters(s.me, { patterns, feed: flags('feed'), profile: flags('profile') });
-    if (ctx.isPartial) sendFragment(ctx, filtersSection(getFilters(s.me), 'Saved ✓'));
+    if (ctx.isPartial) sendFragment(ctx, contentTabPanel(getContentPrefs(s.me), getFilters(s.me), 'Saved ✓'));
     else redirect(ctx, '/settings');
 }
 
@@ -121,8 +129,8 @@ export async function getSettings(ctx: Ctx): Promise<void> {
     await sendFullPage(ctx, s, {});
 }
 
-/** GET /settings/relay-score?url= - lazily resolve a relay's trustedrelays.xyz
- * score (the chip self-swaps via helmjs intersect). Best-effort; null → '?'. */
+/** GET /settings/relay-score?url= - lazily resolve a relay's trust assertion (kind 30385, read off
+ * nostr) into the chip (self-swaps via helmjs intersect). Best-effort; null → '?'. */
 export async function getRelayScore(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
@@ -134,7 +142,7 @@ export async function getRelayScore(ctx: Ctx): Promise<void> {
     // Trust scores are off by default; when disabled, never touch the third party (the CSS
     // hides the chip so this rarely fires, but gate the fetch too as defense-in-depth).
     if (!url || !readAppearance(ctx).trustScores) { sendFragment(ctx, relayScoreChip(url, null, id)); return; }
-    const score = await fetchTrustScore(url).catch(() => null);
+    const score = await fetchTrustScore(s.pool, url).catch(() => null);
     sendFragment(ctx, relayScoreChip(url, score, id));
 }
 
@@ -333,7 +341,7 @@ async function publishRestored(s: Session & { me: string }, signed: NostrEvent[]
     let ok = 0;
     await Promise.all(signed.map(async (ev) => {
         const results = await s.pool.publish(restoreTargets(ev, s), ev).catch(() => [] as PromiseSettledResult<string>[]);
-        if (results.some((r) => r.status === 'fulfilled')) ok++;
+        if (anyAccepted(results)) ok++;
     }));
     return ok;
 }

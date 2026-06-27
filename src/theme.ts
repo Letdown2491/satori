@@ -3,6 +3,7 @@
 // prefs (media autoload, etc.) join later as the same kind of cookie pref.
 
 import { setCookie, type Ctx } from './http.ts';
+import { normalizeRelayUrl } from './nostr/nip65.ts';
 import { SEARCH_NOTE_RELAYS, SEARCH_PROFILE_RELAYS } from './data/search.ts';
 
 export type Theme = 'sumi-e' | 'sumi-e-dark';
@@ -13,7 +14,8 @@ export interface Appearance {
     zapPresets: number[]; // sats amounts offered in the zap dialog
     newNotesThreshold: number; // new feed posts before the Notes button lights up
     autoLoadMedia: boolean;    // auto-load images & videos (Phase 8 media)
-    trustScores: boolean;      // fetch relay reputation from trustedrelays.xyz (3rd party); OFF by default
+    inlineVideo: boolean;      // load nostr-uploaded videos inline (browser fetches a frame on sight + plays); OFF by default - on, the timeline shows real video frames at the cost of an on-load fetch to each video host (no different from any media fetch); off keeps the no-fetch play facade. YouTube is unaffected (always its own facade).
+    trustScores: boolean;      // show relay trust assertions (kind 30385 from trustedrelays, read off nostr); OFF by default
     reactions: boolean;        // show the like (kind:7 reaction) button on notes/articles; OFF by default (Satori favors zaps + replies)
     reactionNotifs: boolean;   // surface received reactions in notifications; OFF by default
     undoEnabled: boolean;      // hold-before-publish undo window
@@ -27,7 +29,7 @@ const COOKIE = 'satori-appearance';
 
 const DEFAULT_APPEARANCE: Appearance = {
     theme: 'sumi-e', zapPresets: DEFAULT_ZAP_PRESETS,
-    newNotesThreshold: 5, autoLoadMedia: true, trustScores: false,
+    newNotesThreshold: 5, autoLoadMedia: true, inlineVideo: false, trustScores: false,
     reactions: false, reactionNotifs: false,
     undoEnabled: true, undoSeconds: 5,
     searchNoteRelays: SEARCH_NOTE_RELAYS, searchProfileRelays: SEARCH_PROFILE_RELAYS,
@@ -39,22 +41,12 @@ export function parseZapPresets(raw: string): number[] {
     return list.length ? list : DEFAULT_ZAP_PRESETS;
 }
 
-/** Normalize one relay entry → a `wss://`/`ws://` URL (no trailing slash), or null. */
-function normalizeRelay(u: string): string | null {
-    const t = u.trim();
-    if (!t) return null;
-    const withScheme = /^wss?:\/\//i.test(t) ? t : `wss://${t}`;
-    try {
-        const url = new URL(withScheme);
-        if (url.protocol !== 'wss:' && url.protocol !== 'ws:') return null;
-        return withScheme.replace(/\/+$/, '');
-    } catch { return null; }
-}
-
 /** Parse a textarea of relay URLs (newline/comma/space separated) → clean list,
- * deduped, max 8; empty → `fallback` (so clearing the field restores defaults). */
+ * deduped, max 8; empty → `fallback` (so clearing the field restores defaults).
+ * Uses the shared NIP-65 normalizer (lowercases + assumes wss:// for a bare host),
+ * so settings + routing agree on one canonical form. */
 export function parseRelayList(raw: string, fallback: string[]): string[] {
-    const list = raw.split(/[\s,]+/).map(normalizeRelay).filter((u): u is string => !!u);
+    const list = raw.split(/[\s,]+/).map((u) => normalizeRelayUrl(u, { assumeWss: true })).filter((u): u is string => !!u);
     const dedup = [...new Set(list)].slice(0, 8);
     return dedup.length ? dedup : fallback;
 }
@@ -72,6 +64,7 @@ export function readAppearance(ctx: Ctx): Appearance {
             }
             if (typeof p.newNotesThreshold === 'number' && p.newNotesThreshold >= 1) a.newNotesThreshold = Math.min(50, Math.floor(p.newNotesThreshold));
             if (typeof p.autoLoadMedia === 'boolean') a.autoLoadMedia = p.autoLoadMedia;
+            if (typeof p.inlineVideo === 'boolean') a.inlineVideo = p.inlineVideo;
             if (typeof p.trustScores === 'boolean') a.trustScores = p.trustScores;
             if (typeof p.reactions === 'boolean') a.reactions = p.reactions;
             if (typeof p.reactionNotifs === 'boolean') a.reactionNotifs = p.reactionNotifs;

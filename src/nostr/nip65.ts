@@ -31,10 +31,13 @@ const MAX_RELAYS = 70;
 const RELAYS_PER_AUTHOR_TARGET = 2;
 export const MAX_AUTHORS_PER_FILTER = 200;
 
-/** Normalize a relay URL for dedup/grouping: lowercase, no trailing slash. */
-export function normalizeRelayUrl(url: string): string | null {
+/** Normalize a relay URL for dedup/grouping: lowercase, no trailing slash. `assumeWss` prepends wss://
+ * to a bare host (for user-entered relay sets), so settings + routing agree on one canonical form. */
+export function normalizeRelayUrl(url: string, opts: { assumeWss?: boolean } = {}): string | null {
     try {
-        const u = new URL(url.trim());
+        let raw = url.trim();
+        if (opts.assumeWss && raw && !/^wss?:\/\//i.test(raw)) raw = 'wss://' + raw;
+        const u = new URL(raw);
         if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return null;
         let s = u.toString();
         if (s.endsWith('/')) s = s.slice(0, -1);
@@ -43,6 +46,14 @@ export function normalizeRelayUrl(url: string): string | null {
         return null;
     }
 }
+
+/** The relays to PUBLISH the user's own events to: their write relays, or the indexers if they have none. */
+export const writeRelaysFor = (r: RelayList | null | undefined): string[] =>
+    r && r.write.length ? r.write : INDEXER_RELAYS;
+
+/** The relays to QUERY the user's own data from: read ∪ write ∪ indexers (deduped). */
+export const readRelaysFor = (r: RelayList | null | undefined): string[] =>
+    [...new Set([...(r?.read ?? []), ...(r?.write ?? []), ...INDEXER_RELAYS])];
 
 /** Parse a kind:10002 event into read/write lists (NIP-65 r-tag markers). */
 export function parseRelayList(event: NostrEvent): RelayList {
@@ -74,7 +85,7 @@ export function routeAuthorsToRelays(
     authors: string[],
     { fallbackRelays = [] as string[] } = {},
 ): Map<string, Set<string>> {
-    const fallback = fallbackRelays.map(normalizeRelayUrl).filter((u): u is string => !!u);
+    const fallback = fallbackRelays.map((u) => normalizeRelayUrl(u)).filter((u): u is string => !!u);
 
     const authorRelays = new Map<string, string[]>();
     for (const author of authors) {

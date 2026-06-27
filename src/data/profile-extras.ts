@@ -22,7 +22,7 @@ async function authorWriteRelays(pool: Pool, pubkey: string): Promise<string[]> 
 /** An author's long-form articles (kind:30023), newest per `d` identifier, newest first. */
 export async function fetchAuthorArticles(pool: Pool, pubkey: string, limit = 20): Promise<NostrEvent[]> {
     const relays = await authorWriteRelays(pool, pubkey);
-    const raw = await pool.query(relays, { kinds: [KIND_ARTICLE], authors: [pubkey], limit }).catch(() => []);
+    const raw = await pool.query(relays, { kinds: [KIND_ARTICLE], authors: [pubkey], limit }, { fast: true }).catch(() => []);
     const byD = new Map<string, NostrEvent>(); // replaceable: keep newest per identifier
     for (const ev of raw) {
         const d = ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';

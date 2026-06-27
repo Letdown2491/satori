@@ -7,10 +7,12 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { verifyEvent } from 'nostr-tools/pure';
-import { readJson } from './http.ts';
+import { readJson, sendFragment, type Ctx } from './http.ts';
+import { html } from './html.ts';
+import { nowSec } from './nostr/tags.ts';
 import type { NostrEvent } from './nostr/types.ts';
 
-const now = () => Math.floor(Date.now() / 1000);
+const now = nowSec;
 
 // --- single-use, time-bound login challenges --------------------------------
 
@@ -69,6 +71,15 @@ export function verifySigned(x: unknown): NostrEvent | null {
  * standard first step of every nip07 sign-and-resubmit continuation. */
 export async function readSignedEvent(req: IncomingMessage): Promise<NostrEvent | null> {
     return verifySigned(await readJson(req).catch(() => null));
+}
+
+/** The standard nip07 continuation gate: read the resubmitted body, verify it's a real signed event
+ * from `me` of the expected `kind`, or render the bespoke error fragment + return null. Collapses the
+ * `readSignedEvent(...) + pubkey/kind check + error fragment` triple every simple continuation repeats. */
+export async function requireSigned(ctx: Ctx, me: string, kind: number, label: string, headers: Record<string, string> = {}, status = 400): Promise<NostrEvent | null> {
+    const signed = await readSignedEvent(ctx.req);
+    if (!signed || signed.pubkey !== me || signed.kind !== kind) { sendFragment(ctx, html`<div class="notice error">Couldn't verify ${label}.</div>`, headers, status); return null; }
+    return signed as NostrEvent;
 }
 
 /** Read the `{ result }` a nip44_encrypt/decrypt continuation POSTs back (the

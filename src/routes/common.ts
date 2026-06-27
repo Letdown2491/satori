@@ -44,7 +44,7 @@ export function requireLogin(ctx: Ctx): (Session & { me: string }) | null {
     // Refresh the per-request appearance prefs from the cookie so renderers can read them off the
     // session (media autoload; whether the reactions/like button shows; reactions-in-notifications).
     const a = readAppearance(ctx);
-    ctx.session.media = { autoLoad: a.autoLoadMedia };
+    ctx.session.media = { autoLoad: a.autoLoadMedia, inlineVideo: a.inlineVideo };
     ctx.session.reactions = a.reactions;
     ctx.session.reactionNotifs = a.reactionNotifs;
     return ctx.session;

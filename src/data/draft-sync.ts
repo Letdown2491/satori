@@ -8,6 +8,7 @@ import type { Session } from '../session.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import type { Draft, ArticleDraft, NoteDraft, PollDraft } from '../drafts.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { anyAccepted } from './pool.ts';
 import {
     KIND_DRAFT, KIND_DRAFT_RELAYS, draftWrapTemplate, serializeDraft, parseDraft,
     parseDraftRelays, draftId, isDeletedDraft,
@@ -82,6 +83,19 @@ export function eventToDraft(inner: UnsignedEvent, id: string): Draft | null {
 
 // --- relays + bunker publish/fetch ----------------------------------------
 
+/** The newest wrap per draft `d`, tombstones (un-synced/deleted drafts) dropped. Shared by the bunker
+ * fetch (fetchSyncedDrafts) and the nip07 fetch (fetchDraftWraps). */
+function newestWraps(wraps: NostrEvent[]): NostrEvent[] {
+    const newest = new Map<string, NostrEvent>();
+    for (const w of wraps) {
+        const id = draftId(w);
+        if (!id) continue;
+        const cur = newest.get(id);
+        if (!cur || w.created_at > cur.created_at) newest.set(id, w);
+    }
+    return [...newest.values()].filter((w) => !isDeletedDraft(w));
+}
+
 /** Your draft relays (kind:10013), or write relays + indexers if none published. Cached on the
  * session: the 10013 list is near-static, so repeat draft loads/saves don't re-`get` it - a /drafts
  * load drops from 2 round-trips (relay list + wraps) to 1 after the first resolve this session. */
@@ -98,7 +112,7 @@ export async function syncDraft(s: Signed, d: Draft): Promise<boolean> {
     const encrypted = await s.signer.nip44Encrypt(s.me, serializeDraft(inner));
     const signed = await s.signer.signEvent(draftWrapTemplate(s.me, d.id, inner.kind, encrypted)) as NostrEvent;
     const results = await s.pool.publish(await draftRelays(s), signed).catch(() => [] as PromiseSettledResult<string>[]);
-    return results.some((r) => r.status === 'fulfilled');
+    return anyAccepted(results);
 }
 
 /** Stop syncing: re-publish the wrap with empty content (NIP-37 deletion). `kind` = wrapped kind. */
@@ -110,16 +124,10 @@ export async function unsyncDraft(s: Signed, id: string, kind: number): Promise<
 /** Fetch + decrypt your synced drafts (newest wrap per `d`; tombstones skipped). */
 export async function fetchSyncedDrafts(s: Signed): Promise<Draft[]> {
     const wraps = await s.pool.query(await draftRelays(s), { kinds: [KIND_DRAFT], authors: [s.me] }).catch(() => [] as NostrEvent[]);
-    const newest = new Map<string, NostrEvent>();
-    for (const w of wraps) {
+    const out: Draft[] = [];
+    for (const w of newestWraps(wraps)) {
         const id = draftId(w);
         if (!id) continue;
-        const cur = newest.get(id);
-        if (!cur || w.created_at > cur.created_at) newest.set(id, w);
-    }
-    const out: Draft[] = [];
-    for (const [id, w] of newest) {
-        if (isDeletedDraft(w)) continue;
         try {
             const inner = parseDraft(await s.signer.nip44Decrypt(s.me, w.content));
             const d = inner && eventToDraft(inner, id);
@@ -134,21 +142,14 @@ export async function fetchSyncedDrafts(s: Signed): Promise<Draft[]> {
 /** Publish a (client-signed) draft wrap to your draft relays. Mode-agnostic (no signer). */
 export async function publishDraftWrap(s: WithMe, signed: NostrEvent): Promise<boolean> {
     const results = await s.pool.publish(await draftRelays(s), signed).catch(() => [] as PromiseSettledResult<string>[]);
-    return results.some((r) => r.status === 'fulfilled');
+    return anyAccepted(results);
 }
 
 /** Fetch your draft wraps (newest per d, tombstones dropped) WITHOUT decrypting - for the
  * nip07 decrypt-on-load chain (the route batch-decrypts the contents via the extension). */
 export async function fetchDraftWraps(s: WithMe): Promise<NostrEvent[]> {
     const wraps = await s.pool.query(await draftRelays(s), { kinds: [KIND_DRAFT], authors: [s.me] }).catch(() => [] as NostrEvent[]);
-    const newest = new Map<string, NostrEvent>();
-    for (const w of wraps) {
-        const id = draftId(w);
-        if (!id) continue;
-        const cur = newest.get(id);
-        if (!cur || w.created_at > cur.created_at) newest.set(id, w);
-    }
-    return [...newest.values()].filter((w) => !isDeletedDraft(w));
+    return newestWraps(wraps);
 }
 
 /** Build a Draft from a decrypted wrap content + its identifier (nip07 apply step). */

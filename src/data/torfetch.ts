@@ -7,7 +7,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import { privacyMode, torStrict } from '../privacy.ts';
-import { isPublicHttpUrl } from '../ssrf.ts';
+import { isPublicHttpUrl, safeLookup } from '../ssrf.ts';
 
 export interface HttpResp { status: number; headers: http.IncomingHttpHeaders; body: Buffer; url: string }
 
@@ -48,7 +48,9 @@ function get(url: string, agent: unknown, timeoutMs: number, maxBytes: number, r
         // so this guarantees we bail and fall back to a direct fetch on schedule.
         const killer = setTimeout(() => settle(() => reject(new Error('timeout'))), timeoutMs);
         const settle = (fn: () => void): void => { if (done) return; done = true; clearTimeout(killer); req.destroy(); fn(); };
-        const req = lib.get(url, { agent: (agent as http.Agent) || undefined, timeout: timeoutMs, headers: { 'user-agent': UA, accept: '*/*' } }, (res) => {
+        // DIRECT path only: a validating DNS lookup blocks resolution to a private/metadata IP (DNS
+        // rebinding). Under Tor (agent set) the SOCKS proxy resolves remotely, so no local lookup runs.
+        const req = lib.get(url, { agent: (agent as http.Agent) || undefined, timeout: timeoutMs, headers: { 'user-agent': UA, accept: '*/*' }, ...(agent ? {} : { lookup: safeLookup }) }, (res) => {
             const status = res.statusCode ?? 0;
             const loc = res.headers.location;
             if (status >= 300 && status < 400 && loc && redirects > 0) {
@@ -84,7 +86,7 @@ function request(url: string, opts: { method: string; agent: unknown; timeoutMs:
         let done = false;
         const killer = setTimeout(() => settle(() => reject(new Error('timeout'))), opts.timeoutMs);
         const settle = (fn: () => void): void => { if (done) return; done = true; clearTimeout(killer); req.destroy(); fn(); };
-        const req = lib.request(url, { method: opts.method, agent: (opts.agent as http.Agent) || undefined, timeout: opts.timeoutMs, headers: { 'user-agent': UA, accept: '*/*', ...(opts.headers ?? {}) } }, (res) => {
+        const req = lib.request(url, { method: opts.method, agent: (opts.agent as http.Agent) || undefined, timeout: opts.timeoutMs, headers: { 'user-agent': UA, accept: '*/*', ...(opts.headers ?? {}) }, ...(opts.agent ? {} : { lookup: safeLookup }) }, (res) => {
             const status = res.statusCode ?? 0;
             const chunks: Buffer[] = [];
             let total = 0;

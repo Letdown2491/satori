@@ -6,50 +6,70 @@
 // stays direct. On any failure: a 1x1 transparent GIF (so the <img> just shows blank).
 
 import { isPublicHttpUrl } from '../ssrf.ts';
-import { torFetch } from '../data/torfetch.ts';
-import { getAvatarBytes, putAvatarBytes } from '../data/avatar-cache.ts';
+import { serveProxiedImage } from './image-proxy.ts';
 import { sendFragment, type Ctx } from '../http.ts';
 import { html, safeUrl } from '../html.ts';
 import { torStrict } from '../privacy.ts';
 import { videoEmbed } from '../render/content.ts';
+import { fetchBlossomServers } from '../upload.ts';
+import { isHex64 } from '../nostr/tags.ts';
+import type { Pool } from '../data/pool.ts';
 
 const MAX_BYTES = 25 * 1024 * 1024;  // generous for images, but bounded
 const TIMEOUT_MS = 12000;            // images over a cold Tor circuit can be slow
-const LONG_CACHE = 'public, max-age=604800, immutable'; // url-keyed → safe to cache hard
 const BLANK = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
-// Same-origin hardening: never let a proxied blob be sniffed into an active type or
-// rendered as a document. nosniff pins the declared type; inline forbids download-as.
-const SAFE_IMG = { 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline' };
-// SVG is the one image type that's also a scriptable document - never legitimate for a
-// note image or avatar, and a stored-XSS vector in our own origin, so reject it.
-const okImage = (ct: string): boolean => ct.startsWith('image/') && !/svg/i.test(ct);
 
 function serveBlank(ctx: Ctx): void {
     ctx.res.writeHead(200, { 'Content-Type': 'image/gif', 'Cache-Control': 'public, max-age=300' });
     ctx.res.end(BLANK);
 }
 
+// The author's Blossom server list (kind:10063) is fetched only when an image fails to heal, and cached
+// briefly so a feed with several dead images from one author triggers a single lookup.
+const SERVERS_TTL = 10 * 60 * 1000;
+const SERVERS_CAP = 500; // bound the map (keyed by author pubkey, only added on a heal) - evict the oldest
+const serversCache = new Map<string, { servers: string[]; at: number }>();
+async function blossomServersFor(pool: Pool, pubkey: string): Promise<string[]> {
+    const hit = serversCache.get(pubkey);
+    if (hit && Date.now() - hit.at < SERVERS_TTL) return hit.servers;
+    const servers = await fetchBlossomServers(pool, pubkey, null).catch(() => [] as string[]); // null relays → INDEXER lookup
+    if (serversCache.size >= SERVERS_CAP) { const oldest = [...serversCache].sort((a, b) => a[1].at - b[1].at)[0]; if (oldest) serversCache.delete(oldest[0]); }
+    serversCache.set(pubkey, { servers, at: Date.now() });
+    return servers;
+}
+
+/** A Blossom-style url whose last path segment is a SHA-256 (optionally with an extension) → {hash, ext}. */
+function blossomTarget(url: string): { hash: string; ext: string } | null {
+    try {
+        const seg = new URL(url).pathname.split('/').pop() ?? '';
+        const m = /^([0-9a-f]{64})(\.[a-z0-9]+)?$/i.exec(seg);
+        return m ? { hash: m[1]!.toLowerCase(), ext: m[2] ?? '' } : null;
+    } catch { return null; }
+}
+
+/** NIP-B7 healing candidates: the same Blossom file (by hash) on the AUTHOR's other servers (kind:10063).
+ * Only for a hash-named url with a valid author and a session pool; each candidate is SSRF-guarded. */
+async function healUrls(ctx: Ctx, url: string, author: string): Promise<string[]> {
+    if (!isHex64(author)) return [];
+    const tgt = blossomTarget(url);
+    const pool = ctx.session?.pool;
+    if (!tgt || !pool) return [];
+    const servers = await blossomServersFor(pool, author);
+    return servers
+        .map((s) => `${s.replace(/\/+$/, '')}/${tgt.hash}${tgt.ext}`)
+        .filter((u) => u !== url && isPublicHttpUrl(u));
+}
+
 export async function getMedia(ctx: Ctx): Promise<void> {
     const url = ctx.query.get('u') ?? '';
     if (!url || !isPublicHttpUrl(url)) { serveBlank(ctx); return; } // SSRF guard (url is from a note)
-
-    const cached = await getAvatarBytes(url);
-    if (cached) {
-        if (!okImage(cached.ct)) { serveBlank(ctx); return; } // reject SVG even from an older cache
-        ctx.res.writeHead(200, { 'Content-Type': cached.ct, 'Cache-Control': LONG_CACHE, ...SAFE_IMG });
-        ctx.res.end(cached.bytes);
-        return;
-    }
-
-    // Miss → fetch (Privacy-Mode-aware), validate it's a reasonable image, serve + cache.
-    try {
-        const r = await torFetch(url, TIMEOUT_MS, MAX_BYTES);
-        const ct = String(r.headers['content-type'] ?? '');
-        if (r.status !== 200 || !okImage(ct)) { serveBlank(ctx); return; }
-        ctx.res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': LONG_CACHE, ...SAFE_IMG });
-        ctx.res.end(r.body);
-        void putAvatarBytes(url, r.body, ct); // cache after serving (don't slow the first hit)
-    } catch { serveBlank(ctx); } // strict Privacy Mode with Tor blocked → fail closed (blank)
+    const author = ctx.query.get('author') ?? '';
+    // heal is a lazy callback: serveProxiedImage only calls it if the primary url fails (so the common
+    // case pays nothing, and the kind:10063 lookup happens only for genuinely-dead media). expectHash
+    // makes the proxy verify a healed file's SHA-256 (NIP-B7 integrity) before serving/caching it.
+    const heal = author ? () => healUrls(ctx, url, author) : undefined;
+    const expectHash = author ? blossomTarget(url)?.hash : undefined;
+    await serveProxiedImage(ctx, url, { maxBytes: MAX_BYTES, timeoutMs: TIMEOUT_MS, heal, expectHash });
 }
 
 /** GET /video?u=<url>&dim=<dim> - the autoplaying <video> for a poster-less video facade,

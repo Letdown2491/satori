@@ -9,7 +9,7 @@ name: satori
 #   # then read your .onion address:
 #   docker compose -f docker-compose.prod.yml exec tor cat /var/lib/tor/hidden_service/hostname
 #
-# Owner config, optional client-authorization, and accessing via Tor Browser: see SELF-HOSTING.md.
+# Owner config, optional client-authorization, and accessing via Tor Browser: see the Self-hosting section of README.md.
 
 services:
   satori:
@@ -24,7 +24,7 @@ services:
       # it - fine as long as you sign in locally before exposing). Uncomment one:
       #   - SATORI_OWNER=npub1yourownnpub
       #   - SATORI_ALLOWED_PUBKEYS=npub1a,npub1b
-      #   - SATORI_OPEN=1     # PUBLIC instance (also needs the multi-tenant hardening; see SELF-HOSTING.md)
+      #   - SATORI_OPEN=1     # PUBLIC instance (also needs the multi-tenant hardening; see README.md)
     ports:
       # Local bootstrap/admin only. The world reaches the daemon via the .onion, NOT this port - you
       # can delete this line once you've claimed ownership and only want .onion access.

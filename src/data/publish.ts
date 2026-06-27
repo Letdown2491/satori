@@ -3,8 +3,8 @@
 
 import type { Pool } from './pool.ts';
 import type { Signer } from './signer.ts';
-import type { NostrEvent, RelayList } from '../nostr/types.ts';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import type { NostrEvent, RelayList, UnsignedEvent } from '../nostr/types.ts';
+import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { fetchRelayLists } from './relays.ts';
 import { KIND_POLL, generateOptionId, buildPollTags } from '../nostr/nip88.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
@@ -12,6 +12,10 @@ import type { PollType } from '../nostr/nip88.ts';
 import { tokenize } from '../nostr/content.ts';
 
 const MAX_INBOX_RELAYS = 4;
+
+/** A no-op "signer" that returns the unsigned template verbatim - for capturing the event a signing
+ * flow WOULD produce (e.g. the nip07 path, which signs in the browser) without actually signing. */
+export const captureSigner: Signer = { signEvent: async (t: UnsignedEvent) => t as unknown as NostrEvent } as unknown as Signer;
 
 export interface ReplyTo { id: string; pubkey?: string }
 export interface QuoteRef { id: string; pubkey?: string; relays?: string[]; address?: string }
@@ -81,7 +85,7 @@ export async function signNote(
         content,
         pubkey: me,
     });
-    const myWrite = myRelays.write.length ? myRelays.write : INDEXER_RELAYS;
+    const myWrite = writeRelaysFor(myRelays);
     return { signed, isReply: !!replyTo?.id, writeTargets: myWrite, inboxTargets: inboxRelays };
 }
 
@@ -110,7 +114,7 @@ export async function signComment(
     tags.push(['k', String(parent.kind)], ['p', parent.pubkey, readHint]);
 
     const signed = await signer.signEvent({ kind: 1111, created_at: Math.floor(Date.now() / 1000), tags, content, pubkey: me });
-    const myWrite = myRelays.write.length ? myRelays.write : INDEXER_RELAYS;
+    const myWrite = writeRelaysFor(myRelays);
     const read = recipientList?.read ?? [];
     return { signed, isReply: true, writeTargets: myWrite, inboxTargets: (read.length ? read : INDEXER_RELAYS).slice(0, MAX_INBOX_RELAYS) };
 }
@@ -124,7 +128,7 @@ export async function signPoll(
     { question, options, multiple, endsAt }:
         { question: string; options: string[]; multiple: boolean; endsAt: number | null },
 ): Promise<Prepared> {
-    const myWrite = myRelays.write.length ? myRelays.write : INDEXER_RELAYS;
+    const myWrite = writeRelaysFor(myRelays);
     const opts = options.map((label) => ({ id: generateOptionId(), label }));
     const type: PollType = multiple ? 'multiple' : 'single';
     const tags = buildPollTags(opts, type, endsAt, myWrite);
@@ -162,7 +166,7 @@ export async function signArticle(signer: Signer, me: string, myRelays: RelayLis
         content: a.body,
         pubkey: me,
     });
-    const myWrite = myRelays.write.length ? myRelays.write : INDEXER_RELAYS;
+    const myWrite = writeRelaysFor(myRelays);
     return { signed, isReply: false, writeTargets: myWrite, inboxTargets: [] };
 }
 

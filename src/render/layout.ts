@@ -31,11 +31,16 @@ export interface ChromeOpts {
     contentH1?: boolean;
 }
 
+/** The poller h-trigger string. On first mount (`initial`) it carries `load` for a one-shot check;
+ * the re-arm response omits it (else load → swap → load → … loops), keeping just the interval. */
+const pollTrigger = (everyS: number, initial: boolean): string =>
+    initial ? `load, every ${everyS}s visible` : `every ${everyS}s visible`;
+
 const FEED_TABS: { tab: FeedTab; label: string; href: string }[] = [
     { tab: 'following', label: 'Following', href: '/' },
     { tab: 'followers', label: 'Followers', href: '/followers' },
-    { tab: 'commons', label: 'The Commons', href: '/commons' },
     { tab: 'longform', label: 'Longform', href: '/longform' },
+    { tab: 'commons', label: 'The Commons', href: '/commons' },
 ];
 
 
@@ -48,7 +53,7 @@ export function notifBell(unread = false, initial = false): SafeHtml {
     // otherwise each response re-fires load → /unread → swap → load → … (an infinite
     // poll loop that hammers the server and races boosted navigations). Re-arm just
     // keeps the 90s interval.
-    const trigger = initial ? 'load, every 90s' : 'every 90s';
+    const trigger = pollTrigger(90, initial);
     const poll = html`<span class="notif-poll" h-get="/notifications/unread" h-trigger="${trigger}" h-target="#notif-bell" h-swap="outer" h-push-url="false"></span>`;
     return html`<a id="notif-bell" class="notif-bell ${unread ? 'has-new' : ''}" href="/notifications" title="Notifications" aria-label="Notifications" h-scroll="top instant">${icon('bell')}${unread ? html`<span class="notif-dot"></span>` : null}${poll}</a>`;
 }
@@ -58,7 +63,7 @@ export function notifBell(unread = false, initial = false): SafeHtml {
  * haven't processed. No count - same calm language as the notification dot. nip07 gets
  * no dot (DMs are bunker-only); the poller just no-ops there. */
 export function dmDotInner(unread = false, initial = false): SafeHtml {
-    const trigger = initial ? 'load, every 90s' : 'every 90s';
+    const trigger = pollTrigger(90, initial);
     const poll = html`<span class="dm-poll" h-get="/messages/dot" h-trigger="${trigger}" h-target="#dm-dot" h-swap="inner" h-push-url="false"></span>`;
     return html`${unread ? html`<span class="notif-dot dm-dot-mark"></span>` : null}${poll}`;
 }
@@ -70,7 +75,7 @@ function feedSwitch(active: FeedTab): SafeHtml {
       <details class="feed-switch">
         <summary class="feed-toggle"><span>${current.label}</span> <span class="chevron">▾</span></summary>
         <div class="feed-menu">
-          ${FEED_TABS.map((t) => html`<a class="feed-item ${t.tab === active ? 'active' : ''}" href="${t.href}" h-scroll="top instant">${t.label}</a>`)}
+          ${FEED_TABS.map((t) => html`<a class="feed-item ${t.tab === active ? 'active' : ''}" href="${t.href}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
         </div>
       </details>`;
 }
@@ -120,11 +125,12 @@ export function accountMenu(me: Me, oob = false): SafeHtml {
  * the feed (no separate Home button, like Satori). It polls /notes/dot so the
  * new-notes dot lights up from anywhere (the ambient signal), and re-arms by
  * outer-swapping #notes-home. */
-export function notesHome(hasNew = false, initial = false): SafeHtml {
+export function notesHome(hasNew = false, initial = false, oob = false): SafeHtml {
     // `load` only on first mount; the /notes/dot re-arm omits it, else load → /notes/dot
-    // → swap → load → … loops (same fix as the notif bell).
-    const poll = html`<span class="notes-poll" h-get="/notes/dot" h-trigger="${initial ? 'load, every 60s' : 'every 60s'}" h-target="#notes-home" h-swap="outer" h-push-url="false"></span>`;
-    return html`<a id="notes-home" class="notes-mark ${hasNew ? 'has-new' : ''}" href="/" title="Notes" aria-label="Notes" h-get h-prefetch="hover" h-scroll="top instant">${icon('notes')}${hasNew ? html`<span class="notif-dot"></span>` : null}${poll}</a>`;
+    // → swap → load → … loops (same fix as the notif bell). `oob` lets /feed/seen swap this in
+    // out-of-band (by id) to clear the dot the moment you reach the "caught up" ensō.
+    const poll = html`<span class="notes-poll" h-get="/notes/dot" h-trigger="${pollTrigger(60, initial)}" h-target="#notes-home" h-swap="outer" h-push-url="false"></span>`;
+    return html`<a id="notes-home"${oob ? raw(' h-oob="true"') : raw('')} class="notes-mark ${hasNew ? 'has-new' : ''}" href="/" title="Notes" aria-label="Notes" h-get h-prefetch="hover" h-scroll="top instant">${icon('notes')}${hasNew ? html`<span class="notif-dot"></span>` : null}${poll}</a>`;
 }
 
 function bar(o: ChromeOpts): SafeHtml {

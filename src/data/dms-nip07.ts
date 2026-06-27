@@ -28,9 +28,10 @@ import type { Filter } from 'nostr-tools';
 import type { BatchResult } from '../wire.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
+import { HEX64 } from '../nostr/tags.ts';
+import { trimOldest } from './json-store.ts';
 import type { Conversation, DmMessage, DmInbox, PrivateReply } from './dms.ts';
 
-const HEX64 = /^[0-9a-f]{64}$/i;
 const RECENT_WRAPS = 500; // fits in one batch (maxBatchItems 1024); timestamps fuzzed ±2d
 const THREAD_WINDOW = 250; // wraps per thread page; older history loads on scroll-up
 const KIND_LEGACY = 4; // NIP-04 (read-only; we never SEND this metadata-leaky format)
@@ -55,7 +56,7 @@ const mem = new Map<string, Entry>();
 const MEM_CAP = 8000;
 function memSet(id: string, e: Entry): void {
     mem.set(id, e);
-    if (mem.size > MEM_CAP) { let over = mem.size - MEM_CAP; for (const k of mem.keys()) { if (over-- <= 0) break; mem.delete(k); } }
+    trimOldest(mem, MEM_CAP);
 }
 
 // Conversation-list cache: lets the route skip the whole decrypt-chain (and its relay
@@ -102,6 +103,7 @@ const CHAIN_TTL_MS = 2 * 60_000;
 interface SyncChain {
     kind: 'sync';
     view: 'inbox' | 'requests' | 'thread';
+    warm?: boolean;                         // background prewarm: warm the cache, render NOTHING (no convList/gate/error leak)
     peer?: string;                          // thread / opened-request target
     older: boolean;                         // a scroll-up older-page (prepend) vs initial load
     cursor: number | null;                  // next older-paging `until` (thread only; null = exhausted)
@@ -141,6 +143,12 @@ function takeSync(id: string): SyncChain | null {
 export function chainView(id: string): SyncChain['view'] | null {
     const c = chains.get(id);
     return c && c.kind === 'sync' && c.expires >= Date.now() ? c.view : null;
+}
+/** Whether a sync chain is a background prewarm (so its terminal/error renders nothing - it only fills
+ * the cache). Read alongside chainView, BEFORE finalizeSync consumes the chain. */
+export function chainWarm(id: string): boolean {
+    const c = chains.get(id);
+    return !!(c && c.kind === 'sync' && c.expires >= Date.now() && c.warm);
 }
 function takeSend(id: string): SendChain | null {
     const c = chains.get(id);
@@ -260,7 +268,7 @@ export interface DecryptItem { pubkey: string; ciphertext: string }
  * wrap is already cached - the caller finalizes straight from the cache. For a thread,
  * `until` pages older (one THREAD_WINDOW slice, `created_at <= until`) and a paging cursor
  * is computed; inbox/requests fetch the broad RECENT_WRAPS window. */
-export async function beginSync(s: Session, view: SyncChain['view'], peer?: string, until?: number, nip04 = false): Promise<{ chainId: string; items: DecryptItem[] }> {
+export async function beginSync(s: Session, view: SyncChain['view'], peer?: string, until?: number, nip04 = false, warm = false): Promise<{ chainId: string; items: DecryptItem[] }> {
     const relays = await myDmReadRelays(s);
     const thread = view === 'thread';
     const filter: Filter = { kinds: [KIND_GIFTWRAP], '#p': [s.me!], limit: thread ? THREAD_WINDOW : RECENT_WRAPS };
@@ -275,7 +283,7 @@ export async function beginSync(s: Session, view: SyncChain['view'], peer?: stri
     // (kind-4 isn't windowed). The queue rides the chain to a 3rd batch step after the NIP-17 layers.
     const lg = nip04 && until == null ? await fetchLegacy(s, view, peer) : { queue: [], ids: [] };
     const chainId = putChain({
-        kind: 'sync', view, peer, older: until != null, cursor, allIds: [...allIds, ...lg.ids],
+        kind: 'sync', view, warm, peer, older: until != null, cursor, allIds: [...allIds, ...lg.ids],
         l1: uncached.map((w) => ({ id: w.id, at: w.created_at })),
         l2: [], legacy: lg.queue, expires: Date.now() + CHAIN_TTL_MS,
     });

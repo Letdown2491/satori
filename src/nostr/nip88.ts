@@ -4,6 +4,7 @@
 // `response` tag per chosen option. Pure parsing + tally - no DOM, no network.
 
 import type { NostrEvent } from './types.ts';
+import { relayTags } from './tags.ts';
 
 export const KIND_POLL = 1068;
 export const KIND_POLL_RESPONSE = 1018;
@@ -29,7 +30,7 @@ export function parseEndsAt(ev: NostrEvent): number | null {
 }
 
 export function parsePollRelays(ev: NostrEvent): string[] {
-    return ev.tags.filter((t) => t[0] === 'relay' && t[1]).map((t) => t[1]!);
+    return relayTags(ev); // deduped + capped, matching the DM / draft relay parsers
 }
 
 export function isPollEnded(ev: NostrEvent): boolean {

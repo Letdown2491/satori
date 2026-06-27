@@ -48,7 +48,7 @@ export async function fetchProfiles(pool: Pool, relays: string[], pubkeys: strin
     const map = new Map<string, Profile>();
     if (pubkeys.length === 0) return map;
     const newest = new Map<string, number>();
-    const events = await pool.query(relays, { kinds: [0], authors: pubkeys });
+    const events = await pool.query(relays, { kinds: [0], authors: pubkeys }, { fast: true });
     for (const ev of events) {
         if ((newest.get(ev.pubkey) ?? -1) >= ev.created_at) continue;
         const prof = parseProfile(ev.content, ev.tags);

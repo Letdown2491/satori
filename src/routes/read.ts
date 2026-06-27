@@ -2,6 +2,7 @@
 // (article reader). Flat bech32 routing, mirroring Satori's entity URLs.
 
 import { decode, neventEncode, naddrEncode } from 'nostr-tools/nip19';
+import { pubkeyFromBech } from '../nostr/nip19.ts';
 import { fetchEvent, fetchReplies, fetchAuthorNotes } from '../data/feeds.ts';
 import { fetchPinnedItems, fetchAuthorArticles } from '../data/profile-extras.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
@@ -29,6 +30,8 @@ import { sendPage, sendFragment, notFound, redirect, hasBatchCaps, readBatchResu
 import { privateRepliesFor, syntheticReply, type PrivateReply } from '../data/dms.ts';
 import { privateRepliesForNip07, beginSync, applySeals, applyRumors, finalizeSync } from '../data/dms-nip07.ts';
 import { signsOnClient, type Session } from '../session.ts';
+import { kindLabel } from '../nostr/nip89.ts';
+import { profileKinds } from '../data/content-prefs.ts';
 
 const PAGE = 30;
 const PROFILE_FILL = 4; // cap loop-fill fetches on a profile (mirrors the feed's MAX_FILL)
@@ -45,13 +48,8 @@ export async function getProfile(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const entity = ctx.params.npub ?? '';
-    let pubkey: string;
-    try {
-        const d = decode(entity);
-        if (d.type === 'npub') pubkey = d.data;
-        else if (d.type === 'nprofile') pubkey = d.data.pubkey;
-        else { notFound(ctx, 'Not a profile'); return; }
-    } catch { notFound(ctx, 'Bad npub'); return; }
+    const pubkey = pubkeyFromBech(entity);
+    if (!pubkey) { notFound(ctx, 'Not a profile'); return; }
 
     const until = untilOf(ctx);
     const meta = Promise.all([ensureProfiles(s, [pubkey]), ensureLists(s, ['follow', 'mute', 'bookmark', 'pin'])]);
@@ -59,10 +57,11 @@ export async function getProfile(ctx: Ctx): Promise<void> {
     // but NOT author mutes - visiting a profile is intentional. Fetch successive windows until
     // ~PAGE visible so filtering doesn't leave short pages (mirrors the feed's fillPage).
     const filt = compileFilters(getFilters(s.me), 'profile');
+    const profKinds = profileKinds(s.me); // the viewer's per-kind visibility prefs for profiles
     const notes: NostrEvent[] = [];
     let cursor = until, lastRaw = 0, oldest: number | undefined;
     for (let i = 0; i < PROFILE_FILL && notes.length < PAGE; i++) {
-        const page = await fetchAuthorNotes(s.pool, pubkey, PAGE, cursor).catch(() => [] as NostrEvent[]);
+        const page = await fetchAuthorNotes(s.pool, pubkey, profKinds, PAGE, cursor).catch(() => [] as NostrEvent[]);
         lastRaw = page.length;
         if (!page.length) break;
         oldest = page[page.length - 1]!.created_at;
@@ -106,11 +105,7 @@ export async function getProfileExtras(ctx: Ctx): Promise<void> {
     if (!s) return;
     const entity = ctx.params.npub ?? '';
     if (!ctx.isPartial) { redirect(ctx, `/u/${entity}`); return; }
-    let pubkey: string;
-    try {
-        const d = decode(entity);
-        pubkey = d.type === 'npub' ? d.data : d.type === 'nprofile' ? d.data.pubkey : '';
-    } catch { pubkey = ''; }
+    const pubkey = pubkeyFromBech(entity);
     if (!pubkey) { sendFragment(ctx, html``); return; }
 
     const [pinned, articles] = await Promise.all([
@@ -309,8 +304,17 @@ export async function getArticle(ctx: Ctx): Promise<void> {
     const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the article author's write relays first
     const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
 
-    if (!ev || ev.kind !== KIND_ARTICLE) {
-        sendPage(ctx, html`<ul class="feed">${emptyItem('Article not found.')}</ul>`, chromeFor(ctx, s, { title: 'Article' }));
+    if (!ev) {
+        sendPage(ctx, html`<ul class="feed">${emptyItem('Event not found.')}</ul>`, chromeFor(ctx, s, { title: 'Article' }));
+        return;
+    }
+    // Not an article? Dispatch through the manifest rather than hardcoding "article not found". /a/ is
+    // the addressable-event route; only KIND_ARTICLE earns the rich reader + comments below. A recognized
+    // addressable kind renders its focused card; an unknown one hits the honest fallback ("Satori doesn't
+    // render this yet · open in app") - never a misleading not-found for a valid event we simply fetched.
+    if (ev.kind !== KIND_ARTICLE) {
+        await ensureProfiles(s, notePubkeys([ev]));
+        sendPage(ctx, html`<ul class="feed">${renderEvent(ev, 'focused', { profiles: s.profiles, s })}</ul>`, chromeFor(ctx, s, { title: kindLabel(ev.kind) }));
         return;
     }
 
@@ -336,40 +340,45 @@ export async function getArticle(ctx: Ctx): Promise<void> {
 /** GET /embed/<bech>?as=reply|quote|article - a compact preview lazily swapped
  * into an embed card (reply-context / quoted note / article). Falls back to a
  * labelled link when the target can't be loaded, so the card never sits empty. */
+// A quoted/embedded preview is decorative: if the relays don't have it in 3s, show the fallback link
+// rather than holding a connection for the full 6s. The result (hit or miss) is then cached by fetchEvent.
+const EMBED_MAX_WAIT = 3000;
+
 export async function getEmbed(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const entity = ctx.params.id ?? '';
-    const as = ctx.query.get('as') === 'quote' ? 'quote' : ctx.query.get('as') === 'article' ? 'article' : 'reply';
-    const fb = () => as === 'quote' ? embedFallback(`/t/${entity}`, '↗ quoted note')
-        : as === 'article' ? embedFallback(`/a/${entity}`, '↗ article')
-            : embedFallback(`/t/${entity}`, '↩ in reply to an earlier note');
-    // Lazy-load fragment only; a full navigation goes to the underlying view.
-    if (!ctx.isPartial) { redirect(ctx, as === 'article' ? `/a/${entity}` : `/t/${entity}`); return; }
-
     let decoded;
-    try { decoded = decode(entity); } catch { sendFragment(ctx, fb()); return; }
+    try { decoded = decode(entity); } catch { /* unparseable below */ }
+    const isAddr = decoded?.type === 'naddr';
+    // Lazy-load fragment only; a full navigation goes to the underlying view: addressable → /a/, else /t/.
+    if (!ctx.isPartial) { redirect(ctx, isAddr ? `/a/${entity}` : `/t/${entity}`); return; }
+    if (!decoded) { sendFragment(ctx, embedFallback(`/t/${entity}`, '↗ link')); return; }
 
-    // naddr → an article embed.
+    // naddr → embed ANY addressable kind via its handler: the article reader-card, a calendar/video/
+    // listing card, or the honest fallback. (Was hardcoded to article only - a parity gap for the other
+    // addressable kinds, which have `ref` descriptors so they reference inline as embeds.)
     if (decoded.type === 'naddr') {
         const { kind, pubkey, identifier, relays } = { ...decoded.data, relays: decoded.data.relays ?? [] };
         const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
-        const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the article author's write relays first
-        const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
-        if (!ev || ev.kind !== KIND_ARTICLE) { sendFragment(ctx, fb()); return; }
+        const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the author's write relays first
+        const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }, EMBED_MAX_WAIT).catch(() => null);
+        if (!ev) { sendFragment(ctx, embedFallback(`/a/${entity}`, `↗ ${kindLabel(kind).toLowerCase()}`)); return; }
         await ensureProfiles(s, notePubkeys([ev]));
         sendFragment(ctx, renderEvent(ev, 'embed', { profiles: s.profiles, bech: entity, naddr: entity }));
         return;
     }
 
     // note / nevent → a note embed.
+    const as = ctx.query.get('as') === 'quote' ? 'quote' : 'reply';
+    const fb = () => embedFallback(`/t/${entity}`, as === 'quote' ? '↗ quoted note' : '↩ in reply to an earlier note');
     let id: string;
     let relays: string[] = [];
     let author: string | undefined;
     if (decoded.type === 'note') id = decoded.data;
     else if (decoded.type === 'nevent') { id = decoded.data.id; relays = decoded.data.relays ?? []; author = decoded.data.author; }
     else { sendFragment(ctx, fb()); return; }
-    const ev = await fetchEvent(s.pool, id, relays, author).catch(() => null);
+    const ev = await fetchEvent(s.pool, id, relays, author, { maxWait: EMBED_MAX_WAIT }).catch(() => null);
     if (!ev) { sendFragment(ctx, fb()); return; }
     // Hydrate the author AND any @mentioned pubkeys in the embed's content, so
     // in-content mentions resolve to @names instead of falling back to @npub.

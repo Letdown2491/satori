@@ -69,7 +69,10 @@ function reactionGlyph(emoji: string, url?: string): SafeHtml {
 export function likeButton(s: Session, noteId: string, author: string): SafeHtml {
     const id = `like-${noteId}`;
     const mine = s.me ? cachedReaction(s.me, noteId) : undefined;
-    const head = html`<form id="${id}" class="act-form react" action="/like/${noteId}" method="post" h-post h-target="#${id}" h-swap="outer">
+    // h-optimistic adds `.reacting` the instant you submit (pick or retract), so the gesture registers
+    // before the relay round-trip: the picker collapses + the smiley takes the accent on a pick, the heart
+    // empties on a retract. The response swap reconciles to the real glyph; an h:error reverts the class.
+    const head = html`<form id="${id}" class="act-form react" action="/like/${noteId}" method="post" h-post h-target="#${id}" h-swap="outer" h-optimistic="class:reacting" h-optimistic-target="#${id}">
         <input type="hidden" name="author" value="${author}">`;
     if (mine) {
         return html`${head}

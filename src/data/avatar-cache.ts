@@ -34,7 +34,7 @@ function scheduleFlush(): void {
     flushTimer = setTimeout(() => {
         flushTimer = null;
         void (async () => {
-            try { await mkdir(DIR, { recursive: true }); await writeFile(INDEX, JSON.stringify(Object.fromEntries(index))); }
+            try { await mkdir(DIR, { recursive: true }); await writeFile(INDEX, JSON.stringify(Object.fromEntries(index)), { mode: 0o600 }); }
             catch (e) { console.warn('[avatar-cache] flush failed:', (e as Error)?.message ?? e); }
         })();
     }, 8000);
@@ -63,7 +63,7 @@ export async function getAvatarBytes(url: string): Promise<{ bytes: Buffer; ct: 
 /** Cache an image's bytes + content-type under its source url (LRU-evicting if over cap). */
 export async function putAvatarBytes(url: string, bytes: Buffer, ct: string): Promise<void> {
     const h = hashUrl(url);
-    try { await mkdir(DIR, { recursive: true }); await writeFile(fileFor(h), bytes); }
+    try { await mkdir(DIR, { recursive: true }); await writeFile(fileFor(h), bytes, { mode: 0o600 }); }
     catch (e) { console.warn('[avatar-cache] write failed:', (e as Error)?.message ?? e); return; }
     const old = index.get(h);
     if (old) totalBytes -= old.size;

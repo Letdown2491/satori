@@ -5,10 +5,10 @@
 // swaps the decrypted list/thread into the shell. Send is an encrypt-batch -> sign-batch
 // -> local-wrap chain. See [[nip17-dms-plan]].
 
-import { decode } from 'nostr-tools/nip19';
+import { pubkeyFromBech } from '../nostr/nip19.ts';
 import { loadConversations, loadThread, sendDm, hasDmRelayList, hasUnprocessedWraps, cachedThread } from '../data/dms.ts';
 import {
-    beginSync, applySeals, applyRumors, finalizeSync, beginSend, sealStep, wrapStep, hasUnprocessedWrapsNip07, cachedInboxNip07, cachedThreadNip07, legacyBatch, applyLegacy, chainView,
+    beginSync, applySeals, applyRumors, finalizeSync, beginSend, sealStep, wrapStep, hasUnprocessedWrapsNip07, cachedInboxNip07, cachedThreadNip07, legacyBatch, applyLegacy, chainView, chainWarm,
 } from '../data/dms-nip07.ts';
 import { dmListPage, dmThreadPage, convList, reqList, listSyncShell, dmGate, dmBubble, threadInner, olderFragment, newMessageModal, newMessagePage, recipientResults } from '../render/dms.ts';
 import { dmDotInner } from '../render/layout.ts';
@@ -24,8 +24,6 @@ import type { DmInbox, DmMessage } from '../data/dms.ts';
 
 type Session07 = Session & { me: string };
 
-const HEX64 = /^[0-9a-f]{64}$/i;
-
 // Re-assert the swap placement on a chain's TERMINAL fragment: the batch sign-requests
 // carried H-Reswap:none (so the JSON wasn't swapped), which mutates the request's swap
 // to "none" - without these the decrypted result never lands (mirrors actions.ts). The
@@ -39,10 +37,14 @@ const PLACE_OLDER = { 'H-Reswap': 'outer', 'H-Retarget': '#dm-older' }; // scrol
 const errPlace = (view: 'inbox' | 'requests' | 'thread'): typeof PLACE_LIST | typeof PLACE_THREAD =>
     view === 'thread' ? PLACE_THREAD : PLACE_LIST;
 
-/** Resolve a :peer path segment (hex pubkey or npub) to a hex pubkey, or null. */
+/** A background prewarm (the chrome's #dm-prewarm, on every page) renders NOTHING: empty body +
+ * H-Reswap:none, so the sync's placement headers can't land convList / a gate / an error onto whatever
+ * page fired it. Without this, a cold-start prewarm dumps the whole DM list into the feed. */
+const silentPrewarm = (ctx: Ctx): void => sendFragment(ctx, html``, { 'H-Reswap': 'none' });
+
+/** Resolve a :peer path segment (hex pubkey / npub / nprofile) to a hex pubkey, or null. */
 function resolvePeer(id: string): string | null {
-    if (HEX64.test(id)) return id.toLowerCase();
-    try { const d = decode(id); return d.type === 'npub' ? d.data : null; } catch { return null; }
+    return pubkeyFromBech(id);
 }
 
 /** GET /messages - the Inbox (Messages tab). Full-width conversation list. nip07 renders the
@@ -180,27 +182,27 @@ export async function getThreadOlder(ctx: Ctx): Promise<void> {
 
 /** Shared start: gate non-batch clients, fetch wraps, emit the layer-1 decrypt batch
  * (or finalize straight from cache when nothing is uncached). */
-async function startSync(ctx: Ctx, s: Session07, view: 'inbox' | 'requests' | 'thread', peer?: string, until?: number): Promise<void> {
+async function startSync(ctx: Ctx, s: Session07, view: 'inbox' | 'requests' | 'thread', peer?: string, until?: number, warm = false): Promise<void> {
     const place = until != null ? PLACE_OLDER : view === 'thread' ? PLACE_THREAD : PLACE_LIST;
-    if (!hasBatchCaps(ctx)) { sendFragment(ctx, dmGate(), place); return; }
-    const { chainId, items } = await beginSync(s, view, peer, until, hasCap(ctx, 'nip04'));
-    if (items.length === 0) { await continueOrFinalize(ctx, s, chainId, view); return; }
+    if (!hasBatchCaps(ctx)) { if (warm) silentPrewarm(ctx); else sendFragment(ctx, dmGate(), place); return; }
+    const { chainId, items } = await beginSync(s, view, peer, until, hasCap(ctx, 'nip04'), warm);
+    if (items.length === 0) { await continueOrFinalize(ctx, s, chainId, view, warm); return; }
     sendSignRequest(ctx, { items }, `/messages/sync/seals?chain=${chainId}`, 'nip44_decrypt_batch');
 }
 
 /** The NIP-17 terminal: if the chain has legacy (kind-4) queued, emit a 3rd nip04 decrypt batch
  * (-> /sync/legacy); otherwise render from the cache. Reached once, after the NIP-17 layers. */
-async function continueOrFinalize(ctx: Ctx, s: Session07, chainId: string, view: 'inbox' | 'requests' | 'thread'): Promise<void> {
+async function continueOrFinalize(ctx: Ctx, s: Session07, chainId: string, view: 'inbox' | 'requests' | 'thread', warm = false): Promise<void> {
     const legacy = legacyBatch(chainId);
     if (legacy) { sendSignRequest(ctx, { items: legacy }, `/messages/sync/legacy?chain=${chainId}`, 'nip04_decrypt_batch'); return; }
-    await renderTerminal(ctx, s, finalizeSync(s, chainId), view);
+    await renderTerminal(ctx, s, finalizeSync(s, chainId), view, warm);
 }
 
 /** GET /messages/sync - inbox (or ?view=requests) decrypt start. */
 export async function getDmSync(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
-    await startSync(ctx, s, ctx.query.get('view') === 'requests' ? 'requests' : 'inbox');
+    await startSync(ctx, s, ctx.query.get('view') === 'requests' ? 'requests' : 'inbox', undefined, undefined, ctx.query.get('warm') === '1');
 }
 
 /** GET /messages/:peer/sync - thread decrypt start. */
@@ -218,11 +220,12 @@ export async function postDmSeals(ctx: Ctx): Promise<void> {
     if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const view = chainView(chainId) ?? 'inbox'; // capture before finalize consumes the chain
+    const warm = chainWarm(chainId);
     const results = await readBatchResults(ctx.req);
-    if (!results) { sendFragment(ctx, html`<div class="notice error">Couldn’t read the decrypted messages.</div>`, errPlace(view)); return; }
+    if (!results) { if (warm) silentPrewarm(ctx); else sendFragment(ctx, html`<div class="notice error">Couldn’t read the decrypted messages.</div>`, errPlace(view)); return; }
     const next = applySeals(s, chainId, results);
     if (next) { sendSignRequest(ctx, { items: next.items }, `/messages/sync/rumors?chain=${chainId}`, 'nip44_decrypt_batch'); return; }
-    await continueOrFinalize(ctx, s, chainId, view);
+    await continueOrFinalize(ctx, s, chainId, view, warm);
 }
 
 /** POST /messages/sync/rumors - layer-2 results in; cache, then the legacy step or finalize. */
@@ -231,10 +234,11 @@ export async function postDmRumors(ctx: Ctx): Promise<void> {
     if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const view = chainView(chainId) ?? 'inbox';
+    const warm = chainWarm(chainId);
     const results = await readBatchResults(ctx.req);
-    if (!results) { sendFragment(ctx, html`<div class="notice error">Couldn’t read the decrypted messages.</div>`, errPlace(view)); return; }
+    if (!results) { if (warm) silentPrewarm(ctx); else sendFragment(ctx, html`<div class="notice error">Couldn’t read the decrypted messages.</div>`, errPlace(view)); return; }
     applyRumors(s, chainId, results);
-    await continueOrFinalize(ctx, s, chainId, view);
+    await continueOrFinalize(ctx, s, chainId, view, warm);
 }
 
 /** POST /messages/sync/legacy - nip04 results in; cache the decrypted kind-4s, then finalize.
@@ -244,10 +248,11 @@ export async function postDmLegacy(ctx: Ctx): Promise<void> {
     if (!s) return; if (!signsOnClient(s)) { notFound(ctx); return; }
     const chainId = ctx.query.get('chain') ?? '';
     const view = chainView(chainId) ?? 'inbox';
+    const warm = chainWarm(chainId);
     const results = await readBatchResults(ctx.req);
-    if (!results) { sendFragment(ctx, html`<div class="notice error">Couldn’t read the decrypted messages.</div>`, errPlace(view)); return; }
+    if (!results) { if (warm) silentPrewarm(ctx); else sendFragment(ctx, html`<div class="notice error">Couldn’t read the decrypted messages.</div>`, errPlace(view)); return; }
     applyLegacy(s, chainId, results);
-    await renderTerminal(ctx, s, finalizeSync(s, chainId), view);
+    await renderTerminal(ctx, s, finalizeSync(s, chainId), view, warm);
 }
 
 /** Render a completed sync from the cache, placing it where its trigger lives. A thread
@@ -257,7 +262,9 @@ async function renderTerminal(
     ctx: Ctx, s: Session07,
     fin: { view: 'inbox' | 'requests' | 'thread'; peer?: string; inbox?: DmInbox; messages?: DmMessage[]; cursor?: number | null; older?: boolean } | null,
     fallbackView: 'inbox' | 'requests' | 'thread',
+    warm = false,
 ): Promise<void> {
+    if (warm) { silentPrewarm(ctx); return; } // background prewarm: cache is filled, render nothing
     const view = fin?.view ?? fallbackView;
     if (!fin) {
         sendFragment(ctx, html`<div class="notice error">That took too long. Reload Messages to retry.</div>`, view === 'thread' ? PLACE_THREAD : PLACE_LIST);
@@ -303,8 +310,10 @@ export async function postSend(ctx: Ctx): Promise<void> {
 
     const ok = await sendDm(s, peer, text);
     if (!ok) {
-        // A no-JS POST must not get a bare <li> as the whole page; reload the thread instead.
-        if (ctx.isPartial) sendFragment(ctx, dmBubble({ id: 'err', from: s.me, at: Math.floor(Date.now() / 1000), text: 'Could not send.' }, 'none'));
+        // A no-JS POST must not get a bare <li> as the whole page; reload the thread instead. The 502
+        // routes through helmjs's error branch (append the notice, but DON'T fire h-reset) so the typed
+        // text is preserved to retry; only a real send (200) clears the compose.
+        if (ctx.isPartial) sendFragment(ctx, dmBubble({ id: 'err', from: s.me, at: Math.floor(Date.now() / 1000), text: 'Could not send.' }, 'none'), PLACE_APPEND, 502);
         else redirect(ctx, `/messages/${ctx.params.peer}`);
         return;
     }
@@ -319,7 +328,7 @@ export async function postSendSeal(ctx: Ctx): Promise<void> {
     const chainId = ctx.query.get('chain') ?? '';
     const results = await readBatchResults(ctx.req);
     const next = results ? sealStep(s, chainId, results) : null;
-    if (!next) { sendFragment(ctx, dmBubble({ id: 'err', from: s.me, at: Math.floor(Date.now() / 1000), text: 'Could not send.' }, 'none'), PLACE_APPEND); return; }
+    if (!next) { sendFragment(ctx, dmBubble({ id: 'err', from: s.me, at: Math.floor(Date.now() / 1000), text: 'Could not send.' }, 'none'), PLACE_APPEND, 502); return; }
     sendSignRequest(ctx, { templates: next.templates }, `/messages/${ctx.params.peer}/wrap?chain=${chainId}`, 'sign_event_batch');
 }
 
@@ -330,6 +339,6 @@ export async function postSendWrap(ctx: Ctx): Promise<void> {
     const chainId = ctx.query.get('chain') ?? '';
     const results = await readBatchResults(ctx.req);
     const msg = results ? await wrapStep(s, chainId, results) : null;
-    if (!msg) { sendFragment(ctx, dmBubble({ id: 'err', from: s.me, at: Math.floor(Date.now() / 1000), text: 'Could not send.' }, 'none'), PLACE_APPEND); return; }
+    if (!msg) { sendFragment(ctx, dmBubble({ id: 'err', from: s.me, at: Math.floor(Date.now() / 1000), text: 'Could not send.' }, 'none'), PLACE_APPEND, 502); return; }
     sendFragment(ctx, dmBubble(msg, s.me), PLACE_APPEND);
 }
