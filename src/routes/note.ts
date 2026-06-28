@@ -20,7 +20,7 @@ import { icon } from '../render/svg.ts';
 import { mediaItem, composeFileInput, undoToast } from '../render/compose.ts';
 import { noteCard, composePreview } from '../render/note.ts';
 import { remainingSeconds, cancelPublish, commitIfDue, getHeld, getCommitted } from '../undo.ts';
-import { tryUndoWindow, sendReplyToThread } from './undo-window.ts';
+import { tryUndoWindow, sendReplyToThread, stayPutCloseModal, landOnFeed, CLOSE_MODAL_OOB } from './undo-window.ts';
 import { articleComposePage, draftsScreen, type ArticleComposeCtx } from '../render/article-compose.ts';
 import { getDraft, saveDraft, listDrafts, newDraftId, type NoteDraft, type PollDraft } from '../drafts.ts';
 import { composeSyncEl } from './article.ts';
@@ -28,10 +28,9 @@ import { addScheduled, listScheduled } from '../data/scheduled.ts';
 import { sendPrivateReply, syntheticReply } from '../data/dms.ts';
 import { beginPrivateReplySend, sealStep, wrapPrivateReplyStep } from '../data/dms-nip07.ts';
 import { page } from '../render/layout.ts';
-import { requireLogin, chromeFor, ensureProfiles, LAND_ON_FEED } from './common.ts';
+import { requireLogin, chromeFor, ensureProfiles } from './common.ts';
 import { requireSigned } from '../nip07.ts';
 import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, type Ctx } from '../http.ts';
-import { feedDocument } from './feed.ts';
 import { pollComposeFields } from '../render/poll.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
@@ -81,6 +80,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
            OOB-reset file input). Publish overrides back to /note. -->
       <form class="compose-box" action="/upload" method="post" h-post enctype="multipart/form-data"
         h-trigger="submit, change from:#compose-attach" h-target="#media" h-swap="append">
+        ${inModal ? html`<input type="hidden" name="inmodal" value="1">` : null}
         ${c.reply ? html`<input type="hidden" name="reply" value="${c.reply.nevent}">` : null}
         ${c.inThread ? html`<input type="hidden" name="inthread" value="${c.inThread}">` : null}
         ${c.quote ? html`<input type="hidden" name="quote" value="${c.quote}">` : null}
@@ -135,6 +135,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
 function pollFormPart(d: PollDraft | null = null, inModal = false, status = '', syncEl?: SafeHtml): SafeHtml {
     return html`
       <form class="compose-box" action="/poll" method="post" h-post>
+        ${inModal ? html`<input type="hidden" name="inmodal" value="1">` : null}
         ${d?.id ? html`<input type="hidden" name="draftid" value="${d.id}">` : null}
         <textarea name="content" id="poll-question" required placeholder="Ask a question…">${d?.question ?? ''}</textarea>
         ${pollComposeFields({ options: d?.options, multiple: d?.multi, duration: d?.duration })}
@@ -356,6 +357,7 @@ export async function postNote(ctx: Ctx): Promise<void> {
     const text = (form.get('content') ?? '').trim();
     const replyNevent = form.get('reply') || null;
     const inthread = (replyNevent && form.get('inthread')) || null; // reply from a thread
+    const fromModal = form.get('inmodal') === '1'; // posted from the compose modal (stay put) vs the full /compose page (land on feed)
     const quoteNevent = form.get('quote') || null;
     const cw = form.get('cw') === '1';
     const cwReason = (form.get('cw_reason') ?? '').trim();
@@ -422,6 +424,7 @@ export async function postNote(ctx: Ctx): Promise<void> {
         const q = new URLSearchParams();
         if (replyNevent) q.set('reply', replyNevent);
         if (inthread) q.set('inthread', inthread);
+        if (fromModal) q.set('inmodal', '1');
         sendSignRequest(ctx, prepared.signed, q.toString() ? `/note/publish?${q}` : '/note/publish');
         return;
     }
@@ -436,7 +439,7 @@ export async function postNote(ctx: Ctx): Promise<void> {
             redirect(ctx, '/drafts');
             return;
         }
-        if (await tryUndoWindow(ctx, s, prepared, true, inthread ?? undefined)) return; // hold + optimistic UI (helmjs)
+        if (await tryUndoWindow(ctx, s, prepared, { inThread: inthread ?? undefined, fromModal })) return; // hold + optimistic UI (helmjs)
         await publishSigned(s.pool, prepared);
         // Undo off but a thread reply (helmjs): append the confirmed reply in place.
         if (inthread && ctx.isPartial) { sendReplyToThread(ctx, s, prepared.signed, inthread); return; }
@@ -444,7 +447,9 @@ export async function postNote(ctx: Ctx): Promise<void> {
         back(`Couldn't publish: ${err instanceof Error ? err.message : String(err)}`, 502);
         return;
     }
-    redirect(ctx, '/'); // zero-JS; boosted fetch follows the 303 and swaps the feed
+    // JS: modal compose stays put (close the modal); the full /compose page lands on the feed. Zero-JS redirects.
+    if (ctx.isPartial) { if (fromModal) stayPutCloseModal(ctx); else await landOnFeed(ctx, s); return; }
+    redirect(ctx, '/'); // zero-JS: a real navigation to the feed
 }
 
 /** The replied-to author's inbox (read) relays, for reply delivery - mirrors
@@ -483,25 +488,26 @@ export async function postNotePublish(ctx: Ctx): Promise<void> {
 
     const replyNevent = ctx.query.get('reply');
     const inthread = (replyNevent && ctx.query.get('inthread')) || null;
+    const fromModal = ctx.query.get('inmodal') === '1';
     const writeTargets = writeRelaysFor(s.myRelays);
     const inboxTargets = replyNevent ? await replyInbox(s, replyNevent) : [];
     const prepared: Prepared = { signed: signed as NostrEvent, isReply: !!replyNevent, writeTargets, inboxTargets };
-    if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, false, inthread ?? undefined)) return; // nip07 = always JS
+    if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, inThread: inthread ?? undefined, fromModal })) return; // nip07 = always JS
     try {
         await publishSigned(s.pool, prepared);
     } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
         return;
     }
-    // Undo off but a thread reply: append the confirmed reply; else land on the feed.
+    // Undo off but a thread reply: append the confirmed reply; else (top-level) modal stays put, full page lands on feed.
     if (inthread) { sendReplyToThread(ctx, s as Session & { me: string }, prepared.signed, inthread); return; }
-    sendFragment(ctx, await feedDocument(ctx, s as Session & { me: string }), LAND_ON_FEED);
+    if (fromModal) stayPutCloseModal(ctx); else await landOnFeed(ctx, s as Session & { me: string });
 }
 
 /** Error fragment for a stalled private-reply send chain. Appended into the open thread (and the compose
  * modal closed) so it never wipes the page body the boosted form was targeting. */
 function privateSendError(ctx: Ctx, msg: string): void {
-    sendFragment(ctx, html`<li class="notice error">${msg}</li><div id="modal" h-oob="true"></div>`,
+    sendFragment(ctx, html`<li class="notice error">${msg}</li>${CLOSE_MODAL_OOB}`,
         { 'H-Retarget': '#thread', 'H-Reswap': 'append' }, 400);
 }
 
@@ -562,9 +568,13 @@ export async function getNoteTick(ctx: Ctx): Promise<void> {
             : undoToast(token, remaining));
         return;
     }
-    await commitIfDue(s.pool, token); // due → publish, then reconcile in place
+    await commitIfDue(s.pool, token); // due → publish (the undo window is over)
     if (reply) { sendFragment(ctx, noteCard(held.prepared.signed, s.profiles, s, { hideParent: true, depth: 0, inThread: reply.inThread })); return; }
-    sendFragment(ctx, await feedDocument(ctx, s), LAND_ON_FEED);
+    // A top-level note/poll publishes silently here: it does NOT appear in your OWN Following feed (a
+    // follows feed excludes your own pubkey), so there is nothing to refresh. Just clear the toast and leave
+    // the feed as you left it. Re-rendering feedDocument here recomputed followingBoundary AFTER the landing's
+    // clearing had already advanced the high-water, which blanked the feed (the "empty timeline" bug).
+    sendFragment(ctx, html``);
 }
 
 /** POST /note/undo?token= - cancel the held publish; remove the toast. */

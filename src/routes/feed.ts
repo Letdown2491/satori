@@ -56,9 +56,12 @@ export function pendingPrivateKinds(s: Session & { me: string }): number[] {
  * then EITHER re-renders #feed (`tab`, the feed's in-place path) OR soft-reloads the
  * current page (`ret`, via H-Location - used on the profile/thread, which have no #feed
  * to swap). Reject a prompt and the page stays as-is (it already rendered; nothing strands). */
-export function listPrimer(q: { tab?: FeedTab; ret?: string }): SafeHtml {
-    const qs = q.ret ? `ret=${encodeURIComponent(q.ret)}` : `tab=${q.tab ?? 'following'}`;
-    return html`<span id="list-primer" h-get="/notes/list-prime?${qs}" h-trigger="load" h-target="#list-primer" h-swap="none" h-push-url="false" aria-hidden="true"></span>`;
+export function listPrimer(q: { tab?: FeedTab; ret?: string; boundary?: number }): SafeHtml {
+    // Carry the Following boundary captured at THIS render so the primer's re-render uses the same one,
+    // not a high-water that the clearing's mark-seen advanced in the meantime (which would empty the feed).
+    const base = q.ret ? `ret=${encodeURIComponent(q.ret)}` : `tab=${q.tab ?? 'following'}`;
+    const bnd = q.boundary != null && !q.ret ? `&bnd=${q.boundary}` : '';
+    return html`<span id="list-primer" h-get="/notes/list-prime?${base}${bnd}" h-trigger="load" h-target="#list-primer" h-swap="none" h-push-url="false" aria-hidden="true"></span>`;
 }
 
 /** The ?ret= soft-reload target - a LOCAL path only (no open redirect), else ''. */
@@ -77,6 +80,13 @@ function tabParam(ctx: Ctx): FeedTab {
 function privKindParam(ctx: Ctx): number | null {
     const n = Number(ctx.query.get('kind'));
     return PRIVATE_KINDS.has(n) ? n : null;
+}
+
+/** The Following boundary captured at the original render (?b=), so the primer's feed re-render is stable
+ * against a mark-seen that advanced the high-water mid-load. null when absent (then recompute). */
+function boundaryParam(ctx: Ctx): number | null {
+    const n = Number(ctx.query.get('bnd'));
+    return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 const PATHS: Record<FeedTab, string> = { following: '/', followers: '/followers', commons: '/commons', longform: '/longform' };
@@ -254,9 +264,10 @@ async function followingFirstView(s: Session & { me: string }, boundary: number)
 async function serveFollowing(ctx: Ctx, s: Session & { me: string }, until?: number): Promise<void> {
     const batch = ctx.query.get('b') === '1';
     const inPageSwap = ctx.isPartial && ctx.hTarget === '#feed-clearing';
+    const boundary = followingBoundary(ctx, s.me); // captured ONCE; threaded to the primer so its re-render matches
     const wrapPage = (frag: SafeHtml, newestTs?: number): void => {
         if (inPageSwap) { sendFragment(ctx, frag); return; }
-        const primer = pendingPrivateKinds(s).length ? listPrimer({ tab: 'following' }) : null;
+        const primer = pendingPrivateKinds(s).length ? listPrimer({ tab: 'following', boundary }) : null;
         sendPage(ctx, html`<ul class="feed" id="feed">${frag}</ul>${primer ?? html``}`, chromeFor(ctx, s, { active: 'feed', feedTab: 'following', notesSince: newestTs }));
     };
 
@@ -270,7 +281,7 @@ async function serveFollowing(ctx: Ctx, s: Session & { me: string }, until?: num
     }
 
     // FIRST view (the new-since-your-last-visit window).
-    const { inner, newestTs } = await followingFirstView(s, followingBoundary(ctx, s.me));
+    const { inner, newestTs } = await followingFirstView(s, boundary);
     wrapPage(inner, newestTs);
 }
 
@@ -329,8 +340,9 @@ export const getLongform = (ctx: Ctx) => serveFeed(ctx, 'longform');
  * scroll, which would flatten the boundary (a sign-in / post-note must not turn the feed back into an
  * endless reverse-chron stream). `extra` (e.g. the undo toast) is placed in the body so a body-swap keeps it. */
 export async function feedDocument(ctx: Ctx, s: Session & { me: string }, extra?: SafeHtml): Promise<SafeHtml> {
-    const { inner, newestTs } = await followingFirstView(s, followingBoundary(ctx, s.me));
-    const primer = pendingPrivateKinds(s).length ? listPrimer({ tab: 'following' }) : null;
+    const boundary = followingBoundary(ctx, s.me); // captured once; threaded so the primer re-render matches this view
+    const { inner, newestTs } = await followingFirstView(s, boundary);
+    const primer = pendingPrivateKinds(s).length ? listPrimer({ tab: 'following', boundary }) : null;
     return page(html`<ul class="feed" id="feed">${inner}</ul>${extra ?? html``}${primer ?? html``}`, chromeFor(ctx, s, { active: 'feed', feedTab: 'following', notesSince: newestTs }));
 }
 
@@ -345,7 +357,8 @@ export async function getListPrime(ctx: Ctx): Promise<void> {
     const content = kind != null ? s.lists.get(kind)?.content : undefined;
     if (kind == null || !content) { ctx.res.writeHead(204); ctx.res.end(); return; }
     s.primerTried.add(kind); // mark dispatched: a decrypt that never returns won't re-fire on the next load
-    const carry = retParam(ctx) ? `ret=${encodeURIComponent(retParam(ctx))}` : `tab=${tabParam(ctx)}`;
+    const bnd = boundaryParam(ctx);
+    const carry = (retParam(ctx) ? `ret=${encodeURIComponent(retParam(ctx))}` : `tab=${tabParam(ctx)}`) + (bnd != null ? `&bnd=${bnd}` : '');
     sendSignRequest(ctx, { pubkey: s.me, ciphertext: content }, `/notes/list-primed?${carry}&kind=${kind}`, 'nip44_decrypt');
 }
 
@@ -364,7 +377,8 @@ export async function postListPrimed(ctx: Ctx): Promise<void> {
     }
     const tab = tabParam(ctx);
     const ret = retParam(ctx);
-    const carry = ret ? `ret=${encodeURIComponent(ret)}` : `tab=${tab}`;
+    const bnd = boundaryParam(ctx);
+    const carry = (ret ? `ret=${encodeURIComponent(ret)}` : `tab=${tab}`) + (bnd != null ? `&bnd=${bnd}` : '');
     const [next] = pendingPrivateKinds(s);
     const nextContent = next != null ? s.lists.get(next)?.content : undefined;
     if (next != null && nextContent) {
@@ -375,11 +389,12 @@ export async function postListPrimed(ctx: Ctx): Promise<void> {
     // Done. Profile/thread: soft-reload the current page (H-Location) so its mute/
     // bookmark state re-renders correctly. Feed: swap #feed in place.
     if (ret) { ctx.res.writeHead(200, { 'H-Location': ret }); ctx.res.end(); return; }
-    // Following re-renders with the caught-up boundary (else the primer would flatten it to a plain feed);
-    // other tabs use the standard build. Both re-swap #feed only when the decrypted lists actually change a
-    // visible note (a now-muted author drops, or a bookmark glyph flips), so the feed doesn't flash for nothing.
+    // Following re-renders with the caught-up boundary CAPTURED AT THE ORIGINAL RENDER (`bnd`), not a fresh
+    // followingBoundary - the clearing's mark-seen may have advanced the high-water by now, which would empty
+    // the new set and flash the feed blank. Other tabs use the standard build. Both re-swap #feed only when the
+    // decrypted lists actually change a visible note, so the feed doesn't flash for nothing.
     const { content, events } = tab === 'following'
-        ? await followingFirstView(s, followingBoundary(ctx, s.me)).then((r) => ({ content: html`<ul class="feed" id="feed">${r.inner}</ul>`, events: r.events }))
+        ? await followingFirstView(s, bnd ?? followingBoundary(ctx, s.me)).then((r) => ({ content: html`<ul class="feed" id="feed">${r.inner}</ul>`, events: r.events }))
         : await buildFeed(s, tab);
     if (!privateAffectsPage(s, events)) { ctx.res.writeHead(204); ctx.res.end(); return; }
     sendFragment(ctx, content, { 'H-Reswap': 'outer', 'H-Retarget': '#feed' });

@@ -17,9 +17,8 @@ import { decode } from 'nostr-tools/nip19';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import { html } from '../html.ts';
 import { isHex64 } from '../nostr/tags.ts';
-import { requireLogin, LAND_ON_FEED } from './common.ts';
-import { feedDocument } from './feed.ts';
-import { tryUndoWindow } from './undo-window.ts';
+import { requireLogin } from './common.ts';
+import { tryUndoWindow, stayPutCloseModal, landOnFeed } from './undo-window.ts';
 import { readForm, redirect, safeReferer, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
@@ -42,22 +41,25 @@ export async function postPoll(ctx: Ctx): Promise<void> {
     const days = POLL_DURATION_DAYS[Number(form.get('duration') ?? '0')] ?? null;
     const endsAt = days ? Math.floor(Date.now() / 1000) + days * 86400 : null;
     if (!question || options.length < 2) { redirect(ctx, '/compose?type=poll'); return; }
+    const fromModal = form.get('inmodal') === '1'; // modal compose (stay put) vs the full /compose page (land on feed)
 
     const opts = { question, options, multiple, endsAt };
     if (signsOnClient(s)) {
         const prepared = await signPoll(captureSigner, s.me, s.myRelays!, opts);
-        sendSignRequest(ctx, prepared.signed, '/poll/publish');
+        sendSignRequest(ctx, prepared.signed, fromModal ? '/poll/publish?inmodal=1' : '/poll/publish');
         return;
     }
     try {
         const prepared = await signPoll(s.signer!, s.me, s.myRelays!, opts);
-        if (await tryUndoWindow(ctx, s, prepared)) return; // hold + countdown toast (helmjs)
+        if (await tryUndoWindow(ctx, s, prepared, { fromModal })) return; // hold + countdown toast (helmjs)
         await publishSigned(s.pool, prepared);
     } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't post the poll: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
         return;
     }
-    redirect(ctx, '/');
+    // JS: modal compose stays put; the full /compose page lands on the feed. Zero-JS redirects.
+    if (ctx.isPartial) { if (fromModal) stayPutCloseModal(ctx); else await landOnFeed(ctx, s as Session & { me: string }); return; }
+    redirect(ctx, '/'); // zero-JS: real navigation to the feed
 }
 
 /** nip07 continuation for a composed poll. */
@@ -66,13 +68,14 @@ export async function postPollPublish(ctx: Ctx): Promise<void> {
     if (!s) return;
     const signed = await requireSigned(ctx, s.me, KIND_POLL, 'the poll');
     if (!signed) return;
+    const fromModal = ctx.query.get('inmodal') === '1';
     const prepared: Prepared = { signed, isReply: false, writeTargets: writeRelays(s), inboxTargets: [] };
-    if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, false)) return; // nip07 = always JS
+    if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, fromModal })) return; // nip07 = always JS
     try { await publishSigned(s.pool, prepared); } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
         return;
     }
-    sendFragment(ctx, await feedDocument(ctx, s as Session & { me: string }), LAND_ON_FEED);
+    if (fromModal) stayPutCloseModal(ctx); else await landOnFeed(ctx, s as Session & { me: string });
 }
 
 // --- lazy hydrate ----------------------------------------------------------

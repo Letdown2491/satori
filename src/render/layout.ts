@@ -213,6 +213,9 @@ export function page(content: SafeHtml, o: ChromeOpts): SafeHtml {
     <span class="pay-await">Approve the payment in your wallet…</span>
     <span class="pay-work">Sending payment…</span>
   </div>
+  <!-- Mount for the post-publish undo toast: a top-level note/poll floats its countdown here (retargeted
+       to #undo-slot) instead of re-rendering the feed, so posting from the timeline leaves it untouched. -->
+  <div id="undo-slot"></div>
 </body>
 </html>`;
 }
