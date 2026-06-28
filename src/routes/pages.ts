@@ -45,12 +45,14 @@ export async function postAppearance(ctx: Ctx): Promise<void> {
 }
 
 // --- Wallet ----------------------------------------------------------------
-// No spending credential is ever stored server-side (by design). So this page
-// isn't Satori's NWC balance/send/receive - it's the parts that need no secret:
-// WebLN one-tap status (revealed by CSS via the lib's `data-webln` flag), your
-// own lightning address (to receive), and the zap-preset preferences the zap
-// dialog reads. Balance/send/receive would require holding a spending key, which
-// we deliberately don't (the user's explicit constraint).
+// No spending credential is ever stored server-side (by design). The daemon holds
+// no key: WebLN keeps its secret in the extension, and the NWC connection string
+// lives only in the browser (hext.js localStorage), never POSTed here. So this page
+// is just the secret-free parts: payment status (CSS-revealed via hext.js's
+// data-webln / data-nwc flags), the NWC connect/balance seams (data-nwc-*, driven
+// entirely client-side), your own lightning address (to receive), and the zap-preset
+// prefs the zap dialog reads. The balance shown is read by the browser over NIP-47,
+// not by the daemon.
 
 /** GET /metrics - JSON perf counters. Login-gated, and engagement is scoped to the
  * caller (no cross-user aggregation), so it stays sound if ever run multi-tenant. */
@@ -68,11 +70,59 @@ export function getWallet(ctx: Ctx): void {
     const lud16 = s.profiles.get(s.me)?.lud16;
     const content = html`
       <div class="wallet view-pad">
-        <div class="wallet-status">
-          <span class="wallet-chip on webln-on">⚡ One-tap zaps · WebLN connected</span>
-          <span class="wallet-chip off webln-off">No WebLN · zaps open an invoice in any wallet</span>
-        </div>
-        <p class="wallet-hint webln-off">Add a WebLN extension like <a href="https://getalby.com" target="_blank" rel="noopener">Alby</a> for one-tap zaps.</p>
+        <!-- Unified Payment method card: WebLN + NWC as peers. Exactly one status chip shows (driven by
+             data-webln / data-nwc / data-pay-method). The NWC string is captured + stored by hext.js in this
+             browser's localStorage and is NEVER sent to the daemon (the input has no name and posts nowhere;
+             Connect/Disconnect/Refresh are data-nwc-* seams). hext.js flips data-nwc / data-pay-method. -->
+        <section class="wallet-card">
+          <h3>Payment method</h3>
+          <div class="pay-status">
+            <span class="wallet-chip off pay-state pay-none">No wallet connected · zaps open an invoice in any external wallet</span>
+            <span class="wallet-chip on pay-state pay-webln-only">⚡ Paying zaps with WebLN</span>
+            <span class="wallet-chip on pay-state pay-nwc-only">⚡ Paying zaps with NWC</span>
+            <span class="wallet-chip on pay-state pay-active">⚡ Paying zaps with <span class="pays-w">WebLN</span><span class="pays-n">NWC</span></span>
+            <span class="wallet-chip warn pay-state pay-pick">Choose which wallet pays your zaps ↓</span>
+          </div>
+          <!-- Each method is a row; when BOTH are connected, hext.js shows the radios and CSS turns each row into
+               a selectable card (the active payer gets the accent ring). The [data-pay-method] radios live in the
+               heads, so picking is co-located with the methods. The balance + Refresh/Disconnect sit OUTSIDE the
+               label so tapping them never changes the selection. -->
+          <div class="pay-method pmo-webln">
+            <label class="pay-method-head">
+              <input type="radio" name="paymethod" value="webln" data-pay-method class="pay-radio">
+              <span class="pay-method-text">
+                <span class="pay-method-title">WebLN extension</span>
+                <span class="pay-method-sub">A browser extension like <a href="https://getalby.com" target="_blank" rel="noopener">Alby</a>. The key never leaves it.</span>
+              </span>
+              <span class="pay-badge ok webln-yes">Detected</span>
+              <span class="pay-badge muted webln-no">Not detected</span>
+            </label>
+          </div>
+          <div class="pay-method pmo-nwc">
+            <label class="pay-method-head">
+              <input type="radio" name="paymethod" value="nwc" data-pay-method class="pay-radio">
+              <span class="pay-method-text">
+                <span class="pay-method-title">Nostr Wallet Connect</span>
+                <span class="pay-method-sub">Pay from any NWC wallet, no extension. Stored only in this browser, never sent to the server.</span>
+              </span>
+              <span class="pay-badge ok nwc-yes">Connected</span>
+            </label>
+            <div class="nwc-off nwc-connect">
+              <input class="wallet-input" type="password" data-nwc-input placeholder="nostr+walletconnect://…" autocomplete="off" spellcheck="false" aria-label="NWC connection string">
+              <button type="button" data-nwc-save>Connect</button>
+            </div>
+            <div class="nwc-detail">
+              <div class="nwc-balance">
+                <span class="nwc-balance-label">Balance</span>
+                <span class="nwc-balance-amt"><span class="bolt">⚡</span> <span data-nwc-balance>…</span></span>
+              </div>
+              <div class="nwc-actions">
+                <button type="button" class="ghost" data-nwc-refresh>Refresh</button>
+                <button type="button" class="ghost" data-nwc-clear>Disconnect</button>
+              </div>
+            </div>
+          </div>
+        </section>
         <section class="wallet-card">
           <h3>Receive zaps</h3>
           ${lud16
@@ -89,7 +139,7 @@ export function getWallet(ctx: Ctx): void {
         </section>
         <section class="wallet-card">
           <h3>Your keys, your wallet</h3>
-          <p class="faint">Satori never stores a spending key. There’s no balance or send/receive here by design, so your wallet stays yours. Zaps are paid one-tap through your WebLN extension, or by opening the invoice in any external wallet.</p>
+          <p class="faint">Satori never holds a spending key — WebLN keeps it in your extension, NWC stays in this browser. Nothing to seize, nothing to leak: your wallet stays yours.</p>
         </section>
       </div>`;
     sendPage(ctx, content, chromeFor(ctx, s, { active: 'wallet', title: 'Wallet' }));

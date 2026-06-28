@@ -591,8 +591,6 @@
         .wallet-disconnect:hover { color: var(--warn); }
         .wallet-back { align-self: flex-start; background: transparent; border: none; color: var(--muted); padding: 0; font-size: 14px; }
         .wallet-back:hover { color: var(--text); }
-        .wallet-status { color: var(--muted); font-size: 13px; flex: 1; min-width: 0; }
-        .wallet-status.err { color: var(--warn); }
         .wallet-invoice { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
         .wallet-invoice[hidden] { display: none; }
         .wallet-invoice-text { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
@@ -1490,6 +1488,11 @@ a.fab { display: inline-flex; align-items: center; justify-content: center; text
 .view-empty .enso { margin: 0 auto 14px; }
 
 /* ── Sign-in fidelity ────────────────────────────────────────────────────── */
+/* The extension sign-in block is JS+extension-only: hidden until hext.js detects window.nostr and sets
+   html[data-nip07]. Without an extension (or with JS off) the bunker form below is the zero-JS baseline,
+   so we never show a dead "Sign in with extension" button. (Mirrors the data-webln / data-nwc reveals.) */
+[data-nip07-only] { display: none; }
+html[data-nip07] [data-nip07-only] { display: block; }
 .signin .ext-form { display: block; }
 .signin .status { font-size: 13px; margin: 10px 0 0; text-align: center; }
 .signin .status .err { color: var(--err); }
@@ -1644,13 +1647,70 @@ html[data-webln-busy="paying"] .paying-toast .pay-work { display: inline; }
 /* Phase 4c - wallet page. No server-side spending key: WebLN one-tap status
    (revealed by hateoas-extensions' data-webln flag, like the sign-in button uses
    data-nip07) + zap-preset prefs. */
-.wallet-status { margin-bottom: 12px; }
 .wallet-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; border: 1px solid var(--border); }
 .wallet-chip.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .wallet-chip.off { color: var(--muted); }
-.webln-on { display: none; } /* shown only when hateoas-extensions sets html[data-webln] */
-html[data-webln] .webln-on { display: inline-flex; }
-html[data-webln] .webln-off { display: none; }
+/* (Wallet payment status is driven entirely by the .pay-state system below - data-webln / data-nwc /
+   data-pay-method - so the old standalone .webln-on/.webln-off reveals are gone, one source of truth.) */
+/* NWC progressive disclosure, mirroring data-webln. hext.js sets html[data-nwc] when an NWC connection string
+   is stored, flipping the connect form (.nwc-off) for the connection detail (.nwc-detail). */
+html[data-nwc] .nwc-off { display: none; } /* connect form hidden once connected */
+/* Match .wallet-presets (Zap amounts) exactly so the Connect button sizes like its Save button:
+   align-items:center keeps the button at its natural height instead of stretching to the input. */
+.nwc-connect { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.nwc-connect .wallet-input { flex: 1; width: auto; }
+/* NWC connection detail (balance + manage), shown when connected and split from the selectable head by a
+   divider so it reads as connection info, not part of the pay-with choice. WebLN has no equivalent: it's an
+   ambient browser capability - nothing for Satori to connect, disconnect, or read a balance from. */
+.nwc-detail { display: none; }
+html[data-nwc] .nwc-detail { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.nwc-balance { display: flex; flex-direction: column; gap: 2px; }
+.nwc-balance-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.nwc-balance-amt { font-size: 18px; font-weight: 600; }
+.nwc-actions { display: flex; gap: 8px; }
+.nwc-actions button { font-size: 13px; padding: 5px 11px; }
+.nwc-actions [data-nwc-clear]:hover { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, var(--border)); }
+/* Payment-method card: WebLN + NWC as peer rows under one heading (replaces the old floating status pill). */
+.pay-status { margin-bottom: 6px; }
+.pay-method { padding: 12px 0; border-top: 1px solid var(--border); }
+.pay-method-head { display: flex; align-items: center; gap: 10px; }
+.pay-method-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.pay-radio { display: none; } /* shown only when both wallets are present (a choice exists) */
+/* Both wallets connected: each method becomes a selectable card; the chosen one (data-pay-method) gets the
+   accent ring. Radios + the card chrome appear only here - with one wallet there's nothing to choose. */
+html[data-webln][data-nwc] .pay-method { border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-top: 10px; }
+html[data-webln][data-nwc] .pay-method-head { cursor: pointer; }
+html[data-webln][data-nwc] .pay-radio { display: inline-block; flex: none; accent-color: var(--accent); }
+html[data-webln][data-nwc][data-pay-method="webln"] .pmo-webln,
+html[data-webln][data-nwc][data-pay-method="nwc"] .pmo-nwc { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.pay-method-title { font-weight: 600; }
+.pay-method-sub { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.pay-method-sub a { color: var(--accent); text-decoration: none; }
+.pay-badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 3px 11px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+.pay-badge.ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.pay-badge.muted { color: var(--muted); }
+.webln-yes, .nwc-yes { display: none; }
+html[data-webln] .webln-yes { display: inline-block; }
+html[data-webln] .webln-no { display: none; }
+html[data-nwc] .nwc-yes { display: inline-block; }
+/* Wallet status: exactly ONE chip shows. By availability (data-webln/data-nwc); when BOTH are connected,
+   by whether a method was chosen (html[data-pay-method], set by hext.js - persists across helmjs swaps,
+   unlike a radio's checked state). No silent default: both-but-unchosen shows the "choose" prompt. */
+.wallet-chip.warn { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+/* "Chosen" is hext.js's html[data-pay-method] marker (the active method; absent when both wallets are
+   connected but unchosen). It's set on <html>, so it survives helmjs swaps - the wallet stays correct after
+   in-app navigation, no reliance on a radio's checked state. */
+.pay-state { display: none; }
+html:not([data-webln]):not([data-nwc]) .pay-none { display: inline-flex; }
+html[data-webln]:not([data-nwc]) .pay-webln-only { display: inline-flex; }
+html[data-nwc]:not([data-webln]) .pay-nwc-only { display: inline-flex; }
+html[data-webln][data-nwc][data-pay-method] .pay-active { display: inline-flex; }
+html[data-webln][data-nwc]:not([data-pay-method]) .pay-pick { display: inline-flex; }
+.pays-w, .pays-n { display: none; }
+html[data-pay-method="webln"] .pays-w { display: inline; }
+html[data-pay-method="nwc"] .pays-n { display: inline; }
+/* (The separate chooser is gone - the [data-pay-method] radios now live in the method cards above, and the
+   accent-ring selected state is handled by the .pmo-webln/.pmo-nwc rules in the card block.) */
 /* Subtle cards group the wallet's blocks without breaking the Sumi-e calm. */
 .wallet-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
 .wallet-card h3 { margin: 0 0 10px; font-size: 14px; }

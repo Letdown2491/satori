@@ -140,18 +140,23 @@ export function readUpload(req: IncomingMessage, limit = 25 * 1024 * 1024): Prom
 // aspect-ratio). img-src 'self' data: - ALL images load same-origin via our proxies (/media, /avatar,
 // /yt/thumb) or data:, so the browser physically can't fetch an off-origin image even if a bug emitted
 // a raw src (enforces the no-leak guarantee).
-//   media-src / frame-src are PER-PRIVACY-MODE: off/balanced let video stream direct on play (preload=
-//   "none", so nothing loads until the explicit play) and allow the YouTube nocookie player. STRICT
-//   suppresses both at the render layer (videoSuppressed / the YT-player suppression) AND locks them
-//   here ('self' / 'none') as the CSP-level enforcement of strict's no-leak guarantee - the browser
-//   physically can't stream off-origin video or frame YouTube.
+//   media-src / frame-src are PER-PRIVACY-MODE: off/balanced let video stream direct on play (preload="none",
+//   so nothing loads until the explicit play) and allow the YouTube nocookie player. STRICT suppresses both at
+//   the render layer (videoSuppressed / the YT-player suppression) AND locks them here ('self' / 'none') as
+//   the CSP-level enforcement of strict's no-leak guarantee - the browser physically can't stream off-origin
+//   video or frame YouTube.
+//   connect-src allows wss: in ALL modes for the NWC (NIP-47) browser->wallet-relay WebSocket. This socket is
+//   browser-direct (it does NOT pass through the daemon's Tor routing), so in strict its IP privacy depends on
+//   reaching Satori over Tor Browser, which tunnels it. (Parked: a daemon ws-proxy could route it over Tor so
+//   any browser stays covered; see the wallet notes.) Same-origin fetches/sockets are always allowed via 'self'.
 function securityHeaders(): Record<string, string> {
     const strict = torStrict();
     const mediaSrc = strict ? "'self'" : '*';
     const frameSrc = strict ? "'none'" : 'https://www.youtube-nocookie.com';
+    const connectSrc = "'self' wss:"; // wss: for the browser's NWC wallet socket
     return {
         'Content-Security-Policy':
-            `default-src 'self'; img-src 'self' data:; media-src ${mediaSrc}; style-src 'self'; script-src 'self'; frame-src ${frameSrc}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+            `default-src 'self'; img-src 'self' data:; media-src ${mediaSrc}; connect-src ${connectSrc}; style-src 'self'; script-src 'self'; frame-src ${frameSrc}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
     };
