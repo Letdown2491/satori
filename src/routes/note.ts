@@ -8,23 +8,26 @@
 // tags, content-warning, mention p-tags, and relay-hint/inbox routing - both modes
 // go through it, so there's one source of truth for note construction.
 
-import { signNote, publishSigned, captureSigner, type Prepared, type ReplyTo, type QuoteRef } from '../data/publish.ts';
+import { signNote, signComment, publishSigned, captureSigner, type Prepared, type ReplyTo, type QuoteRef, type CommentTarget, type CommentRef } from '../data/publish.ts';
+import { fetchEvent } from '../data/feeds.ts';
+import { commentRoot, KIND_COMMENT } from '../nostr/nip22.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
+import { normalizeRelayUrl, relayLabel } from '../data/relay-favorites.ts';
 import { decode } from 'nostr-tools/nip19';
 import { decodeNaddr } from '../nostr/nip19.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, raw, type SafeHtml } from '../html.ts';
 import { displayName } from '../render/util.ts';
 import { icon } from '../render/svg.ts';
-import { mediaItem, composeFileInput, undoToast } from '../render/compose.ts';
+import { mediaItem, composeFileInput, undoToast, scheduleRow } from '../render/compose.ts';
 import { noteCard, composePreview } from '../render/note.ts';
 import { remainingSeconds, cancelPublish, commitIfDue, getHeld, getCommitted } from '../undo.ts';
 import { tryUndoWindow, sendReplyToThread, stayPutCloseModal, landOnFeed, CLOSE_MODAL_OOB } from './undo-window.ts';
 import { articleComposePage, draftsScreen, type ArticleComposeCtx } from '../render/article-compose.ts';
 import { getDraft, saveDraft, listDrafts, newDraftId, type NoteDraft, type PollDraft } from '../drafts.ts';
 import { composeSyncEl } from './article.ts';
-import { addScheduled, listScheduled } from '../data/scheduled.ts';
+import { holdScheduled, SCHEDULE_FULL_MSG, listScheduled } from '../data/scheduled.ts';
 import { sendPrivateReply, syntheticReply } from '../data/dms.ts';
 import { beginPrivateReplySend, sealStep, wrapPrivateReplyStep } from '../data/dms-nip07.ts';
 import { page } from '../render/layout.ts';
@@ -37,7 +40,7 @@ import { signsOnClient } from '../session.ts';
 
 const MAX_INBOX_RELAYS = 4;
 
-interface ComposeCtx { reply?: { nevent: string; name: string }; quote?: string; draft?: string; error?: string; isNew?: boolean; media?: string[][]; cw?: boolean; cwReason?: string; inThread?: string; draftId?: string; status?: string; syncEl?: SafeHtml }
+interface ComposeCtx { reply?: { nevent: string; name: string }; quote?: string; draft?: string; error?: string; isNew?: boolean; media?: string[][]; cw?: boolean; cwReason?: string; inThread?: string; draftId?: string; status?: string; syncEl?: SafeHtml; relays?: string[] }
 
 /** The Note · Poll · Article segmented selector (only on new top-level posts,
  * matching Satori). Article (the long-form composer) is Phase 6. In a modal the
@@ -62,16 +65,11 @@ function composeTypes(active: 'note' | 'poll', inModal = false): SafeHtml {
  * (`h-target="#media" h-swap="append"`) so Attach appends a thumbnail in place
  * while Publish boost-swaps. Keeping the file in the compose form is what lets a
  * zero-JS attach preserve the typed text + already-attached media on re-render. */
-/** A `datetime-local` value (local tz) ~a minute out, for the schedule input's `min` (client-side
- * nudge against past times; the server validates for real). */
-function minScheduleValue(): string {
-    const p = (n: number) => String(n).padStart(2, '0');
-    const d = new Date(Date.now() + 60_000);
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
 function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
     const title = c.reply ? 'Reply' : c.quote ? 'Quote' : null;
+    // Schedule is offered for new notes AND quotes (both are top-level posts to your write relays); a
+    // reply is transient/thread-bound, so it stays off there.
+    const canSchedule = c.isNew || !!c.quote;
     return html`
       ${c.error ? html`<div class="notice error">${c.error}</div>` : null}
       ${c.reply ? html`<div class="reply-to">Replying to ${c.reply.name}</div>` : null}
@@ -99,12 +97,18 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
              accent and reveals the caption; the form posts private=1 → a gift-wrapped reply, not a public one. -->
         ${c.reply ? html`<input type="checkbox" id="private-toggle" name="private" value="1" class="private-check">
         <div class="private-row">${icon('lock')}<span>Only ${c.reply.name === 'note' ? 'the author' : c.reply.name} can read this. It won't appear publicly.</span></div>` : null}
-        <!-- Schedule (new notes only): the .schedule-btn clock toggles this checkbox; the row
+        <!-- Schedule (new notes + quotes): the .schedule-btn clock toggles this checkbox; the row
              reveals on :checked (pure CSS, like CW). The "Schedule" button sends do=schedule. -->
-        ${c.isNew ? html`<input type="checkbox" id="schedule-toggle" class="sched-check">
-        <div class="schedule-row">
-          <input class="schedule-input" type="datetime-local" name="schedule" min="${minScheduleValue()}" aria-label="Schedule for later">
-          <button type="submit" class="ghost" name="do" value="schedule" formaction="/note" formmethod="post" h-target="body" h-swap="inner" title="Publish at this time (the daemon sends it even if your browser is closed)">Schedule</button>
+        ${canSchedule ? html`<input type="checkbox" id="schedule-toggle" class="sched-check">
+        ${scheduleRow('/note', raw(' h-target="body" h-swap="inner"'))}` : null}
+        <!-- Relays (new notes only): the .relays-btn globe toggles this checkbox; the row reveals on :checked
+             (pure CSS, like Schedule). All your write relays start checked; uncheck to post to a subset, or add
+             a one-off relay. Resets every open (the form is re-rendered fresh). -->
+        ${c.isNew && c.relays?.length ? html`<input type="checkbox" id="relays-toggle" class="relays-check">
+        <div class="relays-row">
+          <div class="relays-row-head">Post to relays</div>
+          <div class="relay-chips">${c.relays.map((url) => html`<label class="relay-chip"><input type="checkbox" name="relay" value="${url}" checked>${relayLabel(url)}</label>`)}</div>
+          <input class="relay-custom-input" type="text" name="customrelay" placeholder="wss://… (one-off relay)" autocomplete="off" spellcheck="false">
         </div>` : null}
         <div class="compose-media" id="media">${(c.media ?? []).map((m) => mediaItem(m))}</div>
         <!-- Live preview (above the foot): listens to the textarea (debounced) + attached
@@ -117,7 +121,8 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
           <label class="attach-btn" id="compose-attach" title="Add photo or video" aria-label="Add photo or video">${icon('image')}${composeFileInput()}</label>
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
           ${c.reply ? html`<label class="attach-btn private-btn" for="private-toggle" title="Reply privately - only the author can read it" aria-label="Reply privately">${icon('lock')}</label>` : null}
-          ${c.isNew ? html`<label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>` : null}
+          ${canSchedule ? html`<label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>` : null}
+          ${c.isNew && c.relays?.length ? html`<label class="attach-btn relays-btn" for="relays-toggle" title="Choose relays to post to" aria-label="Choose relays to post to">${icon('globe')}</label>` : null}
           <!-- Zero-JS only: with JS the file auto-uploads on select, so this fallback
                button is hidden (noscript). It submits the form to its /upload action. -->
           <noscript><button type="submit" class="attach-go">Attach</button></noscript>
@@ -187,10 +192,42 @@ export function getComposePreview(ctx: Ctx): void {
 function decodeReplyTo(nevent: string): ReplyTo | null {
     try {
         const d = decode(nevent);
-        if (d.type === 'nevent') return { id: d.data.id, pubkey: d.data.author };
+        if (d.type === 'nevent') return { id: d.data.id, pubkey: d.data.author, kind: d.data.kind };
         if (d.type === 'note') return { id: d.data };
     } catch { /* */ }
     return null;
+}
+
+const isAddressable = (k: number): boolean => k >= 30000 && k < 40000;
+
+/** NIP-22: a reply to anything that ISN'T a kind:1 note must be a kind:1111 comment (the spec forbids
+ * commenting on kind:1 - those stay NIP-10). Resolve the comment's root+parent scope from the target:
+ *  - the target is itself a 1111 comment -> inherit its uppercase ROOT scope (fetched, since only the
+ *    parent event carries it) and name the comment as the immediate parent (a nested comment);
+ *  - the target is an addressable event (article/...) -> fetch its `d` tag to build the coordinate;
+ *  - the target is any other event (picture 20, video 21/22, ...) -> it IS both root and parent.
+ * Returns null when the kind is a note or the scope can't be resolved (caller falls back to a NIP-10 note). */
+async function commentTargetFor(s: Session & { me: string }, rt: ReplyTo): Promise<CommentTarget | null> {
+    const kind = rt.kind ?? 1;
+    if (kind === 1) return null;
+    if (kind === KIND_COMMENT) {
+        const ev = await fetchEvent(s.pool, rt.id, [], rt.pubkey).catch(() => null);
+        if (!ev) return null;
+        const root = commentRoot(ev);
+        const rootRef: CommentRef = root
+            ? { kind: Number(root.kind) || 1, pubkey: root.pubkey ?? rt.pubkey ?? '', ...(root.type === 'A' ? { address: root.value } : { id: root.value }) }
+            : { kind, pubkey: rt.pubkey ?? '', id: rt.id }; // malformed comment: treat it as its own root
+        return { root: rootRef, parent: { kind, pubkey: rt.pubkey ?? '', id: rt.id } };
+    }
+    if (!rt.pubkey) return null; // need the author to scope a comment; without it fall back to NIP-10
+    if (isAddressable(kind)) {
+        const ev = await fetchEvent(s.pool, rt.id, [], rt.pubkey).catch(() => null);
+        const d = ev?.tags.find((t) => t[0] === 'd')?.[1] ?? '';
+        const ref: CommentRef = { kind, pubkey: rt.pubkey, address: `${kind}:${rt.pubkey}:${d}` };
+        return { root: ref, parent: ref };
+    }
+    const ref: CommentRef = { kind, pubkey: rt.pubkey, id: rt.id }; // picture/video/etc: root === parent
+    return { root: ref, parent: ref };
 }
 
 /** Decode an nevent/note (→ id) or naddr (→ article address) into a quote ref. */
@@ -275,6 +312,7 @@ export async function getCompose(ctx: Ctx): Promise<void> {
     }
 
     const c: ComposeCtx = { isNew };
+    if (isNew) c.relays = writeRelaysFor(s.myRelays); // the relay-picker list (top-level notes only)
     if (draft?.type === 'note') {
         c.draft = draft.content; c.media = draft.imeta; c.cw = draft.cw; c.cwReason = draft.cwReason; c.draftId = draft.id;
     } else if (replyNevent) {
@@ -348,6 +386,19 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
     render('Draft saved ✓', syncEl);
 }
 
+/** The relays to publish a top-level note to, from the compose relay-picker: the checked write relays (the
+ * `relay` fields) plus an optional validated one-off (`customrelay`). Anti-tamper: checked relays must be in
+ * your write set. Empty selection → ALL write relays (never publish to nowhere). Replies/quotes send no relay
+ * fields, so they fall through to the full write set here. `p` is the form (bunker) or the query (nip07). */
+function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string | null }, s: Session & { me: string }): string[] {
+    const all = writeRelaysFor(s.myRelays);
+    const allowed = new Set(all);
+    const picked = p.getAll('relay').filter((u) => allowed.has(u));
+    const custom = normalizeRelayUrl(p.get('customrelay') ?? '');
+    const targets = [...new Set([...picked, ...(custom ? [custom] : [])])];
+    return targets.length ? targets : all;
+}
+
 export async function postNote(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
@@ -377,10 +428,10 @@ export async function postNote(ctx: Ctx): Promise<void> {
     };
     if (!content) { back('Write something or attach media first.'); return; }
 
-    // Scheduling (top-level notes only): sign now with created_at = the scheduled time, hold it
-    // on disk, and the daemon's sweep broadcasts it then. The "Schedule" button sends do=schedule.
+    // Scheduling (top-level notes + quotes, not replies): sign now with created_at = the scheduled time,
+    // hold it on disk, and the daemon's sweep broadcasts it then. The "Schedule" button sends do=schedule.
     let scheduledAt = 0;
-    if (!replyNevent && !quoteNevent && form.get('do') === 'schedule') {
+    if (!replyNevent && form.get('do') === 'schedule') {
         const t = new Date((form.get('schedule') ?? '').trim()).getTime();
         if (isNaN(t)) { back('Pick a time to schedule this for.'); return; }
         scheduledAt = Math.floor(t / 1000);
@@ -417,25 +468,38 @@ export async function postNote(ctx: Ctx): Promise<void> {
         return;
     }
 
-    // client-signs: build the exact template via signNote+capture signer, hand to the extension/app.
+    // NIP-22: a public reply to anything that isn't a kind:1 note becomes a kind:1111 comment (the spec
+    // bars commenting on kind:1; everything else - comments, pictures, videos - threads as a comment).
+    const replyKind = opts.replyTo?.kind ?? 1;
+    const commentTarget = opts.replyTo && replyKind !== 1 ? await commentTargetFor(s, opts.replyTo) : null;
+
+    // client-signs: build the exact template via signNote/signComment+capture signer, hand to the extension/app.
     if (signsOnClient(s)) {
-        const prepared = await signNote(captureSigner, s.pool, s.me, s.myRelays!, opts);
-        if (scheduledAt) { sendSignRequest(ctx, prepared.signed, `/note/publish?schedule=${scheduledAt}`); return; } // store, don't publish
+        const prepared = commentTarget
+            ? await signComment(captureSigner, s.pool, s.me, s.myRelays!, { content, comment: commentTarget, contentWarning, imeta })
+            : await signNote(captureSigner, s.pool, s.me, s.myRelays!, opts);
         const q = new URLSearchParams();
         if (replyNevent) q.set('reply', replyNevent);
+        if (commentTarget) q.set('k', String(KIND_COMMENT)); // the continuation must verify a 1111, not a kind:1
         if (inthread) q.set('inthread', inthread);
         if (fromModal) q.set('inmodal', '1');
+        if (!replyNevent && !quoteNevent) { // top-level: carry the relay-picker selection to the publish step
+            for (const u of form.getAll('relay')) q.append('relay', u);
+            const cr = (form.get('customrelay') ?? '').trim(); if (cr) q.set('customrelay', cr);
+        }
+        if (scheduledAt) { q.set('schedule', String(scheduledAt)); sendSignRequest(ctx, prepared.signed, `/note/publish?${q}`); return; } // store, don't publish
         sendSignRequest(ctx, prepared.signed, q.toString() ? `/note/publish?${q}` : '/note/publish');
         return;
     }
 
-    // bunker: sign + publish here (signNote handles write + recipient-inbox routing).
+    // bunker: sign + publish here (signNote/signComment handle write + recipient-inbox routing).
     try {
-        const prepared = await signNote(s.signer!, s.pool, s.me, s.myRelays!, opts);
+        const prepared = commentTarget
+            ? await signComment(s.signer!, s.pool, s.me, s.myRelays!, { content, comment: commentTarget, contentWarning, imeta })
+            : await signNote(s.signer!, s.pool, s.me, s.myRelays!, opts);
+        if (!replyNevent && !quoteNevent) prepared.writeTargets = chosenTargets(form, s); // relay-picker (top-level only)
         if (scheduledAt) { // hold the signed note for the sweep instead of publishing
-            if (!addScheduled({ token: newDraftId(), pubkey: s.me, signed: prepared.signed, scheduledAt, writeTargets: prepared.writeTargets })) {
-                back('You have reached the maximum of 100 scheduled posts. Cancel some to schedule more.', 400); return;
-            }
+            if (!holdScheduled(s.me, prepared.signed, scheduledAt, prepared.writeTargets)) { back(SCHEDULE_FULL_MSG, 400); return; }
             redirect(ctx, '/drafts');
             return;
         }
@@ -467,7 +531,8 @@ async function replyInbox(s: Session & { me: string }, replyNevent: string): Pro
 export async function postNotePublish(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    const signed = await requireSigned(ctx, s.me, 1, 'the signed note');
+    const expectKind = Number(ctx.query.get('k')) || 1; // a NIP-22 comment reply signs a 1111, not a kind:1
+    const signed = await requireSigned(ctx, s.me, expectKind, 'the signed note');
     if (!signed) return;
 
     // Scheduled (nip07): the extension signed our future-dated note; store it for the sweep.
@@ -476,9 +541,9 @@ export async function postNotePublish(ctx: Ctx): Promise<void> {
     // created_at is already frozen by the signature, so this only governs broadcast timing.
     const schedule = Number(ctx.query.get('schedule')) || 0;
     if (schedule > Math.floor(Date.now() / 1000)) {
-        const writeTargets = writeRelaysFor(s.myRelays);
-        if (!addScheduled({ token: newDraftId(), pubkey: s.me, signed: signed as NostrEvent, scheduledAt: schedule, writeTargets })) {
-            sendFragment(ctx, html`<div class="notice error">You have reached the maximum of 100 scheduled posts. Cancel some to schedule more.</div>`, {}, 400);
+        const writeTargets = chosenTargets(ctx.query, s);
+        if (!holdScheduled(s.me, signed as NostrEvent, schedule, writeTargets)) {
+            sendFragment(ctx, html`<div class="notice error">${SCHEDULE_FULL_MSG}</div>`, {}, 400);
             return;
         }
         sendFragment(ctx, page(draftsScreen(listScheduled(s.me), listDrafts(s.me)), chromeFor(ctx, s as Session & { me: string }, { active: 'drafts', title: 'Drafts' })),
@@ -489,7 +554,7 @@ export async function postNotePublish(ctx: Ctx): Promise<void> {
     const replyNevent = ctx.query.get('reply');
     const inthread = (replyNevent && ctx.query.get('inthread')) || null;
     const fromModal = ctx.query.get('inmodal') === '1';
-    const writeTargets = writeRelaysFor(s.myRelays);
+    const writeTargets = chosenTargets(ctx.query, s);
     const inboxTargets = replyNevent ? await replyInbox(s, replyNevent) : [];
     const prepared: Prepared = { signed: signed as NostrEvent, isReply: !!replyNevent, writeTargets, inboxTargets };
     if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, inThread: inthread ?? undefined, fromModal })) return; // nip07 = always JS

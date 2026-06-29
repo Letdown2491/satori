@@ -74,7 +74,6 @@ function appearanceSection(a: Appearance): SafeHtml {
 const PREF_LABELS = {
     autoLoadMedia: 'Auto-load images & videos',
     inlineVideo: 'Load nostr videos inline (fetches a frame on load)',
-    trustScores: 'Show trusted relay assertions in settings',
     reactions: 'Show reactions button on notes & articles',
     reactionNotifs: 'Show reactions in notifications',
     undoEnabled: 'Undo window before publishing',
@@ -302,13 +301,13 @@ export function privacySection(): SafeHtml {
 }
 
 /** The settings page, organised into CSS-only tabs (shared .tabset-* pattern):
- * Appearance (display) · Behavior (feed + posting) · Filters · Privacy · Relays (NIP-65
- * relays + NIP-17 DM relays + media servers) · Search. The Relays panel keeps the id
+ * Appearance & Behavior (display + feed/posting + media servers) · Filters · Privacy · Relays
+ * (NIP-65 relays + NIP-17 DM relays) · Search. The Relays panel keeps the id
  * `panel-relays`/`set-relays` internally (the tab was renamed from "Network"). All panels
  * render (forms' partial swaps + radio tab-state persist). */
 export function settingsPage(v: SettingsView): SafeHtml {
     return html`
-      <div class="settings-page view-pad tabset${v.a.trustScores ? '' : ' no-trust'}">
+      <div class="settings-page view-pad tabset">
         <input type="radio" name="settab" id="set-appearance" class="tabset-radio" checked>
         <input type="radio" name="settab" id="set-backup" class="tabset-radio">
         <input type="radio" name="settab" id="set-filters" class="tabset-radio">
@@ -330,12 +329,8 @@ export function settingsPage(v: SettingsView): SafeHtml {
             ${prefToggle('autoLoadMedia', v.a.autoLoadMedia)}
             ${prefToggle('inlineVideo', v.a.inlineVideo)}
           </section>
+          ${mediaSection(v.mediaDraft, v.a, v.mediaStatus, v.mediaErr)}
           ${behaviorPanel(v.a)}
-          <section>
-            <h3>Trusted relay assertions</h3>
-            ${prefToggle('trustScores', v.a.trustScores)}
-            <p class="filter-help">When on, display relay trust assertions in relay settings. Fetched from public relays, and routed over Tor when Privacy Mode is enabled.</p>
-          </section>
         </div>
         <div class="tabset-panel panel-backup" role="tabpanel" aria-label="Backup">${backupSection(v.backupStatus, v.backupErr)}</div>
         <div class="tabset-panel panel-filters" role="tabpanel" aria-label="Content">${contentTabPanel(v.contentPrefs, v.filters)}</div>
@@ -345,7 +340,6 @@ export function settingsPage(v: SettingsView): SafeHtml {
         <div class="tabset-panel panel-relays" role="tabpanel" aria-label="Relays">
           ${relaySection(v.relayDraft, v.relayStatus, v.relayErr)}
           ${dmRelaySection(v.dmRelayDraft, v.dmRelayStatus, v.dmRelayErr)}
-          ${mediaSection(v.mediaDraft, v.a, v.mediaStatus, v.mediaErr)}
         </div>
         <div class="tabset-panel panel-search" role="tabpanel" aria-label="Search">
           ${searchRelayEditor('note', v.searchNoteDraft)}

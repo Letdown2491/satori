@@ -16,6 +16,7 @@ import { calendarEventHandler } from './calendar.ts';
 import { classifiedHandler } from './classified.ts';
 import { videoHandler } from './video.ts';
 import { highlightHandler } from './highlight.ts';
+import { commentHandler } from './comment.ts';
 import { fromManifest } from './engine.ts';
 import { LOCAL_MANIFESTS } from './manifests.ts';
 import { fallbackHandler } from './fallback.ts';
@@ -30,6 +31,7 @@ export function registerSatoriKinds(): void {
     registerKind(classifiedHandler);
     registerKind(videoHandler);
     registerKind(highlightHandler);
+    registerKind(commentHandler);
     // DECLARATIVE kinds: pure-data manifests synthesized into handlers by the engine. The registry can't
     // tell these from the hand-coded handlers above - a kind is data OR code, dispatched identically.
     for (const m of LOCAL_MANIFESTS) registerKind(fromManifest(m));

@@ -43,6 +43,9 @@ export async function postPoll(ctx: Ctx): Promise<void> {
     if (!question || options.length < 2) { redirect(ctx, '/compose?type=poll'); return; }
     const fromModal = form.get('inmodal') === '1'; // modal compose (stay put) vs the full /compose page (land on feed)
 
+    // Polls are NOT schedulable: a poll's endsAt is baked at sign time, so holding a signed poll for a
+    // future sweep would make its lifetime count from compose time (a "1 day" poll sent tomorrow arrives
+    // already ended). Notes and articles schedule fine; polls always publish now.
     const opts = { question, options, multiple, endsAt };
     if (signsOnClient(s)) {
         const prepared = await signPoll(captureSigner, s.me, s.myRelays!, opts);

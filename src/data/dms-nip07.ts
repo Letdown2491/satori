@@ -38,12 +38,16 @@ const KIND_LEGACY = 4; // NIP-04 (read-only; we never SEND this metadata-leaky f
 
 // --- in-memory cache (decrypt once per process lifetime; never touches disk) ----
 // `legacy` marks a NIP-04 (kind-4) message/request -> no shield, decrypted via nip04 not nip44.
+// `owner` = the account (me) that decrypted this entry. The cache is process-global (multiple npubs may
+// use one daemon), so EVERY read that iterates it MUST filter owner === me, else one account sees another's
+// decrypted DMs. Mirrors the bunker path's owner field in data/dms.ts. `drop` carries no plaintext, so it
+// needs no owner. Keep these guards in lockstep with the stamps at each memSet below.
 type Entry =
-    | { kind: 'msg'; peer: string; from: string; at: number; text: string; legacy?: boolean }
-    | { kind: 'request'; peer: string; at: number; legacy?: boolean }
+    | { kind: 'msg'; owner: string; peer: string; from: string; at: number; text: string; legacy?: boolean }
+    | { kind: 'request'; owner: string; peer: string; at: number; legacy?: boolean }
     // A NIP-59-wrapped private reply (inner kind:1) to a public note - keyed by the parent note id,
     // carries the rumor id + tags (to render in-thread), excluded from conversation aggregation.
-    | { kind: 'reply'; parentId: string; id: string; from: string; at: number; text: string; tags: string[][] }
+    | { kind: 'reply'; owner: string; parentId: string; id: string; from: string; at: number; text: string; tags: string[][] }
     | { kind: 'drop' };
 
 /** A legacy (kind-4) message queued for nip04 decryption through the browser. */
@@ -169,7 +173,7 @@ function aggregate(ids: Iterable<string>, me: string): DmInbox {
     const byPeer = new Map<string, Conversation>();
     for (const id of ids) {
         const e = mem.get(id);
-        if (!e || e.kind === 'drop' || e.kind === 'reply') continue; // replies aren't conversations
+        if (!e || e.kind === 'drop' || e.kind === 'reply' || e.owner !== me) continue; // skip other accounts + non-convos
         const peer = e.peer;
         const prev = byPeer.get(peer);
         if (e.kind === 'msg') {
@@ -183,22 +187,22 @@ function aggregate(ids: Iterable<string>, me: string): DmInbox {
     return { conversations: all.filter((c) => c.bucket === 'inbox'), requests: all.filter((c) => c.bucket === 'request') };
 }
 
-function threadMessages(ids: Iterable<string>, peer: string, _me: string): DmMessage[] {
+function threadMessages(ids: Iterable<string>, peer: string, me: string): DmMessage[] {
     const out: DmMessage[] = [];
     for (const id of ids) {
         const e = mem.get(id);
-        if (e?.kind === 'msg' && e.peer === peer) out.push({ id, from: e.from, at: e.at, text: e.text, legacy: e.legacy });
+        if (e?.kind === 'msg' && e.owner === me && e.peer === peer) out.push({ id, from: e.from, at: e.at, text: e.text, legacy: e.legacy });
     }
     return out.sort((a, b) => a.at - b.at);
 }
 
 /** All decrypted private replies (in-memory) to `noteId`, oldest-first - shown inline in the note's
  * thread, badged private (replies others sent to your note + self-copies of ones you sent). */
-export function privateRepliesForNip07(noteId: string): PrivateReply[] {
+export function privateRepliesForNip07(noteId: string, me: string): PrivateReply[] {
     const t0 = performance.now();
     const out: PrivateReply[] = [];
     for (const e of mem.values()) {
-        if (e.kind === 'reply' && e.parentId === noteId) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
+        if (e.kind === 'reply' && e.owner === me && e.parentId === noteId) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
     }
     recordScan('privateRepliesForNip07', mem.size, performance.now() - t0);
     return out.sort((a, b) => a.at - b.at);
@@ -210,7 +214,7 @@ export function allPrivateRepliesNip07(me: string): PrivateReply[] {
     const t0 = performance.now();
     const out: PrivateReply[] = [];
     for (const e of mem.values()) {
-        if (e.kind === 'reply' && e.from !== me) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
+        if (e.kind === 'reply' && e.owner === me && e.from !== me) out.push({ id: e.id, parent: e.parentId, from: e.from, at: e.at, content: e.text, tags: e.tags });
     }
     recordScan('allPrivateRepliesNip07', mem.size, performance.now() - t0);
     return out.sort((a, b) => b.at - a.at);
@@ -254,7 +258,7 @@ async function fetchLegacy(s: Session, view: SyncChain['view'], peer: string | u
         ids.push(ev.id);
         if (mem.has(ev.id)) continue; // already decrypted/deferred
         if (follows.has(op)) queue.push({ id: ev.id, peer: op, from: ev.pubkey, at: ev.created_at, ciphertext: ev.content }); // in-network -> preview
-        else memSet(ev.id, { kind: 'request', peer: op, at: ev.created_at, legacy: true }); // stranger -> deferred Request
+        else memSet(ev.id, { kind: 'request', owner: me, peer: op, at: ev.created_at, legacy: true }); // stranger -> deferred Request
     }
     return { queue, ids };
 }
@@ -299,13 +303,14 @@ export function legacyBatch(chainId: string): DecryptItem[] | null {
 }
 
 /** Apply the nip04 results: cache each decrypted kind-4 as a legacy message. Caller finalizes. */
-export function applyLegacy(_s: Session, chainId: string, results: BatchResult[]): void {
+export function applyLegacy(s: Session, chainId: string, results: BatchResult[]): void {
     const chain = takeSync(chainId);
     if (!chain) return;
+    const me = s.me!;
     chain.legacy.forEach((l, i) => {
         const r = results[i];
         if (!r || !r.ok) { memSet(l.id, { kind: 'drop' }); return; }
-        memSet(l.id, { kind: 'msg', peer: l.peer, from: l.from, at: l.at, text: String(r.value), legacy: true });
+        memSet(l.id, { kind: 'msg', owner: me, peer: l.peer, from: l.from, at: l.at, text: String(r.value), legacy: true });
     });
     chains.set(chainId, chain);
 }
@@ -354,12 +359,12 @@ export function applyRumors(s: Session, chainId: string, rumors: BatchResult[]):
         if (!rumor) { memSet(w.id, { kind: 'drop' }); return; }
         if (rumor.kind === KIND_PRIVATE_REPLY) { // private reply → keyed by parent note, shown from anyone
             const parent = replyParent({ tags: rumor.tags } as NostrEvent)?.id;
-            memSet(w.id, parent ? { kind: 'reply', parentId: parent, id: rumor.id, from: rumor.pubkey, at: rumor.created_at, text: rumor.content, tags: rumor.tags } : { kind: 'drop' });
+            memSet(w.id, parent ? { kind: 'reply', owner: me, parentId: parent, id: rumor.id, from: rumor.pubkey, at: rumor.created_at, text: rumor.content, tags: rumor.tags } : { kind: 'drop' });
             return;
         }
         if (rumor.kind === KIND_DM) { // DM: you/a follow/the open peer → message, else a deferred request
             const known = rumor.pubkey === me || follows.has(rumor.pubkey) || rumor.pubkey === chain.peer;
-            memSet(w.id, known ? { kind: 'msg', peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content } : { kind: 'request', peer: rumor.pubkey, at: rumor.created_at });
+            memSet(w.id, known ? { kind: 'msg', owner: me, peer: peerOf(rumor, me), from: rumor.pubkey, at: rumor.created_at, text: rumor.content } : { kind: 'request', owner: me, peer: rumor.pubkey, at: rumor.created_at });
             return;
         }
         memSet(w.id, { kind: 'drop' }); // kind 7 reactions etc. - not handled yet
@@ -415,7 +420,7 @@ export async function wrapStep(s: Session, chainId: string, results: BatchResult
     const me = s.me!;
     const selfId = await finalizeAndPublish(s, chain, results);
     if (!selfId) return null;
-    memSet(selfId, { kind: 'msg', peer: chain.peer, from: me, at: chain.rumor.created_at, text: chain.text });
+    memSet(selfId, { kind: 'msg', owner: me, peer: chain.peer, from: me, at: chain.rumor.created_at, text: chain.text });
     listMem.delete(me); // the new message changes the conversation list
     return { id: selfId, from: me, at: chain.rumor.created_at, text: chain.text };
 }
@@ -461,7 +466,7 @@ export async function wrapPrivateReplyStep(s: Session, chainId: string, results:
     const me = s.me!;
     const selfId = await finalizeAndPublish(s, chain, results);
     if (!selfId) return null;
-    memSet(selfId, { kind: 'reply', parentId: chain.replyParent, id: chain.rumor.id, from: me, at: chain.rumor.created_at, text: chain.text, tags: chain.rumor.tags });
+    memSet(selfId, { kind: 'reply', owner: me, parentId: chain.replyParent, id: chain.rumor.id, from: me, at: chain.rumor.created_at, text: chain.text, tags: chain.rumor.tags });
     return { id: chain.rumor.id, parent: chain.replyParent, from: me, at: chain.rumor.created_at, content: chain.text, tags: chain.rumor.tags };
 }
 

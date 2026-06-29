@@ -25,7 +25,9 @@ const KIND_RELAY_ASSERTION = 30385;
 const FALLBACK_RELAYS = ['wss://nos.lol', 'wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nostr.mom', 'wss://ditto.pub/relay'];
 
 const FILE = process.env.SATORI_TRUST_CACHE || join(process.cwd(), '.data', 'trust.json');
-const STALE_MS = 24 * 60 * 60 * 1000; // 24h → serve cached, refresh in the background (scores move slowly)
+const STALE_MS = 24 * 60 * 60 * 1000; // 24h → serve cached positive, refresh in the background (scores move slowly)
+const NULL_TTL_MS = 30 * 60 * 1000;   // 30m → a "no score" relay is re-checked at most this often: a cheap dedup
+                                      // for repeat settings visits, short enough that a later-evaluated relay still surfaces.
 const CAP = 2000;                     // bound the positive-score cache (a single user touches few relays)
 
 export interface TrustScore {
@@ -40,7 +42,9 @@ export interface TrustScore {
 const norm = (url: string) => url.replace(/\/+$/, '').toLowerCase(); // match the assertion `d` tag exactly
 const num = (ev: NostrEvent, k: string): number | undefined => { const raw = tag1(ev, k); const v = Number(raw); return raw !== '' && Number.isFinite(v) ? v : undefined; };
 
-interface Entry { v: TrustScore; at: number }
+// v: a positive score (persisted, 24h SWR) OR null = "no score" (kept in-memory only, NULL_TTL_MS, so repeat
+// lookups don't re-query the provider every time - but not persisted, so a restart re-checks).
+interface Entry { v: TrustScore | null; at: number }
 const cache = new Map<string, Entry>();
 (function load(): void {
     try {
@@ -57,7 +61,8 @@ const flusher = debouncedFlush(() => {
             for (const [k, v] of keep) cache.set(k, v);
         }
         mkdirSync(dirname(FILE), { recursive: true });
-        writeFileSync(FILE, JSON.stringify(Object.fromEntries(cache)), { mode: 0o600 });
+        // Persist positives only; null ("no score") entries are a transient in-memory dedup (re-checked on restart).
+        writeFileSync(FILE, JSON.stringify(Object.fromEntries([...cache].filter(([, e]) => e.v !== null))), { mode: 0o600 });
     } catch (e) { console.warn('[trust] flush failed:', (e as Error)?.message ?? e); }
 }, 8000);
 
@@ -86,8 +91,9 @@ async function providerRelays(pool: Pool): Promise<string[]> {
 
 const inflight = new Map<string, Promise<TrustScore | null>>();
 
-/** Fetch the assertion for ONE relay (`#d` filtered). Caches a positive result; a no-score result is NOT
- * cached, so it's re-queried next time (lets a later-evaluated relay surface). Deduped per url. */
+/** Fetch the assertion for ONE relay (`#d` filtered). Caches the result - a positive is persisted (24h SWR),
+ * a no-score null is kept in-memory for NULL_TTL_MS so repeat lookups don't re-query, then re-checked (lets a
+ * later-evaluated relay surface). Deduped per url. */
 function fetchOne(pool: Pool, key: string): Promise<TrustScore | null> {
     const ex = inflight.get(key);
     if (ex) return ex;
@@ -98,7 +104,8 @@ function fetchOne(pool: Pool, key: string): Promise<TrustScore | null> {
             let best: NostrEvent | undefined; // newest matching assertion across the provider's relays
             for (const ev of events) if (norm(tag1(ev, 'd')) === key && (!best || ev.created_at > best.created_at)) best = ev;
             const v = best ? toScore(best) : null;
-            if (v) { cache.set(key, { v, at: Date.now() }); flusher.schedule(); }
+            cache.set(key, { v, at: Date.now() });
+            if (v) flusher.schedule(); // only positives are persisted; null is an in-memory dedup
             return v;
         } catch { return cache.get(key)?.v ?? null; } // network failure: serve a prior value if any
     })().finally(() => inflight.delete(key));
@@ -106,14 +113,18 @@ function fetchOne(pool: Pool, key: string): Promise<TrustScore | null> {
     return p;
 }
 
-/** Trust assertion for a relay (evaluated relays only), or null for no score. Fresh positives come straight
- * from the disk-backed cache; a stale positive is served while it refreshes in the background; a miss (incl.
- * a relay with no score yet) is fetched on the spot, so "no score" relays re-check on every view. */
+/** Trust assertion for a relay (evaluated relays only), or null for no score. A fresh positive (24h) comes
+ * straight from the disk-backed cache; a stale positive is served while it refreshes in the background; a
+ * fresh null (within NULL_TTL_MS) returns no-score without a query; a stale null or a miss is fetched. */
 export async function fetchTrustScore(pool: Pool, url: string): Promise<TrustScore | null> {
     if (!PROVIDER) return null;
     const key = norm(url);
     const hit = cache.get(key);
-    if (hit && Date.now() - hit.at < STALE_MS) return hit.v; // fresh
-    if (hit) { void fetchOne(pool, key); return hit.v; }     // stale → serve now, refresh in background
-    return fetchOne(pool, key);                              // miss / no score → fetch (null not cached → retries)
+    if (hit) {
+        const fresh = Date.now() - hit.at < (hit.v ? STALE_MS : NULL_TTL_MS);
+        if (fresh) return hit.v;                              // fresh positive (24h) or null (30m) → no query
+        if (hit.v) { void fetchOne(pool, key); return hit.v; } // stale positive → serve now, refresh in background
+        // stale null: fall through and re-check (a relay may have been evaluated since)
+    }
+    return fetchOne(pool, key);                              // miss / stale null → fetch
 }

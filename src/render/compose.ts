@@ -6,7 +6,20 @@ import { randomBytes } from 'node:crypto';
 import { html, raw, type SafeHtml } from '../html.ts';
 import { imgSrc } from './content.ts';
 import { icon } from './svg.ts';
+import { minScheduleValue } from './util.ts';
 import { torStrict } from '../privacy.ts';
+
+/** The revealed "Publish on <datetime> [Schedule]" row, shared by the note (POST /note) and article
+ * (POST /article) composers so the markup can't drift. The clock toggle + reveal are pure CSS (the caller
+ * supplies the #schedule-toggle checkbox + .schedule-btn label). `btnAttrs` carries the note composer's
+ * helmjs swap target (the article posts via its plain boosted form, so it passes none). */
+export function scheduleRow(action: string, btnAttrs: SafeHtml = raw('')): SafeHtml {
+    return html`<div class="schedule-row">
+          <span class="schedule-label">Publish on</span>
+          <input class="schedule-input" type="datetime-local" name="schedule" min="${minScheduleValue()}" aria-label="Schedule for later">
+          <button type="submit" class="ghost schedule-go" name="do" value="schedule" formaction="${action}" formmethod="post"${btnAttrs} title="Publish at this time (the daemon sends it even if your browser is closed)">Schedule</button>
+        </div>`;
+}
 
 /** The compose file input. After an enhanced Attach, /upload re-emits this with
  * `h-oob` so helmjs swaps it (by id) back to empty - otherwise the input keeps

@@ -15,7 +15,6 @@ export interface Appearance {
     newNotesThreshold: number; // new feed posts before the Notes button lights up
     autoLoadMedia: boolean;    // auto-load images & videos (Phase 8 media)
     inlineVideo: boolean;      // load nostr-uploaded videos inline (browser fetches a frame on sight + plays); OFF by default - on, the timeline shows real video frames at the cost of an on-load fetch to each video host (no different from any media fetch); off keeps the no-fetch play facade. YouTube is unaffected (always its own facade).
-    trustScores: boolean;      // show relay trust assertions (kind 30385 from trustedrelays, read off nostr); OFF by default
     reactions: boolean;        // show the like (kind:7 reaction) button on notes/articles; OFF by default (Satori favors zaps + replies)
     reactionNotifs: boolean;   // surface received reactions in notifications; OFF by default
     undoEnabled: boolean;      // hold-before-publish undo window
@@ -29,7 +28,7 @@ const COOKIE = 'satori-appearance';
 
 const DEFAULT_APPEARANCE: Appearance = {
     theme: 'sumi-e', zapPresets: DEFAULT_ZAP_PRESETS,
-    newNotesThreshold: 5, autoLoadMedia: true, inlineVideo: false, trustScores: false,
+    newNotesThreshold: 5, autoLoadMedia: true, inlineVideo: false,
     reactions: false, reactionNotifs: false,
     undoEnabled: true, undoSeconds: 5,
     searchNoteRelays: SEARCH_NOTE_RELAYS, searchProfileRelays: SEARCH_PROFILE_RELAYS,
@@ -65,7 +64,6 @@ export function readAppearance(ctx: Ctx): Appearance {
             if (typeof p.newNotesThreshold === 'number' && p.newNotesThreshold >= 1) a.newNotesThreshold = Math.min(50, Math.floor(p.newNotesThreshold));
             if (typeof p.autoLoadMedia === 'boolean') a.autoLoadMedia = p.autoLoadMedia;
             if (typeof p.inlineVideo === 'boolean') a.inlineVideo = p.inlineVideo;
-            if (typeof p.trustScores === 'boolean') a.trustScores = p.trustScores;
             if (typeof p.reactions === 'boolean') a.reactions = p.reactions;
             if (typeof p.reactionNotifs === 'boolean') a.reactionNotifs = p.reactionNotifs;
             if (typeof p.undoEnabled === 'boolean') a.undoEnabled = p.undoEnabled;

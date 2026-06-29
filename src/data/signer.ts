@@ -18,7 +18,11 @@ const STALE_MS = 90_000;
 // instead of prompting per action. Bare `sign_event` requests signing of all kinds (Satori signs many:
 // notes, reactions, lists, gift-wrapped DMs, profile...); a signer that doesn't honor it just falls back
 // to per-action prompts (today's behavior), so requesting it has no downside.
-const CLIENT_METADATA = JSON.stringify({ name: 'Satori' });
+const CLIENT_METADATA = JSON.stringify({
+    name: 'Satori',
+    url: 'https://github.com/Letdown2491/satori',
+    image: 'https://i.nostr.build/resp/1080p/cQ3Z0JCOpgTHuaLA.png',
+});
 const REQUESTED_PERMS = 'sign_event,nip44_encrypt,nip44_decrypt,nip04_decrypt';
 
 const toHex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');

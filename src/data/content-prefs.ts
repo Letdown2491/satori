@@ -15,6 +15,7 @@ import { KIND_CALENDAR_DATE, KIND_CALENDAR_TIME } from '../nostr/nip52.ts';
 import { KIND_LISTING } from '../nostr/nip99.ts';
 import { VIDEO_KINDS } from '../nostr/nip71.ts';
 import { KIND_HIGHLIGHT } from '../nostr/nip84.ts';
+import { KIND_COMMENT } from '../nostr/nip22.ts';
 
 export type Surface = 'feed' | 'profile';
 
@@ -30,7 +31,9 @@ export interface ContentType {
 // so pulling kind:20 into the feed is mostly redundant noise. Rich kinds are profile-on / feed-off - your
 // profile shows your whole output; your main feed stays note-shaped unless you opt a kind in.
 export const CONTENT_TYPES: ContentType[] = [
-    { id: 'note', label: 'Notes', kinds: [1], feed: true, profile: true },
+    // Notes + NIP-22 comments (kind:1111) ride together: a comment is a reply, the NIP-22 equivalent of a
+    // kind:1 reply, so it's fetched with notes and shown unless you hide replies (see filters.ts hideReplies).
+    { id: 'note', label: 'Notes', kinds: [1, KIND_COMMENT], feed: true, profile: true },
     { id: 'poll', label: 'Polls', kinds: [KIND_POLL], feed: true, profile: true },
     { id: 'picture', label: 'Pictures', kinds: [KIND_PICTURE], feed: false, profile: true },
     { id: 'video', label: 'Videos', kinds: VIDEO_KINDS, feed: false, profile: true },

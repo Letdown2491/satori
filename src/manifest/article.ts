@@ -17,7 +17,7 @@ export const articleHandler: KindHandler<SatoriDeps> = {
     // Warm article reply-presence (keyed by naddr) + the replier avatars for a page of article rows.
     async prepare(events, s, opts) {
         const naddrs = events.map(naddrFor);
-        await ensureArticleReplies(s, naddrs, opts.full);
+        await ensureArticleReplies(s, naddrs, opts.full ? 'paint' : 'race');
         // Replier avatars are a secondary touch (the reply faces); don't block first paint on them -
         // they fill from cache or upgrade on the next render, like the custom-emoji warm.
         void ensureProfiles(s, replierPubkeys(naddrs)).catch(() => {});

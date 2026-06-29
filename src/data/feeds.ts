@@ -87,6 +87,14 @@ export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>
     return mergeNewest(await Promise.all(queries), limit);
 }
 
+/** One page of a SINGLE relay's timeline (the "browse a relay" feed): newest-first events of the user's
+ * feed kinds, paginated by `until`. No outbox routing - it's deliberately "what THIS relay carries". */
+export async function fetchRelayPage(pool: Pool, url: string, limit: number, until: number | undefined, kinds: number[]): Promise<NostrEvent[]> {
+    const filter = { kinds, limit, ...(until ? { until } : {}) };
+    const raw = await pool.query([url], filter, { fast: true }).catch((err) => { console.warn(`[relay-feed] query failed for ${url}:`, err?.message ?? err); return [] as NostrEvent[]; });
+    return mergeNewest([raw], limit);
+}
+
 /** Trending notes from the algorithmic relay (curated single page, relay order).
  * Single external relay with no fallback - a cold/slow connection can return
  * nothing, so an empty first attempt gets one retry before we give up. */
@@ -160,9 +168,15 @@ export async function fetchEventsByIds(pool: Pool, ids: string[], relayHints: st
  * is just the focused note + this - one query, fast. */
 export async function fetchReplies(pool: Pool, noteId: string, relayHints: string[] = []): Promise<NostrEvent[]> {
     const relays = [...new Set([...relayHints, ...INDEXER_RELAYS])];
-    const raw = await pool.query(relays, { kinds: [1], '#e': [noteId], limit: 100 }, { fast: true }).catch(() => []);
+    // NIP-10 kind:1 replies (lowercase `e` = this note) PLUS NIP-22 kind:1111 comments: by lowercase `e`
+    // (direct children of this note/comment) and by uppercase `E` (the whole comment subtree rooted here -
+    // catches nested comments whose immediate `e` parent is another comment). Merge + dedupe across both.
+    const [direct, rooted] = await Promise.all([
+        pool.query(relays, { kinds: [1, 1111], '#e': [noteId], limit: 100 }, { fast: true }).catch(() => [] as NostrEvent[]),
+        pool.query(relays, { kinds: [1111], '#E': [noteId], limit: 100 }, { fast: true }).catch(() => [] as NostrEvent[]),
+    ]);
     const seen = new Set<string>();
-    return raw
+    return [...direct, ...rooted]
         .filter((e) => e.id !== noteId && (seen.has(e.id) ? false : seen.add(e.id)))
         .sort((a, b) => a.created_at - b.created_at);
 }

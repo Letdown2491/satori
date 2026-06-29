@@ -139,9 +139,9 @@ export async function getRelayScore(ctx: Ctx): Promise<void> {
     // attribute/h-target via raw() in relayScoreChip, so allowlist it (legit ids are rscore-…).
     const rawId = ctx.query.get('id') || undefined;
     const id = rawId && /^[A-Za-z0-9_-]+$/.test(rawId) ? rawId : undefined;
-    // Trust scores are off by default; when disabled, never touch the third party (the CSS
-    // hides the chip so this rarely fires, but gate the fetch too as defense-in-depth).
-    if (!url || !readAppearance(ctx).trustScores) { sendFragment(ctx, relayScoreChip(url, null, id)); return; }
+    // Trust assertions are always on (the per-user toggle was removed); an operator can still disable the
+    // whole feature by setting SATORI_TRUST_PROVIDER empty, which makes fetchTrustScore resolve null.
+    if (!url) { sendFragment(ctx, relayScoreChip(url, null, id)); return; }
     const score = await fetchTrustScore(s.pool, url).catch(() => null);
     sendFragment(ctx, relayScoreChip(url, score, id));
 }

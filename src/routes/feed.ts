@@ -6,12 +6,16 @@
 // Following/Followers/Longform paginate (?until cursor + infinite scroll) and
 // carry a "new notes" poller; Beyond is a single curated page.
 
-import { buildFollowsRoute, buildFollowersRoute, fetchRoutedPage, fetchTrendingPage } from '../data/feeds.ts';
-import { html, type SafeHtml } from '../html.ts';
-import { noteList, pagerSentinel, feedClearing } from '../render/note.ts';
-import { emptyItem } from '../render/svg.ts';
+import { buildFollowsRoute, buildFollowersRoute, fetchRoutedPage, fetchTrendingPage, fetchRelayPage } from '../data/feeds.ts';
+import { getFavoriteRelays, toggleFavoriteRelay, normalizeRelayUrl, relayLabel } from '../data/relay-favorites.ts';
+import { relayFeedBar, relayPicker, relayPickerBody, relayPickerPage, favStar } from '../render/relay-feed.ts';
+import { html, join, type SafeHtml } from '../html.ts';
+import { noteList, pagerSentinel, feedClearing, facesOOB } from '../render/note.ts';
+import { ensureReplies, ensureArticleReplies, replierPubkeys } from '../replies.ts';
+import { HEX64 } from '../nostr/tags.ts';
+import { quoteEmpty } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
-import { page, notesHome } from '../render/layout.ts';
+import { page, notesHome, feedSwitch } from '../render/layout.ts';
 import { readAppearance } from '../theme.ts';
 import { readReadState, advanceReadState } from '../read-state.ts';
 import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
@@ -96,6 +100,27 @@ const pageSize = (tab: FeedTab) => (tab === 'longform' ? LONGFORM_PAGE : PAGE);
 // the user's per-kind visibility prefs (notes/polls by default, rich kinds opt-in).
 const kindsFor = (tab: FeedTab, me: string) => (tab === 'longform' ? FEED_KINDS.longform : feedKinds(me));
 
+// A feed SOURCE: one of the four routed/curated tabs, OR a single relay's timeline ("browse a relay").
+// fillPage/buildFeed are source-agnostic; only the source-specific bits below (fetch, cache key, kinds,
+// pagesize, pagination, sentinel) branch. A relay source is plain infinite scroll, kinds = the user's feed
+// prefs, NOT cached (no TTL for its key → cachedFeed/putCachedFeed simply no-op), and gets the Commons-style
+// `mute` treatment (a stranger feed). No caught-up boundary - that's a Following-only concept.
+export type FeedSource = { tab: FeedTab } | { relay: string };
+const isRelay = (src: FeedSource): src is { relay: string } => 'relay' in src;
+const srcKey = (src: FeedSource): string => (isRelay(src) ? `relay:${src.relay}` : src.tab);
+const srcPageSize = (src: FeedSource): number => (isRelay(src) ? PAGE : pageSize(src.tab));
+const srcPaginates = (src: FeedSource): boolean => (isRelay(src) ? true : paginates(src.tab));
+const srcKinds = (src: FeedSource, me: string): number[] => (isRelay(src) ? feedKinds(me) : kindsFor(src.tab, me));
+const srcIsCommons = (src: FeedSource): boolean => !isRelay(src) && src.tab === 'commons';
+const srcMutes = (src: FeedSource): boolean => isRelay(src) || srcIsCommons(src);
+function srcSentinel(src: FeedSource, until: number): SafeHtml {
+    return isRelay(src) ? pagerSentinel(`/relay?r=${encodeURIComponent(src.relay)}&until=${until}`) : sentinel(src.tab, until);
+}
+async function srcFetch(s: Session & { me: string }, src: FeedSource, until?: number, limit?: number): Promise<NostrEvent[]> {
+    if (isRelay(src)) return fetchRelayPage(s.pool, src.relay, limit ?? PAGE, until, srcKinds(src, s.me)).catch(() => [] as NostrEvent[]);
+    return fetchPage(s, src.tab, until, limit);
+}
+
 /** The outbox route for a tab (cached on the session). Beyond has no route. */
 async function routeFor(s: Session & { me: string }, tab: FeedTab): Promise<Map<string, Set<string>>> {
     if (tab === 'commons') return new Map();
@@ -134,7 +159,7 @@ const OVERFETCH = 3;  // when filtering, the first window pulls this many × tar
  * (the un-consumed tail is simply re-read by the next window). Returns the visible notes, the raw
  * events consumed (for the list-primer's private-list check), a `more` sentinel, and the newest
  * raw timestamp (the notes-dot high-water). */
-async function fillPage(s: Session & { me: string }, tab: FeedTab, until?: number): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number }> {
+async function fillPage(s: Session & { me: string }, src: FeedSource, until?: number): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number }> {
     // Load the lists CONCURRENTLY with the first page fetch, not serially before it: mute is only
     // needed once the page returns (filtering), bookmark/pin only at render. Awaited inside the loop
     // after the fetch (so it overlaps it) - saves ~1 round-trip on a cold paint (a full ~12s on Tor).
@@ -142,8 +167,8 @@ async function fillPage(s: Session & { me: string }, tab: FeedTab, until?: numbe
     const filt = compileFilters(getFilters(s.me), 'feed');
     let muted = new Set<string>(); // filled once listsReady resolves (first iteration), before any keep()
     const keep = (e: NostrEvent): boolean => !muted.has(e.pubkey) && !filt.hide(e);
-    const target = pageSize(tab);
-    const anchorable = paginates(tab);
+    const target = srcPageSize(src);
+    const anchorable = srcPaginates(src);
     const overfetch = filt.active && anchorable; // Beyond is a single curated page → never over-fetch
     const visible: NostrEvent[] = [];
     const allRaw: NostrEvent[] = [];
@@ -155,14 +180,14 @@ async function fillPage(s: Session & { me: string }, tab: FeedTab, until?: numbe
         // re-visit; cache only on a miss (so the TTL stays bounded, not refreshed on every visit).
         let page: NostrEvent[];
         if (i === 0 && until === undefined) {
-            const cached = cachedFeed(s.me, tab);
+            const cached = cachedFeed(s.me, srcKey(src));
             if (cached) page = cached;
             // Cache only a NON-EMPTY result: a transient empty (e.g. Beyond's external relay returning
             // nothing on a cold pooled connection) must not get cached, or it'd blank the tab for the
             // whole TTL. An empty page just falls through to a fresh fetch on the next visit.
-            else { page = await fetchPage(s, tab, cursor, lim); if (page.length) putCachedFeed(s.me, tab, page); }
+            else { page = await srcFetch(s, src, cursor, lim); if (page.length) putCachedFeed(s.me, srcKey(src), page); }
         } else {
-            page = await fetchPage(s, tab, cursor, lim);
+            page = await srcFetch(s, src, cursor, lim);
         }
         if (i === 0) { await listsReady; muted = mutedPubkeys(s); } // lists overlapped the fetch above; ready before any keep()
         if (!page.length) { exhausted = true; break; }
@@ -178,19 +203,20 @@ async function fillPage(s: Session & { me: string }, tab: FeedTab, until?: numbe
     // prefetch out per kind (notes warm by id, articles by naddr) and hydrates the replier avatars,
     // so this stays free of `kind ===` branching. The Commons is uncached + relay-slow, so it waits
     // fully for its reply-faces (full=true), else they reliably miss the bounded window on first load.
-    await Promise.all([ensureProfiles(s, [s.me, ...notePubkeys(visible)]), ensureLikes(s, visible.map((e) => e.id)), ensureEngaged(s, visible.map(engageTarget)), ensureZaps(s), prepareEvents(visible, s, { full: tab === 'commons' })]);
-    const more = anchorable && !exhausted ? sentinel(tab, cursor!) : null;
+    await Promise.all([ensureProfiles(s, [s.me, ...notePubkeys(visible)]), ensureLikes(s, visible.map((e) => e.id)), ensureEngaged(s, visible.map(engageTarget)), ensureZaps(s), prepareEvents(visible, s, { full: srcIsCommons(src) })]);
+    const more = anchorable && !exhausted ? srcSentinel(src, cursor!) : null;
     return { visible, allRaw, more, newestRaw };
 }
 
-async function buildFeed(s: Session & { me: string }, tab: FeedTab, until?: number): Promise<{ content: SafeHtml; newestTs: number | undefined; events: NostrEvent[] }> {
-    const { visible, allRaw, more, newestRaw } = await fillPage(s, tab, until);
-    const anchorable = paginates(tab);
-    // nip07: kick off the private-list decrypt as the feed lands, then it re-renders.
-    const primer = pendingPrivateKinds(s).length ? listPrimer({ tab }) : null;
+async function buildFeed(s: Session & { me: string }, src: FeedSource, until?: number): Promise<{ content: SafeHtml; newestTs: number | undefined; events: NostrEvent[] }> {
+    const { visible, allRaw, more, newestRaw } = await fillPage(s, src, until);
+    const anchorable = srcPaginates(src);
+    // nip07: kick off the private-list decrypt as the feed lands, then it re-renders. Tab feeds only - the
+    // primer re-renders a TAB's #feed; a relay feed skips it (private mutes just apply once you visit a tab).
+    const primer = !isRelay(src) && pendingPrivateKinds(s).length ? listPrimer({ tab: src.tab }) : null;
     const body = visible.length === 0 && allRaw.length === 0
-        ? emptyItem(quote(tab === 'commons' ? 'commons' : 'empty'))
-        : html`${noteList(visible, s.profiles, s, { mute: tab === 'commons' })}${more}`;
+        ? quoteEmpty(quote(srcIsCommons(src) ? 'commons' : 'empty'))
+        : html`${noteList(visible, s.profiles, s, { mute: srcMutes(src), faces: true })}${more}`;
     return {
         content: html`<ul class="feed" id="feed">${body}</ul>${primer}`,
         newestTs: anchorable ? (newestRaw || Math.floor(Date.now() / 1000)) : undefined,
@@ -220,12 +246,12 @@ async function serveFeed(ctx: Ctx, tab: FeedTab): Promise<void> {
     // Infinite-scroll partial: just the next notes + a fresh sentinel. Loop-fill keeps each
     // scroll increment ~pageSize even when filters/mutes thin the raw windows.
     if (ctx.isPartial && ctx.hTarget === '#more') {
-        const { visible, more } = await fillPage(s, tab, until);
-        sendFragment(ctx, html`${noteList(visible, s.profiles, s, { mute: tab === 'commons' })}${more}`);
+        const { visible, more } = await fillPage(s, { tab }, until);
+        sendFragment(ctx, html`${noteList(visible, s.profiles, s, { mute: tab === 'commons', faces: true })}${more}`);
         return;
     }
 
-    const { content, newestTs } = await buildFeed(s, tab, until);
+    const { content, newestTs } = await buildFeed(s, { tab }, until);
     if (until === undefined && newestTs) markFeedSeen(ctx, s, tab, newestTs); // viewing the feed = seen
     sendPage(ctx, content, chromeFor(ctx, s, { active: 'feed', feedTab: tab, notesSince: newestTs }));
 }
@@ -245,20 +271,20 @@ function followingBoundary(ctx: Ctx, me: string): number {
 }
 
 /** The Following LANDING view: the new-since-your-last-visit set, capped to ONE window (never auto-paged
- * past it), then a clearing. Reaching the clearing marks you caught up (its intersect); "Continue reading"
+ * past it), then a clearing. Reaching the clearing marks you caught up (its intersect); "View older posts"
  * loads the next batch on a deliberate tap. Shared by the route and the nip07 list-primer re-render. */
 async function followingFirstView(s: Session & { me: string }, boundary: number): Promise<{ inner: SafeHtml; newestTs: number; events: NostrEvent[] }> {
-    const { visible, allRaw, more, newestRaw } = await fillPage(s, 'following', undefined);
+    const { visible, allRaw, more, newestRaw } = await fillPage(s, { tab: 'following' }, undefined);
     const newVisible = visible.filter((e) => e.created_at > boundary);
     const reached = visible.some((e) => e.created_at <= boundary) || more === null; // saw all the new in one window
     const moreExists = more !== null || visible.length > newVisible.length; // more pages, or older notes held in this window
     const contFrom = (newVisible.length ? newVisible[newVisible.length - 1]!.created_at : newestRaw) - 1;
     const clearing = feedClearing({ caughtUp: reached, markTs: newestRaw || undefined, more: moreExists && contFrom > 0 ? contFrom : undefined });
-    return { inner: html`${noteList(newVisible, s.profiles, s)}${clearing}`, newestTs: newestRaw, events: allRaw };
+    return { inner: html`${noteList(newVisible, s.profiles, s, { faces: true })}${clearing}`, newestTs: newestRaw, events: allRaw };
 }
 
 /** GET / (Following) with the original Satori "caught up" boundary - now in BATCHES (model B): one window
- * + a clearing, and each "Continue reading" (a deliberate, click-only tap) loads exactly one more batch
+ * + a clearing, and each "View older posts" (a deliberate, click-only tap) loads exactly one more batch
  * that also ends in a clearing. The scroll never runs away; you choose each step. Mark-seen happens on
  * CATCH-UP (the first clearing's intersect → /feed/seen), never on load, so "new since you left" stays true. */
 async function serveFollowing(ctx: Ctx, s: Session & { me: string }, until?: number): Promise<void> {
@@ -274,9 +300,9 @@ async function serveFollowing(ctx: Ctx, s: Session & { me: string }, until?: num
     // CONTINUE: a deliberate next batch (one window + its own clearing + the next "Continue"). No mark-seen
     // (the first clearing already did); no new/old split (you've chosen to keep reading older notes).
     if (batch) {
-        const { visible, more } = await fillPage(s, 'following', until);
+        const { visible, more } = await fillPage(s, { tab: 'following' }, until);
         const oldest = visible.length ? visible[visible.length - 1]!.created_at : undefined;
-        wrapPage(html`${noteList(visible, s.profiles, s)}${feedClearing({ caughtUp: false, more: more !== null && oldest ? oldest - 1 : undefined })}`);
+        wrapPage(html`${noteList(visible, s.profiles, s, { faces: true })}${feedClearing({ caughtUp: false, more: more !== null && oldest ? oldest - 1 : undefined })}`);
         return;
     }
 
@@ -334,6 +360,85 @@ export const getFeed = (ctx: Ctx) => serveFeed(ctx, 'following');
 export const getFollowers = (ctx: Ctx) => serveFeed(ctx, 'followers');
 export const getCommons = (ctx: Ctx) => serveFeed(ctx, 'commons');
 export const getLongform = (ctx: Ctx) => serveFeed(ctx, 'longform');
+
+/** GET /relay?r=<wss url> - browse a single relay's timeline (saved or ad-hoc). Plain infinite scroll
+ * through the shared fill/filter/enrich machinery; no caught-up boundary, no mark-seen (the dot tracks
+ * Following only). An invalid / disallowed relay url falls back to the home feed. */
+export async function getRelay(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const url = normalizeRelayUrl(ctx.query.get('r') ?? '');
+    if (!url) { redirect(ctx, '/'); return; }
+    const src: FeedSource = { relay: url };
+    const untilParam = ctx.query.get('until');
+    const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;
+    // One favorites read: derive both the title's saved-name and the bar's star state (url is normalized).
+    const fav = getFavoriteRelays(s.me).find((r) => r.url === url);
+    const title = relayLabel(url, fav?.name);
+
+    if (ctx.isPartial && ctx.hTarget === '#more') {
+        const { visible, more } = await fillPage(s, src, until);
+        sendFragment(ctx, html`${noteList(visible, s.profiles, s, { mute: true, faces: true })}${more}`);
+        return;
+    }
+    const { content } = await buildFeed(s, src, until);
+    const body = html`${relayFeedBar(url, !!fav)}${content}`;
+    sendPage(ctx, body, chromeFor(ctx, s, { active: 'feed', title, relayLabel: title }));
+}
+
+/** GET /faces?keys=<note-id|naddr,...> - the lazy post-paint reply-faces hydrate. A feed/profile page paints
+ * with empty face slots (presence is best-effort + usually cold off Following); this fires once on load,
+ * warms presence for the page's COLD keys (blocking, even on Tor - paint already happened), and returns an
+ * OOB faces swap for each key that has repliers. Partial-only; a direct hit is a 204 no-op. */
+export async function getFaces(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    if (!ctx.isPartial) { ctx.res.writeHead(204); ctx.res.end(); return; }
+    const keys = (ctx.query.get('keys') ?? '').split(',').map((k) => k.trim()).filter(Boolean).slice(0, 100);
+    const noteIds = keys.filter((k) => HEX64.test(k));
+    const naddrs = keys.filter((k) => k.startsWith('naddr'));
+    await Promise.all([ensureReplies(s, noteIds, 'lazy'), ensureArticleReplies(s, naddrs, 'lazy')]);
+    await ensureProfiles(s, replierPubkeys(keys)).catch(() => {});
+    const els = keys.map((k) => facesOOB(k, s)).filter((x): x is SafeHtml => x !== null);
+    sendFragment(ctx, els.length ? join(els) : html``);
+}
+
+/** The user's own relays (read ∪ write, deduped) - the relay picker's quick-pick list. Deliberately NOT
+ * readRelaysFor (that folds in INDEXER_RELAYS, which aren't relays you'd browse as a timeline). */
+const myRelayUrls = (s: Session & { me: string }): string[] =>
+    [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? [])])];
+
+/** GET /relay/pick - the relay picker (the switcher's "Browse a relay…"): type any relay URL to browse, or
+ * pick a favorite / one of your own relays. helmjs path = a modal fragment + an OOB that closes the switcher
+ * <details> (a partial swap leaves the native dropdown open behind the modal otherwise); direct nav / zero-JS
+ * = the same picker as a full page. Everything inline - no settings. */
+export async function getRelayPick(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const mine = myRelayUrls(s);
+    const favs = getFavoriteRelays(s.me);
+    if (ctx.isPartial) {
+        const rl = ctx.query.get('rl') || undefined;
+        sendFragment(ctx, html`${relayPicker(favs, mine)}${feedSwitch(tabParam(ctx), rl, true)}`);
+    } else {
+        sendPage(ctx, relayPickerPage(favs, mine), chromeFor(ctx, s, { active: 'feed', title: 'Browse a relay' }));
+    }
+}
+
+/** POST /relay/favorite?r=<url>[&from=pick] - toggle a relay favorite (the star). Re-renders the picker
+ * list (from=pick) or the relay-bar star (default). */
+export async function postRelayFavorite(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const url = normalizeRelayUrl(ctx.query.get('r') ?? '');
+    if (!url) { ctx.res.writeHead(204); ctx.res.end(); return; }
+    const fav = toggleFavoriteRelay(s.me, url);
+    if (ctx.query.get('from') === 'pick') {
+        sendFragment(ctx, relayPickerBody(getFavoriteRelays(s.me), myRelayUrls(s)));
+    } else {
+        sendFragment(ctx, favStar(url, fav));
+    }
+}
 
 /** The full Following-feed document - used by sign-in / post-note continuations. Renders the BATCHED
  * "caught up" boundary view (followingFirstView), the same as the GET / landing - NOT buildFeed's infinite
@@ -395,7 +500,7 @@ export async function postListPrimed(ctx: Ctx): Promise<void> {
     // decrypted lists actually change a visible note, so the feed doesn't flash for nothing.
     const { content, events } = tab === 'following'
         ? await followingFirstView(s, bnd ?? followingBoundary(ctx, s.me)).then((r) => ({ content: html`<ul class="feed" id="feed">${r.inner}</ul>`, events: r.events }))
-        : await buildFeed(s, tab);
+        : await buildFeed(s, { tab });
     if (!privateAffectsPage(s, events)) { ctx.res.writeHead(204); ctx.res.end(); return; }
     sendFragment(ctx, content, { 'H-Reswap': 'outer', 'H-Retarget': '#feed' });
 }

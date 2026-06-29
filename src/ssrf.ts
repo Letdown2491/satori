@@ -9,18 +9,34 @@
 import net from 'node:net';
 import { lookup as dnsLookup, type LookupAddress, type LookupOptions } from 'node:dns';
 
-export function isPublicHttpUrl(raw: string): boolean {
-    let u: URL;
-    try { u = new URL(raw); } catch { return false; }
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+/** The shared private/loopback/link-local host screen, applied after each scheme's protocol check. One
+ * copy so a new private-host rule (e.g. another metadata IP) can't be added to the http guard but missed on
+ * the ws one. IP literals are validated here; a bare hostname is allowed (DNS rebinding is closed at CONNECT
+ * time by safeLookup, not here - and under Tor the SOCKS proxy resolves remotely anyway). */
+function screenHost(u: URL): boolean {
     // Node returns IPv6 hostnames wrapped in brackets ("[::1]"); strip them before any
     // check, or every IPv6 literal silently bypasses the guard.
     const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (host === 'localhost' || host === '0.0.0.0' || host.endsWith('.local') || host.endsWith('.internal')) return false;
     if (net.isIPv4(host)) return isPublicIPv4(host);
     if (net.isIPv6(host)) return isPublicIPv6(host);
-    // A hostname (not an IP literal) - allow. DNS rebinding is out of the threat model.
-    return true;
+    return true; // a hostname (not an IP literal)
+}
+
+export function isPublicHttpUrl(raw: string): boolean {
+    let u: URL;
+    try { u = new URL(raw); } catch { return false; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    return screenHost(u);
+}
+
+/** Like isPublicHttpUrl but for nostr relay urls (ws/wss): "browse a relay" lets the user aim the daemon
+ * at an arbitrary relay, so the same host screen applies - it must not become a probe of internal services. */
+export function isPublicWsUrl(raw: string): boolean {
+    let u: URL;
+    try { u = new URL(raw); } catch { return false; }
+    if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return false;
+    return screenHost(u);
 }
 
 /** True iff the dotted-quad IPv4 is not loopback / private / link-local / unspecified. */

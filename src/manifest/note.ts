@@ -14,7 +14,7 @@ export const noteHandler: KindHandler<SatoriDeps> = {
     // Warm note reply-presence (keyed by event id) + the replier avatars for a page of note rows.
     async prepare(events, s, opts) {
         const ids = events.map((e) => e.id);
-        await ensureReplies(s, ids, opts.full);
+        await ensureReplies(s, ids, opts.full ? 'paint' : 'race');
         // Replier avatars are a secondary touch (the reply faces); don't block first paint on them -
         // they fill from cache or upgrade on the next render, like the custom-emoji warm.
         void ensureProfiles(s, replierPubkeys(ids)).catch(() => {});

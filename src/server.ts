@@ -17,7 +17,7 @@ import { getScheduled, postScheduledCancel } from './routes/scheduled.ts';
 import { prunePersisted, persistedPubkeys } from './store.ts';
 import { adoptOwnerIfUnclaimed, accessMode } from './access.ts';
 import { getSession, isLoggedIn } from './session.ts';
-import { getFeed, getFollowers, getCommons, getLongform, getNotesDot, getFeedSeen, getListPrime, postListPrimed } from './routes/feed.ts';
+import { getFeed, getFollowers, getCommons, getLongform, getRelay, getRelayPick, postRelayFavorite, getFaces, getNotesDot, getFeedSeen, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
 import { getProfile, getProfileExtras, getThread, getThreadPrivate, postThreadPrivateSeals, postThreadPrivateRumors, getArticle, getEmbed } from './routes/read.ts';
 import { getHandlers } from './routes/handlers.ts';
@@ -143,6 +143,10 @@ const ROUTES: Route[] = [
     route('GET', '/followers', getFollowers),
     route('GET', '/commons', getCommons),
     route('GET', '/longform', getLongform),
+    route('GET', '/faces', getFaces),
+    route('GET', '/relay', getRelay),
+    route('GET', '/relay/pick', getRelayPick),
+    route('POST', '/relay/favorite', postRelayFavorite),
     route('GET', '/notes/dot', getNotesDot),
     route('GET', '/feed/seen', getFeedSeen),
     route('GET', '/notes/list-prime', getListPrime),
@@ -223,11 +227,56 @@ const STATIC: Record<string, { file: string; type: string }> = {
     '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
 };
 
-// Gzip on the fly, cached by mtime: the first request (or the first after an edit)
-// compresses + caches both buffers; later requests are a Map hit. Keyed by mtime so
-// editing styles.css / swapping in a new helm.js is picked up automatically - no
-// stale .gz on disk to keep in sync, and no manual re-gzip step. `no-cache` keeps the
-// live-edit-shows-on-reload behavior; `Vary` so a proxy can't cross-serve encodings.
+// Conservative, string-safe CSS minify (the JS we serve is already dist-minified, so this
+// only ever runs on styles.css). One pass: comment markers and whitespace tightening are
+// applied to code segments only - string literals ('...' / "...") are copied verbatim so a
+// `content:` value or `url("...")` is never touched. We deliberately do NOT tighten around
+// `:` or combinators (`+`/`~`/`>`): the savings are sub-1% gzipped and the risk (breaking
+// `calc(100% + 8px)` or `[x] :hover` descendant selectors) is not worth it. Stripping the
+// port's ~36KB of prose comments is where ~all the win is: 35.4KB -> 17.2KB gzipped.
+function minifyChunk(s: string): string {
+    return s
+        .replace(/\s+/g, ' ')
+        .replace(/\s*([{};])\s*/g, '$1')
+        .replace(/\s*,\s*/g, ',')
+        .replace(/;}/g, '}');
+}
+function minifyCss(src: string): string {
+    let out = '', code = '', i = 0;
+    const n = src.length;
+    const flush = () => { out += minifyChunk(code); code = ''; };
+    while (i < n) {
+        const c = src[i]!;
+        if (c === '/' && src[i + 1] === '*') {          // comment -> drop, acts as a separator
+            i += 2;
+            while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+            i += 2;
+            code += ' ';
+            continue;
+        }
+        if (c === '"' || c === "'") {                   // string literal -> copy verbatim
+            flush();
+            const q = c;
+            out += c; i++;
+            while (i < n) {
+                const ch = src[i]!;
+                out += ch; i++;
+                if (ch === '\\') { if (i < n) { out += src[i]!; i++; } continue; }
+                if (ch === q) break;
+            }
+            continue;
+        }
+        code += c; i++;
+    }
+    flush();
+    return out.trim();
+}
+
+// Minify (CSS only) + gzip on the fly, cached by mtime: the first request (or the first after
+// an edit) builds + caches both buffers; later requests are a Map hit. Keyed by mtime so editing
+// styles.css / swapping in a new helm.js is picked up automatically - no stale .min/.gz on disk
+// to keep in sync, and no build step (the source stays readable + commented). `no-cache` keeps
+// the live-edit-shows-on-reload behavior; `Vary` so a proxy can't cross-serve encodings.
 const staticCache = new Map<string, { mtimeMs: number; raw: Buffer; gz: Buffer }>();
 async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string): Promise<boolean> {
     const entry = STATIC[path];
@@ -237,8 +286,9 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, path: stri
         const { mtimeMs } = await stat(full);
         let c = staticCache.get(entry.file);
         if (!c || c.mtimeMs !== mtimeMs) {
-            const raw = await readFile(full);
-            c = { mtimeMs, raw, gz: gzipSync(raw) };
+            const buf = await readFile(full);
+            const body = entry.type.startsWith('text/css') ? Buffer.from(minifyCss(buf.toString('utf8'))) : buf;
+            c = { mtimeMs, raw: body, gz: gzipSync(body) };
             staticCache.set(entry.file, c);
         }
         const gzip = (req.headers['accept-encoding'] ?? '').includes('gzip');

@@ -10,7 +10,7 @@ import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import { articleReader } from '../render/note.ts';
 import { articleComposePage, draftsView, draftsScreen, draftRow, draftsSyncShell, draftDomId, draftSyncStatus, autoSyncTrigger, type ArticleComposeCtx } from '../render/article-compose.ts';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type ArticleDraft, type Draft } from '../drafts.ts';
-import { listScheduled } from '../data/scheduled.ts';
+import { holdScheduled, SCHEDULE_FULL_MSG, listScheduled } from '../data/scheduled.ts';
 import { syncDraft, unsyncDraft, fetchSyncedDrafts, draftToEvent, publishDraftWrap, fetchDraftWraps, draftFromDecrypted } from '../data/draft-sync.ts';
 import { serializeDraft, draftWrapTemplate, KIND_DRAFT } from '../nostr/nip37.ts';
 import { page } from '../render/layout.ts';
@@ -54,11 +54,26 @@ export async function postArticle(ctx: Ctx): Promise<void> {
     if (!f.title) { back('Add a title.'); return; }
     if (!f.body) { back('Write something first.'); return; }
 
+    // Schedule: sign now with created_at = the chosen time, hold on disk, the sweep broadcasts it then.
+    // The editable draft is KEPT (a scheduled article can only be cancelled, not edited; cancelling reverts
+    // to the draft), so we skip the draft-wrap retire dance here.
+    let scheduledAt = 0;
+    if (form.get('do') === 'schedule') {
+        const t = new Date((form.get('schedule') ?? '').trim()).getTime();
+        scheduledAt = isNaN(t) ? 0 : Math.floor(t / 1000);
+        if (!scheduledAt || scheduledAt <= Math.floor(Date.now() / 1000)) { back('Pick a time in the future to schedule.'); return; }
+    }
+    const fields: ArticleFields = scheduledAt ? { ...f, createdAt: scheduledAt } : f;
+
     // nip07: build the exact 30023 template; the extension signs it. If this draft was synced,
     // batch-sign the article + a BLANK wrap (one prompt) so publishing also retires the draft wrap
-    // (else it would resurrect on the next /drafts load).
+    // (else it would resurrect on the next /drafts load). Scheduling keeps the draft, so it skips that.
     if (signsOnClient(s)) {
-        const prepared = await signArticle(captureSigner, s.me, s.myRelays!, f);
+        const prepared = await signArticle(captureSigner, s.me, s.myRelays!, fields);
+        if (scheduledAt) {
+            sendSignRequest(ctx, prepared.signed, `/article/publish?d=${encodeURIComponent(f.identifier)}&schedule=${scheduledAt}`);
+            return;
+        }
         const draft = getDraft(s.me, f.identifier);
         if (draft?.synced) {
             const blank = draftWrapTemplate(s.me, f.identifier, draftToEvent(draft, s.me).kind, '');
@@ -69,9 +84,14 @@ export async function postArticle(ctx: Ctx): Promise<void> {
         return;
     }
 
-    // bunker: sign + publish here, then land on the reader.
+    // bunker: sign + publish (or hold for the sweep) here, then land on the reader (or /drafts).
     try {
-        const prepared = await signArticle(s.signer!, s.me, s.myRelays!, f);
+        const prepared = await signArticle(s.signer!, s.me, s.myRelays!, fields);
+        if (scheduledAt) {
+            if (!holdScheduled(s.me, prepared.signed, scheduledAt, prepared.writeTargets)) { back(SCHEDULE_FULL_MSG); return; }
+            redirect(ctx, '/drafts');
+            return;
+        }
         await publishSigned(s.pool, prepared);
     } catch (err) {
         back(`Couldn't publish: ${err instanceof Error ? err.message : String(err)}`);
@@ -332,10 +352,25 @@ function fieldsFromSigned(ev: NostrEvent | null): ArticleComposeCtx {
     };
 }
 
+/** nip07 continuation for a SCHEDULED article: verify the extension-signed 30023, hold it for the sweep,
+ * and land on /drafts. The editable draft is kept (a scheduled post reverts to it on cancel). */
+async function articleSchedule(ctx: Ctx, s: Session & { me: string }, schedule: number): Promise<void> {
+    const signed = await readSignedEvent(ctx.req);
+    const fail = (error: string, status: number): void =>
+        sendFragment(ctx, page(articleComposePage({ ...fieldsFromSigned(signed as NostrEvent | null), error }), chromeFor(ctx, s, { active: 'compose', title: 'Article' })),
+            { 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' }, status);
+    if (!signed || signed.pubkey !== s.me || signed.kind !== KIND_ARTICLE) { fail("Couldn't verify the signed article.", 400); return; }
+    if (!holdScheduled(s.me, signed as NostrEvent, schedule, s.myRelays?.write ?? [])) { fail(SCHEDULE_FULL_MSG, 400); return; }
+    sendFragment(ctx, page(draftsScreen(listScheduled(s.me), listDrafts(s.me)), chromeFor(ctx, s, { active: 'drafts', title: 'Drafts' })),
+        { 'H-Push-Url': '/drafts', 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' });
+}
+
 /** nip07 continuation: verify the extension-signed article, publish, land on it. */
 export async function postArticlePublish(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
+    const schedule = Number(ctx.query.get('schedule')) || 0;
+    if (schedule > Math.floor(Date.now() / 1000)) { await articleSchedule(ctx, s, schedule); return; } // hold for the sweep
     if (ctx.query.get('retire')) { await articlePublishRetire(ctx, s); return; } // batched [article, blank wrap]
     const signed = await readSignedEvent(ctx.req);
     // The sign request set H-Reswap:none, so an error fragment with no retarget would nest the

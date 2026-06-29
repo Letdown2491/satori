@@ -8,6 +8,15 @@ import type { Profile } from '../data/profiles.ts';
 
 export type ProfileMap = Map<string, Profile>;
 
+/** The `min` attribute for a schedule datetime-local input: ~1 minute from now in the
+ * local tz (the daemon's tz == the single user's). Shared by the note, poll, and article
+ * composers so "schedule for later" can't be set to a past time. */
+export function minScheduleValue(): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    const d = new Date(Date.now() + 60_000);
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** Avatar image (Satori markup): the picture if safe, over a deterministic ink
  * tint so a missing/loading image still reads as a filled disc. */
 export function avatar(pubkey: string, picture: string | undefined, size?: 'sm' | 'xs' | 'lg'): SafeHtml {

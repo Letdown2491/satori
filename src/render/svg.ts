@@ -38,6 +38,13 @@ export function emptyItem(line: string, sub?: string): SafeHtml {
     return html`<li class="empty">${enso(40, true)}<span>${line}</span>${sub ? html`<span class="empty-sub">${sub}</span>` : null}</li>`;
 }
 
+/** An empty TIMELINE state in the calm "clearing" look (matches the notifications page): a contemplative
+ * quote in quotation marks OVER a still ensō seal - vs emptyItem's ensō-over-a-utilitarian-line, which stays
+ * for not-found / loading / count-zero messages. */
+export function quoteEmpty(line: string): SafeHtml {
+    return html`<li class="empty"><span>“${line}”</span>${enso(40, true)}</li>`;
+}
+
 /** The brush-texture filter + dry-brush mask the ensō references. Inlined once
  * per page (position:absolute, zero-size). Verbatim from Satori's index.html. */
 export const ENSO_DEFS: SafeHtml = raw(`<svg width="0" height="0" class="enso-defs" aria-hidden="true">

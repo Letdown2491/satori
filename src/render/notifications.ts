@@ -3,9 +3,7 @@
 
 import { html, type SafeHtml } from '../html.ts';
 import { npubEncode, neventEncode } from 'nostr-tools/nip19';
-import { noteCard } from './note.ts';
-import { enso } from './svg.ts';
-import { quote } from './quotes.ts';
+import { noteCard, caughtUpClearing } from './note.ts';
 import { avatar, displayName, timeAgo, type ProfileMap } from './util.ts';
 import { withEmoji } from './content.ts';
 import { emojiFromTags } from '../nostr/nip30.ts';
@@ -15,15 +13,15 @@ import { parseZapReceipt, type Notif } from '../data/notifications.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
 
-/** The "caught up" clearing that closes the NEW set. The trailing ensō IS the quiet gateway to your
- * already-seen history when `olderUntil` is given (an unlabeled, hover/touch-discovered gesture - we
- * don't invite a backlog scroll the moment you're caught up); it stays a real link (aria-label + keyboard
- * focus). `hadNew` is whether any new items sit above it - if not, the calm "you're all caught up" state. */
-export function notifCaughtUp(hadNew: boolean, olderUntil?: number): SafeHtml {
-    const seal = olderUntil !== undefined
-        ? html`<a class="enso-link" href="/notifications?seen=1&until=${String(olderUntil)}" h-get h-target="#notif-clearing" h-swap="outer" h-push-url="false" aria-label="See older notifications" title="See older notifications">${enso(40, true)}</a>`
-        : enso(40, true);
-    return html`<li class="empty notif-clearing" id="notif-clearing"><span>${quote('caughtUp')}</span>${hadNew ? null : html`<span class="empty-sub">You’re all caught up.</span>`}${seal}</li>`;
+/** The "caught up" clearing that closes the NEW set. When `olderUntil` is given there's already-seen
+ * history below, so we show an explicit "View older notifications" link (it used to be a hidden tappable
+ * ensō that people didn't know to click - a message is clearer). With nothing older, the calm closing
+ * ensō seal stands alone below the contemplative line. */
+export function notifCaughtUp(olderUntil?: number): SafeHtml {
+    return caughtUpClearing({
+        id: 'notif-clearing', cls: 'notif-clearing', older: olderUntil,
+        href: `/notifications?seen=1&until=${String(olderUntil)}`, label: 'View older notifications →',
+    });
 }
 
 function profileLink(pubkey: string, profiles: ProfileMap): SafeHtml {

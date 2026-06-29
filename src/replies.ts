@@ -16,26 +16,32 @@ function followSet(s: Session & { me: string }): Set<string> {
     return new Set(listTags(s, 3).filter((t) => t[0] === 'p' && t[1]).map((t) => t[1]!));
 }
 
-// The query always kicks off (filling the TTL cache); how long we WAIT before painting is bounded so
-// it can't hang the feed: Tor (relays ~12s) → don't wait, faces fill next render; clearnet → a short
-// deadline so faces usually make first paint. Either way the in-flight query populates the cache.
+// The query always kicks off (filling the TTL cache); how long we WAIT is bounded by the WAIT MODE so it
+// can't hang first paint:
+//   'race'  - first-paint default: a short clearnet deadline (faces usually make it); Tor fire-and-forget.
+//   'paint' - first-paint, clearnet block (a slow always-uncached single page, The Commons), so faces are
+//             ready on first load; Tor still fire-and-forget (don't hang ~12s relays on paint).
+//   'lazy'  - POST-paint hydration (the /faces endpoint): wait FULLY, even on Tor - the page already
+//             painted, so a background swap can afford to wait for the relays.
+// Either way the in-flight query populates the TTL cache.
+export type WaitMode = 'race' | 'paint' | 'lazy';
 const PRESENCE_DEADLINE_MS = 800;
-async function bounded(q: Promise<unknown>, full: boolean): Promise<void> {
-    if (relaysViaTor()) return;     // Tor: fire-and-forget (relays ~12s; faces fill next render)
-    if (full) { await q; return; }  // wait fully - for a slow, always-uncached single page (The Commons),
-                                    // so faces are ready on FIRST load; the pool caps the query at ~4s anyway.
+async function bounded(q: Promise<unknown>, mode: WaitMode): Promise<void> {
+    if (mode === 'lazy') { await q; return; }   // post-paint: wait fully, even on Tor
+    if (relaysViaTor()) return;                 // first-paint on Tor: fire-and-forget (relays ~12s)
+    if (mode === 'paint') { await q; return; }  // first-paint clearnet block (The Commons); pool caps ~4s
     await Promise.race([q, new Promise<void>((r) => { const t = setTimeout(r, PRESENCE_DEADLINE_MS); t.unref?.(); })]);
 }
 
-/** Hydrate reply-faces for these notes (kind:1 repliers). `full` waits for the query (The Commons). */
-export async function ensureReplies(s: Session & { me: string }, noteIds: string[], full = false): Promise<void> {
+/** Hydrate reply-faces for these notes (kind:1 repliers). `mode` controls how long we wait (see WaitMode). */
+export async function ensureReplies(s: Session & { me: string }, noteIds: string[], mode: WaitMode = 'race'): Promise<void> {
     if (noteIds.length === 0) return;
-    await bounded(fetchReplyPresence(s.pool, s.myRelays, noteIds, followSet(s), s.me).catch(() => { /* best-effort */ }), full);
+    await bounded(fetchReplyPresence(s.pool, s.myRelays, noteIds, followSet(s), s.me).catch(() => { /* best-effort */ }), mode);
 }
 
 /** Hydrate reply-faces for these articles (NIP-22 kind:1111 comment authors), keyed by naddr. */
-export async function ensureArticleReplies(s: Session & { me: string }, naddrs: string[], full = false): Promise<void> {
+export async function ensureArticleReplies(s: Session & { me: string }, naddrs: string[], mode: WaitMode = 'race'): Promise<void> {
     const list = naddrs.filter(Boolean);
     if (list.length === 0) return;
-    await bounded(fetchArticleReplyPresence(s.pool, s.myRelays, list, followSet(s), s.me).catch(() => { /* best-effort */ }), full);
+    await bounded(fetchArticleReplyPresence(s.pool, s.myRelays, list, followSet(s), s.me).catch(() => { /* best-effort */ }), mode);
 }

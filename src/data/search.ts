@@ -97,7 +97,6 @@ export const SEARCH_PROFILE_RELAYS = [
     'wss://relay.ditto.pub',
     'wss://relay.vertexlab.io',
     'wss://antiprimal.net',
-    'wss://nostr.wine',
 ];
 
 /** Operator-aware note search: free text → NIP-50 `search`, operators → Filter fields (#t / authors

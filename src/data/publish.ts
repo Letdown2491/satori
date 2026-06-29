@@ -17,7 +17,7 @@ const MAX_INBOX_RELAYS = 4;
  * flow WOULD produce (e.g. the nip07 path, which signs in the browser) without actually signing. */
 export const captureSigner: Signer = { signEvent: async (t: UnsignedEvent) => t as unknown as NostrEvent } as unknown as Signer;
 
-export interface ReplyTo { id: string; pubkey?: string }
+export interface ReplyTo { id: string; pubkey?: string; kind?: number }
 export interface QuoteRef { id: string; pubkey?: string; relays?: string[]; address?: string }
 
 /** A NIP-22 reference: an article (address + kind 30023) or a comment (id + kind 1111). */
@@ -49,13 +49,22 @@ export async function signNote(
     for (const m of imeta) tags.push(m); // NIP-92 metadata for uploaded media
 
     // NIP-18 quote: the nostr:nevent/naddr already sits in the content (rendered
-    // as a quote/article card); the reference tag + author `p` make it a quote.
-    if (quote?.address) {
-        tags.push(['q', quote.address, quote.relays?.[0] ?? '', quote.pubkey ?? '']);
-        if (quote.pubkey) tags.push(['p', quote.pubkey]);
-    } else if (quote?.id) {
-        tags.push(['q', quote.id, quote.relays?.[0] ?? '', quote.pubkey ?? '']);
-        if (quote.pubkey) tags.push(['p', quote.pubkey]);
+    // as a quote/article card); the reference tag + author `p` make it a quote. The
+    // q-tag's relay hint comes from the nevent if it carried one, else (the usual case -
+    // our own neventFor emits none) we resolve the quoted author's NIP-65 write relay,
+    // exactly as the reply path does below, so the quote is self-resolving for clients.
+    const quoteRef = quote?.address || quote?.id;
+    if (quoteRef) {
+        let qWriteHint = quote!.relays?.[0] ?? '';
+        let qReadHint = '';
+        if (quote!.pubkey && !qWriteHint) {
+            const lists = await fetchRelayLists(pool, INDEXER_RELAYS, [quote!.pubkey]).catch(() => new Map<string, RelayList>());
+            const list = lists.get(quote!.pubkey);
+            qWriteHint = list?.write[0] ?? '';
+            qReadHint = list?.read[0] ?? '';
+        }
+        tags.push(['q', quoteRef, qWriteHint, quote!.pubkey ?? '']);
+        if (quote!.pubkey) tags.push(qReadHint ? ['p', quote!.pubkey, qReadHint] : ['p', quote!.pubkey]);
     }
 
     if (replyTo?.id) {
@@ -96,7 +105,7 @@ export async function signComment(
     pool: Pool,
     me: string,
     myRelays: RelayList,
-    { content, comment, contentWarning = null }: { content: string; comment: CommentTarget; contentWarning?: string | null },
+    { content, comment, contentWarning = null, imeta = [] }: { content: string; comment: CommentTarget; contentWarning?: string | null; imeta?: string[][] },
 ): Promise<Prepared> {
     const { root, parent } = comment;
     const lists = await fetchRelayLists(pool, INDEXER_RELAYS, [parent.pubkey]).catch(() => new Map<string, RelayList>());
@@ -106,6 +115,7 @@ export async function signComment(
 
     const tags: string[][] = [];
     if (contentWarning !== null) tags.push(contentWarning ? ['content-warning', contentWarning] : ['content-warning']);
+    for (const m of imeta) tags.push(m); // NIP-92 media metadata, like signNote (comment replies can carry uploads)
     // root (uppercase)
     tags.push(root.address ? ['A', root.address, writeHint] : ['E', root.id!, writeHint]);
     tags.push(['K', String(root.kind)], ['P', root.pubkey, readHint]);
@@ -150,18 +160,20 @@ export interface ArticleFields {
     topics?: string[];
     body: string;         // markdown
     publishedAt?: number; // preserved on edit; set to now on first publish
+    createdAt?: number;   // a scheduled article bakes in its future broadcast time (created_at + published_at)
 }
 
 /** Build + sign a long-form article (NIP-23 kind:30023). */
 export async function signArticle(signer: Signer, me: string, myRelays: RelayList, a: ArticleFields): Promise<Prepared> {
+    const now = a.createdAt ?? Math.floor(Date.now() / 1000);
     const tags: string[][] = [['d', a.identifier], ['title', a.title]];
     if (a.summary) tags.push(['summary', a.summary]);
     if (a.image) tags.push(['image', a.image]);
-    tags.push(['published_at', String(a.publishedAt ?? Math.floor(Date.now() / 1000))]);
+    tags.push(['published_at', String(a.publishedAt ?? now)]);
     for (const t of a.topics ?? []) if (t) tags.push(['t', t]);
     const signed = await signer.signEvent({
         kind: KIND_ARTICLE,
-        created_at: Math.floor(Date.now() / 1000),
+        created_at: now,
         tags,
         content: a.body,
         pubkey: me,

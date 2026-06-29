@@ -1,6 +1,6 @@
-// Scheduled posts: a note SIGNED at compose, held on disk, and broadcast by a periodic sweep
-// at its time. The key is only needed at compose (to sign); broadcasting a fully-signed event
-// needs no key, so a scheduled post goes out even with the browser closed (nip07) - the always-on
+// Scheduled posts: a note or article SIGNED at compose, held on disk, and broadcast by a
+// periodic sweep at its time. (Polls aren't schedulable - their endsAt is baked at sign time.) The key is only needed at compose (to sign); broadcasting a fully-signed
+// event needs no key, so a scheduled post goes out even with the browser closed (nip07) - the always-on
 // daemon does it. `signed.created_at` == the scheduled time, broadcast AT that moment so it reads
 // as ≈now and relays don't reject future-dating. Mirrors undo-store.ts. File 0600 under .data/.
 
@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { jsonStore } from './json-store.ts';
 import { anyAccepted } from './pool.ts';
 import { nowSec } from '../nostr/tags.ts';
+import { newDraftId } from '../drafts.ts';
 import type { Pool } from './pool.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
@@ -15,7 +16,7 @@ import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 export interface ScheduledPost {
     token: string;
     pubkey: string;          // author (== signed.pubkey)
-    signed: NostrEvent;      // fully-signed kind:1; created_at == scheduledAt
+    signed: NostrEvent;      // fully-signed note or article; created_at == scheduledAt
     scheduledAt: number;     // unix SECONDS to broadcast at
     writeTargets: string[];  // relays to broadcast to (your outbox)
 }
@@ -30,12 +31,20 @@ const { readAll, writeAll } = jsonStore<Record<string, ScheduledPost>>(FILE, 'sc
 // Per-author cap: bounds the SHARED store so one account can't bloat the file (and the sweep's in-memory
 // copy) for everyone on a multi-user instance. A normal user is nowhere near it - it only stops a runaway.
 const MAX_PER_USER = 100;
+/** The cap-reached error, shown by every compose path that schedules. One source so the number can't
+ * drift out of sync with MAX_PER_USER across the note/article x bunker/nip07 call sites. */
+export const SCHEDULE_FULL_MSG = `You have reached the maximum of ${MAX_PER_USER} scheduled posts. Cancel some to schedule more.`;
 /** Hold a signed post for the sweep. Returns false (the caller surfaces an error) if the author is at cap. */
 export function addScheduled(p: ScheduledPost): boolean {
     const all = readAll();
     if (!(p.token in all) && Object.values(all).filter((x) => x.pubkey === p.pubkey).length >= MAX_PER_USER) return false;
     all[p.token] = p; writeAll(all);
     return true;
+}
+/** Hold a freshly-signed post for the sweep with a generated token - the one seam the compose paths share.
+ * Returns false at cap (caller surfaces SCHEDULE_FULL_MSG). */
+export function holdScheduled(me: string, signed: NostrEvent, scheduledAt: number, writeTargets: string[]): boolean {
+    return addScheduled({ token: newDraftId(), pubkey: me, signed, scheduledAt, writeTargets });
 }
 export function listScheduled(me: string): ScheduledPost[] {
     return Object.values(readAll()).filter((p) => p.pubkey === me).sort((a, b) => a.scheduledAt - b.scheduledAt);

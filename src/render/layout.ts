@@ -25,6 +25,8 @@ export interface ChromeOpts {
     feedTab?: FeedTab;
     /** Newest note timestamp on a feed tab - anchors the bar's "notes" poller. */
     notesSince?: number;
+    /** When set, this is a relay timeline: the switcher shows this label as current (no tab active). */
+    relayLabel?: string;
     theme?: Theme;
     /** Content already renders its own <h1> (e.g. the article reader) - suppress the
      * injected sr-only page heading so there's exactly one h1. */
@@ -68,14 +70,20 @@ export function dmDotInner(unread = false, initial = false): SafeHtml {
     return html`${unread ? html`<span class="notif-dot dm-dot-mark"></span>` : null}${poll}`;
 }
 
-/** The centered feed switcher - a native <details> dropdown (zero-JS). */
-function feedSwitch(active: FeedTab): SafeHtml {
-    const current = FEED_TABS.find((t) => t.tab === active) ?? FEED_TABS[0]!;
+/** The centered feed switcher - a native <details> dropdown (zero-JS). The four built-in feeds, then
+ * "Browse a relay…" which opens the relay picker modal (type any relay / pick a favorite). On a relay view
+ * `relayLabel` is the current label (no tab highlighted). The pick link carries the current tab/label so the
+ * picker response can OOB this <details> back CLOSED (`oob`) - opening a modal is a partial swap, so the
+ * native dropdown would otherwise stay open behind it. The switcher's markup is fully (tab, label)-derived. */
+export function feedSwitch(active: FeedTab, relayLabel?: string, oob = false): SafeHtml {
+    const currentLabel = relayLabel ?? (FEED_TABS.find((t) => t.tab === active) ?? FEED_TABS[0]!).label;
+    const pickHref = `/relay/pick?tab=${active}${relayLabel ? `&rl=${encodeURIComponent(relayLabel)}` : ''}`;
     return html`
-      <details class="feed-switch">
-        <summary class="feed-toggle"><span>${current.label}</span> <span class="chevron">▾</span></summary>
+      <details id="feed-switch"${oob ? raw(' h-oob="true"') : raw('')} class="feed-switch">
+        <summary class="feed-toggle"><span>${currentLabel}</span> <span class="chevron">▾</span></summary>
         <div class="feed-menu">
-          ${FEED_TABS.map((t) => html`<a class="feed-item ${t.tab === active ? 'active' : ''}" href="${t.href}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
+          ${FEED_TABS.map((t) => html`<a class="feed-item ${!relayLabel && t.tab === active ? 'active' : ''}" href="${t.href}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
+          <a class="feed-item feed-item-add" href="${pickHref}" h-target="#modal" h-swap="inner" h-focus="#relay-pick-url" h-push-url="false">Browse a relay…</a>
         </div>
       </details>`;
 }
@@ -121,16 +129,18 @@ export function accountMenu(me: Me, oob = false): SafeHtml {
       </details>`;
 }
 
-/** The Notes button as a link to your timeline (= Home) - used in the left slot off
- * the feed (no separate Home button, like Satori). It polls /notes/dot so the
- * new-notes dot lights up from anywhere (the ambient signal), and re-arms by
- * outer-swapping #notes-home. */
+/** The Home button - a link to your timeline - used in the left slot off the feed
+ * (one button, no separate Notes/Home split). Shown with a house icon and labeled
+ * "Home" so it reads as "go to your timeline", not a notes feature. It polls
+ * /notes/dot so the new-notes dot lights up from anywhere (the ambient signal), and
+ * re-arms by outer-swapping #notes-home. (The id/class/route keep the `notes-` name
+ * internally - they're not user-visible and drive the dot poller.) */
 export function notesHome(hasNew = false, initial = false, oob = false): SafeHtml {
     // `load` only on first mount; the /notes/dot re-arm omits it, else load → /notes/dot
     // → swap → load → … loops (same fix as the notif bell). `oob` lets /feed/seen swap this in
     // out-of-band (by id) to clear the dot the moment you reach the "caught up" ensō.
     const poll = html`<span class="notes-poll" h-get="/notes/dot" h-trigger="${pollTrigger(60, initial)}" h-target="#notes-home" h-swap="outer" h-push-url="false"></span>`;
-    return html`<a id="notes-home"${oob ? raw(' h-oob="true"') : raw('')} class="notes-mark ${hasNew ? 'has-new' : ''}" href="/" title="Notes" aria-label="Notes" h-get h-prefetch="hover" h-scroll="top instant">${icon('notes')}${hasNew ? html`<span class="notif-dot"></span>` : null}${poll}</a>`;
+    return html`<a id="notes-home"${oob ? raw(' h-oob="true"') : raw('')} class="notes-mark ${hasNew ? 'has-new' : ''}" href="/" title="Home" aria-label="Home" h-get h-prefetch="hover" h-scroll="top instant">${icon('home')}${hasNew ? html`<span class="notif-dot"></span>` : null}${poll}</a>`;
 }
 
 function bar(o: ChromeOpts): SafeHtml {
@@ -142,7 +152,7 @@ function bar(o: ChromeOpts): SafeHtml {
     // The title is a location label, not the page's heading (the real <h1> lives in <main>).
     const left = html`<nav class="bar-left" aria-label="Primary">${notesHome(false, true)}${notifBell(false, true)}</nav>`;
     const center = onFeed
-        ? html`<div class="header-center">${feedSwitch(o.feedTab ?? 'following')}</div>`
+        ? html`<div class="header-center">${feedSwitch(o.feedTab ?? 'following', o.relayLabel)}</div>`
         : html`<div class="header-center"><span class="page-title">${o.title ?? ''}</span></div>`;
     // Search + the account hub. The avatar itself becomes the privacy shield when Tor
     // is on (in accountMenu), so no separate indicator crowds the bar.

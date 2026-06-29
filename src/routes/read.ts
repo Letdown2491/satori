@@ -11,12 +11,13 @@ import { KIND_ARTICLE, articleAddress } from '../nostr/nip23.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { commentSection } from '../render/comments.ts';
 import { replyParent } from '../nostr/nip10.ts';
+import { commentParent, KIND_COMMENT } from '../nostr/nip22.ts';
 import { getFilters, compileFilters } from '../data/filters.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
 import { profileHeader, noteCard, noteList, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
 import { renderEvent, prepareEvents } from '../manifest/registry.ts';
-import { emptyItem } from '../render/svg.ts';
+import { emptyItem, quoteEmpty } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
 import { type ProfileMap } from '../render/util.ts';
 import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
@@ -78,14 +79,14 @@ export async function getProfile(ctx: Ctx): Promise<void> {
 
     // Infinite-scroll partial (helmjs): just the next notes + a fresh sentinel.
     if (ctx.isPartial && ctx.hTarget === '#more') {
-        sendFragment(ctx, html`${noteList(notes, s.profiles, s)}${more}`);
+        sendFragment(ctx, html`${noteList(notes, s.profiles, s, { faces: true })}${more}`);
         return;
     }
 
     const profile = s.profiles.get(pubkey);
     const list = notes.length === 0
-        ? html`<ul class="feed">${emptyItem(quote('empty'))}</ul>`
-        : html`<ul class="feed">${noteList(notes, s.profiles, s)}${more}</ul>`;
+        ? html`<ul class="feed">${quoteEmpty(quote('empty'))}</ul>`
+        : html`<ul class="feed">${noteList(notes, s.profiles, s, { faces: true })}${more}</ul>`;
 
     // Pinned (NIP-51) + articles strips load LAZILY (helmjs `load`) so the pin-list
     // + article queries don't block the profile page; zero-JS shows header + notes.
@@ -129,13 +130,21 @@ export async function getProfileExtras(ctx: Ctx): Promise<void> {
 
 interface RNode { event: NostrEvent; children: RNode[] }
 
-/** Nest replies by their NIP-10 parent (ported from Satori's thread.ts). */
+/** The id of the event a reply/comment hangs off: NIP-22 comments (kind 1111) name their parent with a
+ * lowercase `e` tag whose 4th slot is the parent's PUBKEY (no NIP-10 marker), which replyParent can't read -
+ * so resolve those via commentParent; everything else is NIP-10. Lets one tree nest notes + comments. */
+function threadParent(ev: NostrEvent): string | null {
+    if (ev.kind === KIND_COMMENT) { const p = commentParent(ev); return p?.type === 'e' ? p.value : null; }
+    return replyParent(ev)?.id ?? null;
+}
+
+/** Nest replies by their parent (ported from Satori's thread.ts; now NIP-10 + NIP-22-aware). */
 function buildReplyTree(replies: NostrEvent[], focusedId: string): RNode[] {
     const nodes = new Map<string, RNode>(replies.map((e) => [e.id, { event: e, children: [] }]));
     const roots: RNode[] = [];
     for (const e of [...replies].sort((a, b) => a.created_at - b.created_at)) {
         const node = nodes.get(e.id)!;
-        const pid = replyParent(e)?.id;
+        const pid = threadParent(e);
         const parent = pid && pid !== focusedId ? nodes.get(pid) : undefined;
         if (parent) parent.children.push(node);
         else roots.push(node);
@@ -164,7 +173,7 @@ function renderReplyTree(nodes: RNode[], depth: number, profiles: ProfileMap, s:
  * signing family uses. Surfaces what's already in the DM cache - bunker's is disk-backed; nip07's is
  * in-memory and warmed asynchronously (see the warm-on-thread routes below). */
 function privateRepliesTo(s: Session, noteId: string): PrivateReply[] {
-    return signsOnClient(s) ? privateRepliesForNip07(noteId) : privateRepliesFor(s, noteId);
+    return signsOnClient(s) ? privateRepliesForNip07(noteId, s.me!) : privateRepliesFor(s, noteId);
 }
 
 export async function getThread(ctx: Ctx): Promise<void> {
@@ -240,7 +249,7 @@ async function appendPrivateCards(ctx: Ctx, s: Session & { me: string }, private
 async function appendThreadPrivates(ctx: Ctx, s: Session & { me: string }, chainId: string, noteId: string, entity: string): Promise<void> {
     finalizeSync(s, chainId); // consume the chain; mem is warm (we ignore the inbox aggregate it returns)
     s.lastDmWarm = Date.now();
-    await appendPrivateCards(ctx, s, privateRepliesForNip07(noteId), entity);
+    await appendPrivateCards(ctx, s, privateRepliesForNip07(noteId, s.me!), entity);
 }
 
 /** GET /t/:id/private - start the nip07 warm: decrypt recent gift-wraps so this note's private replies
@@ -254,7 +263,7 @@ export async function getThreadPrivate(ctx: Ctx): Promise<void> {
     if (!noteId || !signsOnClient(s) || !hasBatchCaps(ctx)) { sendFragment(ctx, html``); return; }
     // Recently warmed? Skip the relay query + decrypt round-trips and just render from the warm cache.
     if (s.lastDmWarm && Date.now() - s.lastDmWarm < WARM_TTL_MS) {
-        await appendPrivateCards(ctx, s as Session & { me: string }, privateRepliesForNip07(noteId), entity);
+        await appendPrivateCards(ctx, s as Session & { me: string }, privateRepliesForNip07(noteId, s.me!), entity);
         return;
     }
     const { chainId, items } = await beginSync(s, 'inbox');

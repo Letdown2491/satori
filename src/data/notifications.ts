@@ -8,6 +8,7 @@ import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { KIND_POLL, KIND_POLL_RESPONSE } from '../nostr/nip88.ts';
+import { KIND_COMMENT } from '../nostr/nip22.ts';
 
 export type NotifType = 'reply' | 'mention' | 'pollvote' | 'zap' | 'reaction' | 'privateReply';
 export interface Notif { type: NotifType; event: NostrEvent }
@@ -30,7 +31,7 @@ export async function fetchNotifications(
         ...(win.until !== undefined ? { until: win.until } : {}),
     };
     // kind:7 reactions are only queried when the "reactions in notifications" pref is on (off by default).
-    const taggedKinds = includeReactions ? [1, 7, 9735] : [1, 9735];
+    const taggedKinds = includeReactions ? [1, KIND_COMMENT, 7, 9735] : [1, KIND_COMMENT, 9735];
     // Over-fetch each stream (2x), merge, then slice to `limit`: the page's oldest item then sits
     // ABOVE each stream's own oldest, so the `until` cursor for the next page can't skip events in
     // the gap between the two streams' tails (the feed paginates the same way). One round-trip each.
@@ -55,6 +56,7 @@ export async function fetchNotifications(
     for (const ev of tagged) {
         if (ev.kind === 9735) add('zap', ev);
         else if (ev.kind === 7) add('reaction', ev); // before the e-tag check (a reaction carries an e tag)
+        else if (ev.kind === KIND_COMMENT) add('reply', ev); // NIP-22: always a reply (article comments carry a/A, no e)
         else add(ev.tags.some((t) => t[0] === 'e') ? 'reply' : 'mention', ev);
     }
     for (const ev of votes) add('pollvote', ev);

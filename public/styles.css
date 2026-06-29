@@ -224,6 +224,28 @@
         }
         .feed-item:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
         .feed-item.active { color: var(--accent); font-weight: 600; }
+        /* "Browse a relay…" - opens the relay picker modal; a quiet divider sets it off from the feeds. */
+        .feed-item-add { margin-top: 4px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+        /* Relay timeline bar: the relay you're browsing + a favorite star. Sits above the feed list. */
+        .relay-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+        .relay-bar-name { display: inline-flex; align-items: center; gap: 7px; flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .relay-bar-name .icon { flex: none; color: var(--muted); }
+        .relay-fav { flex: none; background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1; color: var(--muted); padding: 2px 4px; }
+        .relay-fav.on { color: var(--accent); }
+        /* Relay picker modal (Browse a relay): a URL box, then favorites + your own relays as quick picks. */
+        .modal-title { font-family: var(--serif); font-weight: 500; font-size: 16px; }
+        .relay-pick-go { display: flex; gap: 8px; margin: 12px 0; }
+        .relay-pick-go input[type=text] { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
+        .relay-pick-go input[type=text]:focus { outline: none; border-color: var(--accent); }
+        .relay-pick-head { padding: 8px 2px 4px; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+        .relay-pick-list { list-style: none; margin: 0; padding: 0; }
+        .relay-pick-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+        .relay-pick-name { display: inline-flex; align-items: center; gap: 7px; flex: 1; min-width: 0; padding: 7px 4px; color: var(--text); text-decoration: none; border-radius: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .relay-pick-name .icon { flex: none; color: var(--muted); }
+        .relay-pick-name:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+        .relay-fav-mini { flex: none; background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1; color: var(--muted); padding: 4px 6px; }
+        .relay-fav-mini.on { color: var(--accent); }
+        .relay-pick-empty { color: var(--muted); font-size: 13px; padding: 8px 2px; }
         .menu-head { display: flex; align-items: center; gap: 10px; padding: 8px; color: var(--text); text-decoration: none; border-radius: 8px 8px 0 0; }
         .menu-head:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
         .menu-head:hover .me-name { color: var(--accent); }
@@ -697,6 +719,9 @@
         .reply-faces .avatar { margin-left: -8px; box-shadow: 0 0 0 2px var(--bg); }
         .reply-faces .avatar:first-child { margin-left: 0; }
         .reply-faces-more { margin-left: 4px; font-size: 13px; color: var(--muted); line-height: 1; }
+        /* Empty face placeholder (carries the stable id for the lazy hydrate to OOB-swap) + the one-shot
+           hydrate trigger <li> - both take no space until/unless filled. */
+        .reply-faces-slot, .faces-hydrate { display: none; }
         .note-act {
             background: none; border: none; padding: 0; cursor: pointer;
             color: var(--muted); line-height: 0; transition: color 0.15s ease, transform 0.1s ease;
@@ -1267,6 +1292,9 @@
         .ac-body:focus { outline: none; border-color: var(--accent); }
         .ac-preview { flex: 1; min-height: 320px; padding: 4px 2px; }
         .ac-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 6px; }
+        /* Publish article matches Save draft's size (the default button's 10px/16px made it chunkier); the
+           accent fill already marks it as primary, so it doesn't also need to be bigger. */
+        .ac-foot button { padding: 6px 10px; }
         /* Drafts list */
         .draft-row { display: flex; align-items: flex-start; gap: 10px; padding: 14px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
         .draft-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
@@ -1377,24 +1405,17 @@
         /* The "caught up" clearing - a deliberate end to the feed; older notes are
            opt-in past the line (design for exit, not endless scroll). */
         .caught-up { padding: 48px 20px; border-top: 1px solid var(--border); }
-        /* When you're caught up, the ensō IS the (unlabeled) gateway to older posts/notifications. A gentle
-           scale on hover/focus is the only hint it's tappable - discovered, not advertised. Keyboard-focusable. */
-        .enso-link { display: inline-flex; cursor: pointer; border-radius: 50%; transition: transform 0.25s ease; }
-        .enso-link:hover { transform: scale(1.08); }
-        .enso-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
-        /* The caught-up affirmation wears the vermilion accent - one state, one accent (the ensō stays ink) -
-           so it reads as the headline of the clearing. Applies to BOTH clearings (feed + notifications) so
-           the catch-up moment is identical across the app. */
-        .caught-up .empty-sub, .notif-clearing .empty-sub { color: var(--accent); font-size: 16px; margin-top: -10px; }
         .see-earlier {
             background: none; border: none; padding: 4px 8px; cursor: pointer;
             color: var(--accent); font-family: var(--serif); font-style: italic;
             font-size: 14px; letter-spacing: 0.02em;
         }
         .see-earlier:hover:not(:disabled) { text-decoration: underline; }
-        /* The inviting accent .see-earlier ("Continue reading") is reserved for when there's genuinely more
-           NEW; the caught-up backlog door is the unlabeled tappable ensō (.enso-link), not a text link. */
-        .caught-up .feed-continue { margin-top: 4px; }
+        /* The "View older posts" invite is an accent .see-earlier text link - explicit + discoverable. */
+        /* Caught-up backlog: pull "View older …" up close under the contemplative line (the default 16px
+           gap reads as too loose here), with the smaller closing ensō snug below it. Feed + notifications. */
+        .view-older { margin-top: -11px; }
+        .view-older + .enso { margin-top: -11px; }
         /* In-flight: swap "look back" → "Loading…" while the older page is fetched. */
         .see-earlier:disabled { color: transparent; cursor: default; position: relative; }
         .see-earlier:disabled::after { content: 'Loading…'; color: var(--muted); font-style: italic; position: absolute; left: 8px; top: 4px; }
@@ -1483,6 +1504,9 @@ a.fab { display: inline-flex; align-items: center; justify-content: center; text
     margin: 14px -16px 0; padding: 14px 16px;
     border-top: 1px solid var(--border);
 }
+/* Publish (note/poll) matches Save draft's size (the default button's 10px/16px made it chunkier); the
+   accent fill already marks it as primary, so it doesn't also need to be bigger. (Same as .ac-foot.) */
+.compose-foot .publish-btn { padding: 6px 10px; }
 .view-pad { padding: 18px 0 0; } /* bottom clearance now lives on #app (FAB safe-area) */
 .view-empty { text-align: center; color: var(--muted); padding: 48px 16px; }
 .view-empty .enso { margin: 0 auto 14px; }
@@ -1691,7 +1715,12 @@ html[data-webln][data-nwc][data-pay-method="nwc"] .pmo-nwc { border-color: var(-
 .pay-badge.muted { color: var(--muted); }
 .webln-yes, .nwc-yes { display: none; }
 html[data-webln] .webln-yes { display: inline-block; }
-html[data-webln] .webln-no { display: none; }
+/* No WebLN extension → hide the whole WebLN method, rather than a dead "Not detected" option; revealed when
+   hext.js detects window.webln (html[data-webln]). Capability-based, not mobile-based, so the rare mobile
+   browser that DOES have WebLN (Kiwi/Firefox + Alby, a wallet's in-app browser) still shows it. Mirrors the
+   data-nip07 sign-in-button reveal (we don't show dead controls). */
+.pmo-webln { display: none; }
+html[data-webln] .pmo-webln { display: block; }
 html[data-nwc] .nwc-yes { display: inline-block; }
 /* Wallet status: exactly ONE chip shows. By availability (data-webln/data-nwc); when BOTH are connected,
    by whether a method was chosen (html[data-pay-method], set by hext.js - persists across helmjs swaps,
@@ -1746,12 +1775,44 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
 .draft-del button:hover { color: var(--err); }
 .compose-sync { font-size: 13px; color: var(--muted); }
 /* Schedule: a clock icon (.schedule-btn) toggles #schedule-toggle; the row reveals on :checked,
-   the icon lights accent - mirrors the content-warning pattern. Pure CSS, no app JS. */
+   the icon lights accent - mirrors the content-warning pattern. Pure CSS, no app JS. Shared by the
+   note and article composers, so the row/accent selectors are NOT scoped to .compose-box/.compose-foot
+   (that scoping is why the article composer showed the row un-toggled). */
 .sched-check { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-.compose-box .schedule-row { margin-top: 10px; display: none; align-items: center; gap: 8px; }
+.schedule-row { margin-top: 10px; display: none; align-items: center; gap: 8px; }
 #schedule-toggle:checked ~ .schedule-row { display: flex; }
-#schedule-toggle:checked ~ .compose-foot .schedule-btn { color: var(--accent); }
-.schedule-input { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; min-width: 0; }
+#schedule-toggle:checked ~ .compose-foot .schedule-btn,
+#schedule-toggle:checked ~ .ac-foot .schedule-btn { color: var(--accent); }
+/* The article foot right-aligns its actions; the clock is a TOOL, so push it left away from the buttons
+   (mirrors the note foot's left-tools / right-actions split). */
+.ac-foot .schedule-btn { margin-right: auto; }
+.schedule-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+/* Relays: a globe (.relays-btn) toggles #relays-toggle; the row reveals on :checked (like Schedule). The
+   write relays start checked - uncheck to post to a subset, or add a one-off. Resets every open. */
+.relays-check { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+.compose-box .relays-row { margin-top: 10px; display: none; flex-direction: column; gap: 8px; }
+#relays-toggle:checked ~ .relays-row { display: flex; }
+#relays-toggle:checked ~ .compose-foot .relays-btn { color: var(--accent); }
+.relays-row-head { font-size: 12px; color: var(--muted); }
+/* Relays as toggle chips, in the house pill idiom (same as .rw-chip / .compose-type.active): accent OUTLINE
+   + accent text = posting there; muted outline = dropped. No solid fill - all-on shouldn't be a wall of
+   vermilion. The native checkbox is hidden; the label is the chip, styled via :has(:checked). */
+.relay-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.relay-chip { display: inline-flex; align-items: center; padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; transition: border-color 0.15s, color 0.15s; }
+.relay-chip input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+.relay-chip:hover { border-color: var(--accent); }
+.relay-chip:has(input:checked) { border-color: var(--accent); color: var(--accent); }
+.relay-custom-input { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
+.relay-custom-input:focus { outline: none; border-color: var(--accent); }
+.schedule-input { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.schedule-input:focus { outline: none; border-color: var(--accent); }
+/* The native datetime picker icon is near-invisible on the dark panel - lift it so it reads. */
+.schedule-input::-webkit-calendar-picker-indicator { filter: invert(0.7); opacity: 0.7; cursor: pointer; }
+.schedule-input::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+/* The Schedule button is the row's primary action: accent OUTLINE (distinct from the solid Publish
+   button) that fills on hover. Rides on .ghost for sizing. */
+.schedule-go { border-color: var(--accent); color: var(--accent); }
+.schedule-go:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* Phase 6b - NIP-22 article comments */
 .comments { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 18px; }
@@ -1767,10 +1828,6 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
 .comment-reply-btn { background: none; border: none; color: var(--muted); font-size: 13px; cursor: pointer; padding: 0; }
 .comment-reply-btn:hover { color: var(--accent); }
 .comment-reply-slot:not(:empty) { margin-top: 8px; }
-
-/* Relay trust scores off (default): hide the chips. A display:none chip never fires its
-   h-trigger="intersect once", so the trust-assertion lookup never happens either. */
-.settings-page.no-trust .relay-score { display: none; }
 
 /* Settings - Backup tab (lists export/import). */
 .backup-form { margin: 6px 0 18px; }

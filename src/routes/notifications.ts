@@ -106,7 +106,7 @@ export async function getNotifications(ctx: Ctx): Promise<void> {
     // close it: the "caught up" clearing, plus "See older" when there's already-seen history to reveal.
     const tail = !reachedBoundary && fullPage && oldest
         ? pagerSentinel(`/notifications?until=${String(oldest - 1)}&nb=${String(boundary)}`)
-        : notifCaughtUp(newVisible.length > 0, reachedBoundary ? boundary : undefined);
+        : notifCaughtUp(reachedBoundary ? boundary : undefined);
     wrap(html`${notifList(newVisible, s.profiles, s)}${tail}`);
 }
 

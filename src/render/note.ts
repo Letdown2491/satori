@@ -14,12 +14,14 @@ import { npub, shortNpub, displayName, timeAgo, avatar, type ProfileMap } from '
 import { icon, enso } from './svg.ts';
 import { quote } from './quotes.ts';
 import { replyParent } from '../nostr/nip10.ts';
+import { commentParent } from '../nostr/nip22.ts';
+import { naddrFromCoord } from '../nostr/nip19.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
 import { parseArticle, readingMinutes, KIND_ARTICLE } from '../nostr/nip23.ts';
 import { renderEvent, actionsFor } from '../manifest/registry.ts';
 import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
 import { isZapped } from '../zaps.ts';
-import { replyFaces } from '../replies.ts';
+import { replyFaces, type ReplyFaces } from '../replies.ts';
 import { hasReplied, hasReposted, engageTarget } from '../engaged.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Profile } from '../data/profiles.ts';
@@ -134,7 +136,7 @@ export const cwIfFlagged = (ev: NostrEvent, visual: SafeHtml): SafeHtml => {
 
 /** Rendered note content: CW reveal if flagged, else a Show-more clamp if the text
  * is long (unless `clamp` is false - the focused thread note shows in full). */
-function noteContent(ev: NostrEvent, profiles?: ProfileMap, clamp = true, media?: MediaPrefs, imeta?: ImetaMap): SafeHtml {
+export function noteContent(ev: NostrEvent, profiles?: ProfileMap, clamp = true, media?: MediaPrefs, imeta?: ImetaMap): SafeHtml {
     const body = renderContent(ev.content, profiles, true, media, imeta, parseEmojiTags(ev), ev.pubkey);
     const cw = contentWarning(ev);
     if (cw !== null) return cwWrap(body, cw, ev.id);
@@ -150,7 +152,9 @@ function authorName(pubkey: string, profiles?: ProfileMap): SafeHtml {
 }
 
 export function neventFor(ev: NostrEvent): string {
-    try { return neventEncode({ id: ev.id, author: ev.pubkey }); } catch { return ev.id; }
+    // Stamp the kind so a reference carries WHAT it points at, not just where: the reply path reads it to
+    // decide NIP-10 note vs NIP-22 comment without re-fetching, and other clients can pre-filter by kind.
+    try { return neventEncode({ id: ev.id, author: ev.pubkey, kind: ev.kind }); } catch { return ev.id; }
 }
 
 /** The repeated author-avatar link: a boosted, prefetch-on-hover link to the author's profile
@@ -168,16 +172,35 @@ function threadTime(href: string, ts: number, label = 'View thread'): SafeHtml {
 /** The "in reply to" card: a link to the parent's thread that lazily loads the
  * parent note's preview (helmjs h-trigger="intersect once" → /embed), matching Satori's
  * reply card. Zero-JS shows the label only (still links to the thread). */
-function replyContext(ev: NostrEvent): SafeHtml | null {
-    const parent = replyParent(ev);
-    if (!parent) return null;
-    let bech = parent.id;
-    try { bech = neventEncode({ id: parent.id, relays: parent.relays.slice(0, 1) }); } catch { /* keep raw id */ }
-    const id = `rc-${parent.id.slice(0, 16)}`;
+export function replyContext(ev: NostrEvent): SafeHtml | null {
+    // The parent: a NIP-10 reply target (kind:1), else a NIP-22 comment parent (kind:1111). Both render the
+    // SAME lazy-embed card, so a comment shows its parent identically to a reply. The bech carries the relay
+    // hint (and, for NIP-22, the parent author) so the link + /embed can actually resolve the parent.
+    let key: string, bech: string, path = '/t/';
+    const nip10 = replyParent(ev);
+    if (nip10) {
+        key = nip10.id;
+        try { bech = neventEncode({ id: nip10.id, relays: nip10.relays.slice(0, 1) }); } catch { bech = nip10.id; }
+    } else {
+        const c = commentParent(ev);
+        if (!c) return null;
+        if (c.type === 'e') {
+            key = c.value;
+            try { bech = neventEncode({ id: c.value, author: c.pubkey, relays: c.relay ? [c.relay] : [] }); } catch { bech = c.value; }
+        } else if (c.type === 'a') {
+            const naddr = naddrFromCoord(c.value);
+            if (!naddr) return null;
+            key = c.value; bech = naddr; path = '/a/';
+        } else return null; // external (`i`) parent: nothing to embed in-app
+    }
+    // `key` is a tag value from the parent ref (NIP-10 `e` id, or a NIP-22 `e`/`a` value whose `d`
+    // identifier is arbitrary user content) - sanitize to a DOM-safe id before it reaches raw()/the
+    // h-target attribute, so a crafted parent ref can't break out of the attribute.
+    const id = `rc-${key.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`;
     // A sized card that lazily loads the parent on intersect (h-trigger="load" does
     // NOT fire on a <div>/<span>). The label links to the thread zero-JS; /embed
     // swaps in the full parent preview (rendered content, not a wrapping <a>).
-    return html`<div id="${id}" class="quote reply-context" h-get="/embed/${bech}?as=reply" h-trigger="intersect once" h-target="#${raw(id)}" h-swap="inner" h-push-url="false"><a class="quote-label" href="/t/${bech}" aria-label="View thread">↩ in reply to an earlier note${icon('thread')}</a></div>`;
+    return html`<div id="${id}" class="quote reply-context" h-get="/embed/${bech}?as=reply" h-trigger="intersect once" h-target="#${id}" h-swap="inner" h-push-url="false"><a class="quote-label" href="${path}${bech}" aria-label="View thread">↩ in reply to an earlier note${icon('thread')}</a></div>`;
 }
 
 /** A note preview swapped into an embed card. The card is NOT a wrapping <a>
@@ -270,12 +293,45 @@ function replyPresence(key: string, replied: boolean, show: boolean, verb: 'repl
  * "+" when there are more. PEOPLE, not a count. Links into the conversation. Empty when no replies
  * (or not hydrated). Faces use cached profiles (follows-first → usually cached; a colored hue circle
  * otherwise). */
-function replyFacesEl(key: string, href: string, s?: Session): SafeHtml {
+// The faces element's stable id (so the lazy /faces hydrate can OOB-swap it) + its conversation link.
+const facesId = (key: string): string => `faces-${key}`;
+const facesHref = (key: string): string => {
+    if (key.startsWith('naddr')) return `/a/${key}`;
+    try { return `/t/${neventEncode({ id: key })}`; } catch { return `/t/${key}`; }
+};
+
+/** The resolved avatar stack (warm). `oob` makes it an out-of-band swap onto its own id - the lazy
+ * post-paint hydration path (the /faces endpoint returns these). */
+function facesLink(key: string, f: ReplyFaces, s: Session, oob = false): SafeHtml {
+    const label = `${f.repliers.length}${f.more ? '+' : ''} replied`;
+    return html`<a id="${facesId(key)}" class="reply-faces"${oob ? raw(' h-oob="true"') : raw('')} href="${facesHref(key)}" h-get h-prefetch="hover" h-scroll="top instant" title="${label}" aria-label="${label}">${f.repliers.map((pk) => avatar(pk, pic(pk, s.profiles), 'xs'))}${f.more ? html`<span class="reply-faces-more">+</span>` : null}</a>`;
+}
+
+/** The faces slot for a card: the resolved stack when warm, else an empty placeholder carrying the stable
+ * id, so the lazy hydrate (facesHydrate → /faces) can fill it after paint. Faces are best-effort, so they're
+ * usually cold on first paint anywhere but a re-visited Following feed - the hydrate makes them reliable. */
+function replyFacesEl(key: string, s?: Session): SafeHtml {
     if (!s) return html``;
     const f = replyFaces(key);
-    if (!f || f.repliers.length === 0) return html``;
-    const label = `${f.repliers.length}${f.more ? '+' : ''} replied`;
-    return html`<a class="reply-faces" href="${href}" h-get h-prefetch="hover" h-scroll="top instant" title="${label}" aria-label="${label}">${f.repliers.map((pk) => avatar(pk, pic(pk, s.profiles), 'xs'))}${f.more ? html`<span class="reply-faces-more">+</span>` : null}</a>`;
+    return f && f.repliers.length > 0 ? facesLink(key, f, s) : html`<span class="reply-faces-slot" id="${facesId(key)}"></span>`;
+}
+
+/** The OOB faces element for the /faces endpoint: the resolved stack for a now-warm key, or null when it has
+ * no replies (leave the placeholder untouched). */
+export function facesOOB(key: string, s: Session): SafeHtml | null {
+    const f = replyFaces(key);
+    return f && f.repliers.length > 0 ? facesLink(key, f, s, true) : null;
+}
+
+/** A one-shot lazy trigger (hidden <li>) that, after paint, fetches + OOB-swaps faces for the page's COLD
+ * keys (notes by id, articles by naddr). Emitted by noteList when opts.faces is set; skipped when every key
+ * is already warm (a re-visited Following feed) - no needless round-trip. */
+export function facesHydrate(events: NostrEvent[], s?: Session): SafeHtml {
+    if (!s) return html``;
+    const keys = events.map((e) => (e.kind === KIND_ARTICLE ? naddrFor(e) : e.kind === 1 ? e.id : '')).filter(Boolean);
+    const cold = [...new Set(keys)].filter((k) => replyFaces(k) === null);
+    if (cold.length === 0) return html``;
+    return html`<li class="faces-hydrate" h-get="/faces?keys=${cold.join(',')}" h-trigger="load" h-swap="none" h-push-url="false"></li>`;
 }
 
 /** A note's action vocabulary, in render order. Declared DATA (also exposed on the kind handler's
@@ -309,7 +365,7 @@ export function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThrea
     return html`
       <div class="note-actions">
         <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
-        ${faces ? replyFacesEl(ev.id, `/t/${nevent}`, s) : null}
+        ${faces ? replyFacesEl(ev.id, s) : null}
       </div>`;
 }
 
@@ -354,7 +410,7 @@ function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPage = fal
     return html`
       <div class="note-actions article-actions">
         <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
-        ${!onPage ? replyFacesEl(naddr, `/a/${naddr}`, s) : null}
+        ${!onPage ? replyFacesEl(naddr, s) : null}
       </div>`;
 }
 
@@ -366,6 +422,7 @@ export interface NoteOpts {
     pending?: { token: string; seconds: number }; // an optimistic (not-yet-published) reply
     mute?: boolean;                             // stranger-facing rows (notifications, Commons): add a mute glyph that dismisses the card
     isPrivate?: boolean;                         // a gift-wrapped private reply (NIP-59): badge it with a lock
+    faces?: boolean;                            // LIST-level: append the lazy reply-faces hydrate trigger for this page (feeds/profile, not search)
 }
 
 /** The footer of a pending optimistic note: countdown + Undo (the whole note removes
@@ -387,12 +444,15 @@ export function noteCard(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opt
  * the shell; bespoke kinds (noteRow/articleRow) stay hand-written. `compact` (embed) drops the actions.
  * The action row is kind-aware (noteActions reads the kind's declared `actions`), so each kind shows its
  * own affordances. */
-export function cardShell(ev: NostrEvent, profiles: ProfileMap | undefined, s: Session | undefined, body: SafeHtml, opts: { compact?: boolean; lightboxes?: SafeHtml } = {}): SafeHtml {
+export function cardShell(ev: NostrEvent, profiles: ProfileMap | undefined, s: Session | undefined, body: SafeHtml, opts: { compact?: boolean; lightboxes?: SafeHtml; depth?: number } = {}): SafeHtml {
     const nevent = neventFor(ev);
+    // `depth` indents a card nested in a thread (the reply line), matching noteRow's nesting classes - so a
+    // comment/highlight card threads visually like a note reply, not flat.
+    const depthCls = opts.depth ? ` reply-nested depth-${Math.min(opts.depth, 4)}` : '';
     // `lightboxes` (the hoisted media overlays, built via mediaOverlays) ride OUTSIDE the `.note` <li> -
     // its content-visibility would otherwise trap the position:fixed overlay (same hoist noteCard does).
     return html`
-      <li class="note">
+      <li class="note${depthCls}">
         ${authorAvatarLink(ev.pubkey, profiles)}
         <div class="note-body">
           <div class="note-head">
@@ -598,9 +658,11 @@ export function articleReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session
       </article>`;
 }
 
-/** A list of notes (feed / profile / thread replies). */
+/** A list of notes (feed / profile / thread replies). `opts.faces` appends the lazy reply-faces hydrate
+ * trigger for the page (feeds + profile; search omits it - faces aren't shown there). */
 export function noteList(events: NostrEvent[], profiles?: ProfileMap, s?: Session, opts: NoteOpts = {}): SafeHtml {
-    return join(events.map((ev) => noteCard(ev, profiles, s, opts)));
+    const rows = join(events.map((ev) => noteCard(ev, profiles, s, opts)));
+    return opts.faces ? html`${rows}${facesHydrate(events, s)}` : rows;
 }
 
 /** Infinite-scroll sentinel: a real "older →" link (zero-JS navigation) that
@@ -615,24 +677,28 @@ export function pagerSentinel(href: string): SafeHtml {
 
 /** The Following feed's "caught up" clearing (ported from the original Satori): a still ensō + line that
  * ENDS a reading batch - a feed with real ends, not an endless scroll. The new-since-last-visit set is
- * capped to one window, then this; each "Continue reading" loads exactly one more batch ending in another
+ * capped to one window, then this; "View older posts" loads exactly one more batch ending in another
  * clearing (a deliberate tap, never auto-scroll), so you choose to keep going - it never runs away.
- *  - `caughtUp`: show the reassuring "You're all caught up" line (you've seen everything new).
+ *  - `caughtUp`: kept for the caller's mark-seen bookkeeping; the clearing itself reads the same either way.
  *  - `markTs` (newest shown): arms an intersect that advances your last-visit high-water when this
  *    clearing scrolls into view - so reaching the end marks you caught up, not merely loading.
- *  - `more` (a `until` cursor): renders the click-only "Continue reading" that swaps in the next batch. */
-export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: number }): SafeHtml {
-    const mark = opts.markTs ? raw(` h-get="/feed/seen?ts=${String(opts.markTs)}" h-trigger="intersect once" h-swap="none" h-push-url="false"`) : raw('');
-    // The ensō trails as the closing seal (落款). When you're CAUGHT UP, the seal IS the quiet gateway to
-    // the older backlog - an unlabeled, hover/touch-discovered gesture, so "rest" isn't undercut by a UI
-    // button inviting a backlog scroll. It stays a real link (aria-label + keyboard focus). When there's
-    // genuinely MORE NEW below, that gets a visible "Continue reading" invite instead (it SHOULD be found).
-    const older = opts.caughtUp && opts.more !== undefined;
-    const seal = older
-        ? html`<a class="enso-link" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false" aria-label="See older posts" title="See older posts">${enso(40, true)}</a>`
+ *  - `more` (a `until` cursor): renders the click-only "View older posts" that swaps in the next batch. */
+/** The shared "caught up" clearing (the calm "design for exit": a contemplative quote over the ensō seal).
+ * Used by the feed AND notifications - same shape, so one helper keeps the two parity surfaces from drifting.
+ * `older` (a `until` cursor) renders the click-only "View older …" link above a smaller seal; with nothing
+ * older, the seal (落款) stands alone. `mark` is an optional intersect attr the feed uses to advance its
+ * last-visit high-water on scroll-into-view. The id/cls are static literals (no injection surface). */
+export function caughtUpClearing(o: { id: string; cls: string; href: string; label: string; older?: number; mark?: SafeHtml }): SafeHtml {
+    const tail = o.older !== undefined
+        ? html`<a class="see-earlier view-older" href="${o.href}" h-get h-target="#${raw(o.id)}" h-swap="outer" h-push-url="false">${o.label}</a>${enso(30, true)}`
         : enso(40, true);
-    const cont = (!opts.caughtUp && opts.more !== undefined)
-        ? html`<a class="see-earlier feed-continue" href="/?b=1&until=${String(opts.more)}" h-get h-target="#feed-clearing" h-swap="outer" h-push-url="false">Continue reading →</a>`
-        : null;
-    return html`<li class="empty caught-up" id="feed-clearing"${mark}><span>${quote('caughtUp')}</span>${opts.caughtUp ? html`<span class="empty-sub">You’re all caught up.</span>` : null}${seal}${cont}</li>`;
+    return html`<li class="empty ${o.cls}" id="${raw(o.id)}"${o.mark ?? raw('')}><span>“${quote('caughtUp')}”</span>${tail}</li>`;
+}
+
+export function feedClearing(opts: { caughtUp: boolean; markTs?: number; more?: number }): SafeHtml {
+    const mark = opts.markTs ? raw(` h-get="/feed/seen?ts=${String(opts.markTs)}" h-trigger="intersect once" h-swap="none" h-push-url="false"`) : undefined;
+    return caughtUpClearing({
+        id: 'feed-clearing', cls: 'caught-up', older: opts.more,
+        href: `/?b=1&until=${String(opts.more)}`, label: 'View older posts →', mark,
+    });
 }

@@ -6,6 +6,7 @@
 import { html, raw, type SafeHtml } from '../html.ts';
 import { icon, enso } from './svg.ts';
 import { timeAgo } from './util.ts';
+import { scheduleRow } from './compose.ts';
 import { quote } from './quotes.ts';
 import { scheduledSection } from './scheduled.ts';
 import type { Draft } from '../drafts.ts';
@@ -36,14 +37,18 @@ export function articleComposeForm(c: ArticleComposeCtx = {}): SafeHtml {
           ${tool('B', '**bold**', 'Bold')}${tool(html`<em>I</em>`, '*italic*', 'Italic')}${tool('H', '## ', 'Heading')}${tool('“', '> ', 'Quote')}${tool('•', '- ', 'List')}${tool('↗', '[text](https://)', 'Link')}${tool(icon('image'), '![alt](https://)', 'Image')}
         </div>
         <textarea class="ac-body" id="ac-body" name="body" placeholder="Write your article in Markdown…" spellcheck="true">${c.body ?? ''}</textarea>
+        <!-- Schedule: the .schedule-btn clock toggles this checkbox; the row reveals on :checked
+             (pure CSS, like the note composer). The "Schedule" button sends do=schedule to /article. -->
+        <input type="checkbox" id="schedule-toggle" class="sched-check">
+        ${scheduleRow('/article')}
         <div class="ac-foot">
+          <label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>
           ${c.status ? html`<span class="ac-draft-status show">${c.status}</span>` : null}
           ${c.syncEl ?? null}
           <button type="submit" class="ghost" formaction="/draft" formmethod="post">Save draft</button>
           <button type="submit">Publish article</button>
         </div>
-      </form>
-      <p class="signin-help">Signed by your bunker or extension. The key never reaches this server.</p>`;
+      </form>`;
 }
 
 /** Full composer page: the Note · Poll · Article selector + the form. */

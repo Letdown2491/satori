@@ -29,11 +29,10 @@ export async function postAppearance(ctx: Ctx): Promise<void> {
     for (const f of PREF_FIELDS) if (form.has(f)) next[f] = form.get(f) === '1';
     if (form.has('undoSeconds')) next.undoSeconds = Math.max(1, Math.min(30, Math.floor(Number(form.get('undoSeconds')) || 5)));
     writeAppearance(ctx, next);
-    // A reload is needed when the change affects the page BEYOND its own widget and a local
-    // swap can't reach it: theme (lives on <html>), and trustScores (gates the relay/search
-    // chips via a class on the settings-page ROOT, which only a full render updates). Other
-    // prefs (threshold, media toggle, undo) are self-contained, so a no-reload field gets 204.
-    const needsReload = form.has('theme') || form.has('trustScores');
+    // A reload is needed when the change affects the page BEYOND its own widget and a local swap can't
+    // reach it: theme lives on <html>. Other prefs (threshold, media toggle, undo) are self-contained,
+    // so a no-reload field gets 204.
+    const needsReload = form.has('theme');
     if (ctx.isPartial) {
         if (needsReload) { ctx.res.writeHead(200, { 'H-Refresh': 'true' }); ctx.res.end(); return; }
         // A pref toggle re-renders itself with the flipped state (its form swaps outer).
@@ -95,7 +94,6 @@ export function getWallet(ctx: Ctx): void {
                 <span class="pay-method-sub">A browser extension like <a href="https://getalby.com" target="_blank" rel="noopener">Alby</a>. The key never leaves it.</span>
               </span>
               <span class="pay-badge ok webln-yes">Detected</span>
-              <span class="pay-badge muted webln-no">Not detected</span>
             </label>
           </div>
           <div class="pay-method pmo-nwc">

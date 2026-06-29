@@ -3,6 +3,7 @@
 // post to an editable draft (see routes/scheduled.ts). Reuses the .draft-row / .draft-list styling.
 
 import { html, raw, type SafeHtml } from '../html.ts';
+import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import type { ScheduledPost } from '../data/scheduled.ts';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -20,7 +21,10 @@ function row(p: ScheduledPost): SafeHtml {
     // p.token is a randomBytes hex string ([0-9a-f]+), so it's safe to raw()-interpolate into the
     // id / #selector / action URL below. If token generation ever changes, escape these instead.
     const domId = `sched-${p.token}`;
-    const text = p.signed.content.trim().slice(0, 90) || 'Media post';
+    // An article's headline is its `title` tag, not its (markdown) content; notes/polls read from content.
+    const text = p.signed.kind === KIND_ARTICLE
+        ? (p.signed.tags.find((t) => t[0] === 'title')?.[1] || 'Untitled article')
+        : p.signed.content.trim().slice(0, 90) || 'Media post';
     return html`
       <li class="draft-row" id="${raw(domId)}">
         <div class="draft-open">

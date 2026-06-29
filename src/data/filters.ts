@@ -14,6 +14,7 @@
 import { join } from 'node:path';
 import { jsonStore } from './json-store.ts';
 import { replyParent } from '../nostr/nip10.ts';
+import { KIND_COMMENT } from '../nostr/nip22.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
 /** The structural toggles, set independently per surface (feed vs profile). */
@@ -119,7 +120,10 @@ export function compileFilters(f: FeedFilters, surface: Surface): CompiledFilter
         active,
         hide(ev: NostrEvent): boolean {
             if (isMachineNote(ev)) return true; // app/bot JSON-transport notes - never human discussion (built-in)
-            if (sf.hideReplies && replyParent(ev)) return true;
+            // A NIP-22 comment (kind:1111) is ALWAYS a reply; replyParent only reads NIP-10 (lowercase `e`
+            // with a marker / no 4th slot), which a 1111's pubkey-in-slot-4 `e` tag never matches - so treat
+            // the kind itself as the reply signal. Keeps "hide replies" covering both reply forms.
+            if (sf.hideReplies && (ev.kind === KIND_COMMENT || replyParent(ev))) return true;
             if (sf.hideQuotes && ev.tags.some((t) => t[0] === 'q')) return true;
             if (sf.hideLinkOnly && ev.content.replace(URL_RE, '').trim() === '') return true;
             if (matchers.length) {
