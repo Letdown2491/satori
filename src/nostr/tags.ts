@@ -17,6 +17,10 @@ export const nowSec = (): number => Math.floor(Date.now() / 1000);
 /** The addressable coordinate `kind:pubkey:dtag` for an event. */
 export const coordinateOf = (ev: NostrEvent): string => `${ev.kind}:${ev.pubkey}:${tag1(ev, 'd')}`;
 
+/** An addressable (parameterized-replaceable) kind: 30000-39999 (NIP-01). These are referenced by their
+ * `kind:pubkey:d` coordinate (naddr), so engagement/like state keys off the coordinate, not the event id. */
+export const isAddressable = (kind: number): boolean => kind >= 30000 && kind < 40000;
+
 /** The `relay` tag urls, de-duped and capped (default 8). Shared by the DM / draft / poll relay parsers. */
 export const relayTags = (ev: NostrEvent, cap = 8): string[] =>
     [...new Set(ev.tags.filter((t) => t[0] === 'relay' && t[1]).map((t) => t[1]!))].slice(0, cap);

@@ -47,6 +47,7 @@ const KIND_NAMES: Record<number, string> = {
     1111: 'Comment', 1311: 'Live chat', 1984: 'Report', 9735: 'Zap receipt', 9802: 'Highlight',
     10000: 'Mute list', 10002: 'Relay list', 30000: 'Follow set', 30008: 'Profile badges',
     30009: 'Badge', 30311: 'Live event', 30315: 'Status', 30402: 'Listing', 31922: 'Calendar event',
+    30817: 'Custom NIP',
     31923: 'Calendar event', 31924: 'Calendar', 31925: 'Calendar RSVP', 34235: 'Video', 34236: 'Short video', 34550: 'Community',
 };
 

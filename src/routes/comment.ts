@@ -31,7 +31,10 @@ function targetFrom(form: URLSearchParams): { ra: string; rp: string; target: Co
     const pi = (form.get('pi') ?? '').trim();   // parent comment id (empty = top-level)
     const pp = (form.get('pp') ?? '').trim();   // parent author
     if (!ra || !HEX64.test(rp)) return null;
-    const root: CommentRef = { kind: KIND_ARTICLE, pubkey: rp, address: ra };
+    // The root kind is the first segment of the `kind:pubkey:d` address, so a comment on a custom NIP (or
+    // any addressable) carries the correct root `K` tag - not always the article kind.
+    const rootKind = Number(ra.split(':')[0]);
+    const root: CommentRef = { kind: Number.isInteger(rootKind) ? rootKind : KIND_ARTICLE, pubkey: rp, address: ra };
     const parent: CommentRef = pi && HEX64.test(pi) ? { kind: KIND_COMMENT, pubkey: pp, id: pi } : root;
     return { ra, rp, target: { root, parent } };
 }

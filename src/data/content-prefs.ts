@@ -16,6 +16,7 @@ import { KIND_LISTING } from '../nostr/nip99.ts';
 import { VIDEO_KINDS } from '../nostr/nip71.ts';
 import { KIND_HIGHLIGHT } from '../nostr/nip84.ts';
 import { KIND_COMMENT } from '../nostr/nip22.ts';
+import { KIND_CUSTOM_NIP } from '../nostr/customnip.ts';
 
 export type Surface = 'feed' | 'profile';
 
@@ -42,6 +43,7 @@ export const CONTENT_TYPES: ContentType[] = [
     { id: 'calendar', label: 'Calendar events', kinds: [KIND_CALENDAR_DATE, KIND_CALENDAR_TIME], feed: false, profile: true },
     { id: 'listing', label: 'Listings', kinds: [KIND_LISTING], feed: false, profile: true },
     { id: 'highlight', label: 'Highlights', kinds: [KIND_HIGHLIGHT], feed: false, profile: true },
+    { id: 'customnip', label: 'Custom NIPs', kinds: [KIND_CUSTOM_NIP], feed: false, profile: true },
 ];
 
 export type ContentPrefs = { feed: Record<string, boolean>; profile: Record<string, boolean> };

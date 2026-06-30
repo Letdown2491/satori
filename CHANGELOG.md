@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-06-30
+
+### Added
+
+- Custom NIPs (kind 30817) now render like an article instead of an "unsupported kind"
+  fallback. These are community-authored protocol notes (NUDs): a Markdown body with a
+  title and an optional list of the event kinds the NIP defines. Satori gives them the
+  full reader (title, byline, rendered Markdown, and chips naming the kinds the NIP
+  defines), a card in feeds and on profiles, and a clean preview when one is quoted or
+  referenced inline. They get the same affordances an article does - NIP-22 comments,
+  like/zap/bookmark, and reply presence - all addressed by the event's `kind:pubkey:d`
+  coordinate. Custom NIPs default to showing on profiles but not the main feed (a per-kind
+  toggle in Settings, like articles).
+
+### Changed
+
+- Your engagement state (replies, reposts, likes) now reflects correctly on every
+  addressable event kind, not just articles - so a calendar event, classified listing, or
+  addressable video you have already replied to or liked shows as engaged. Internally, the
+  per-kind special-casing was replaced with a single "is this addressable?" check, which is
+  what let custom NIPs reuse the article machinery.
+
 ## [0.3.0] - 2026-06-29
 
 ### Added
@@ -194,6 +216,8 @@ with a zero-JS baseline.
 - Self-hostable as a single-user daemon, with owner-locked access control and an
   optional Tor hidden service.
 
+[0.3.1]: https://github.com/Letdown2491/satori/releases/tag/v0.3.1
+[0.3.0]: https://github.com/Letdown2491/satori/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Letdown2491/satori/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Letdown2491/satori/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Letdown2491/satori/releases/tag/v0.1.0

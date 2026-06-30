@@ -7,7 +7,9 @@ import { fetchEvent, fetchReplies, fetchAuthorNotes } from '../data/feeds.ts';
 import { fetchPinnedItems, fetchAuthorArticles } from '../data/profile-extras.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { fetchRelayLists } from '../data/relays.ts';
-import { KIND_ARTICLE, articleAddress } from '../nostr/nip23.ts';
+import { KIND_ARTICLE } from '../nostr/nip23.ts';
+import { KIND_CUSTOM_NIP } from '../nostr/customnip.ts';
+import { coordinateOf, isAddressable } from '../nostr/tags.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { commentSection } from '../render/comments.ts';
 import { replyParent } from '../nostr/nip10.ts';
@@ -37,6 +39,9 @@ import { profileKinds } from '../data/content-prefs.ts';
 const PAGE = 30;
 const PROFILE_FILL = 4; // cap loop-fill fetches on a profile (mirrors the feed's MAX_FILL)
 const MAX_DEPTH = 4;
+// The markdown long-form kinds that earn the rich /a/ reader (title + body + NIP-22 comments): the NIP-23
+// article and the NIP-30817 custom NIP. Every other addressable kind renders its focused card instead.
+const READER_KINDS = new Set([KIND_ARTICLE, KIND_CUSTOM_NIP]);
 
 function untilOf(ctx: Ctx): number | undefined {
     const u = ctx.query.get('until');
@@ -317,17 +322,18 @@ export async function getArticle(ctx: Ctx): Promise<void> {
         sendPage(ctx, html`<ul class="feed">${emptyItem('Event not found.')}</ul>`, chromeFor(ctx, s, { title: 'Article' }));
         return;
     }
-    // Not an article? Dispatch through the manifest rather than hardcoding "article not found". /a/ is
-    // the addressable-event route; only KIND_ARTICLE earns the rich reader + comments below. A recognized
-    // addressable kind renders its focused card; an unknown one hits the honest fallback ("Satori doesn't
-    // render this yet · open in app") - never a misleading not-found for a valid event we simply fetched.
-    if (ev.kind !== KIND_ARTICLE) {
+    // Not a long-form reader kind? Dispatch through the manifest rather than hardcoding "article not
+    // found". /a/ is the addressable-event route; the markdown long-form kinds (article + custom NIP) earn
+    // the rich reader + comments below. Any other recognized addressable kind renders its focused card; an
+    // unknown one hits the honest fallback ("Satori doesn't render this yet · open in app") - never a
+    // misleading not-found for a valid event we simply fetched.
+    if (!READER_KINDS.has(ev.kind)) {
         await ensureProfiles(s, notePubkeys([ev]));
         sendPage(ctx, html`<ul class="feed">${renderEvent(ev, 'focused', { profiles: s.profiles, s })}</ul>`, chromeFor(ctx, s, { title: kindLabel(ev.kind) }));
         return;
     }
 
-    const ra = articleAddress(ev);
+    const ra = coordinateOf(ev);
     // Hydrate the article's own author/mentions in parallel with fetching comments + their
     // authors, rather than serially - the comment round-trips were needlessly gating the body.
     // (Concurrent ensureProfiles is safe: it coalesces overlapping pubkeys in-flight.)
@@ -343,7 +349,7 @@ export async function getArticle(ctx: Ctx): Promise<void> {
     // state - the article page was missing the primer that the feed/profile already have.
     const primer = pendingPrivateKinds(s).length ? listPrimer({ ret: `/a/${entity}` }) : html``;
     sendPage(ctx, html`${renderEvent(ev, 'reader', { profiles: s.profiles, s })}${commentSection(s, ra, ev.pubkey, comments, s.profiles)}${primer}`,
-        chromeFor(ctx, s, { title: 'Article', contentH1: true })); // article-title is the page <h1>
+        chromeFor(ctx, s, { title: ev.kind === KIND_ARTICLE ? 'Article' : kindLabel(ev.kind), contentH1: true })); // the reader title is the page <h1>
 }
 
 /** GET /embed/<bech>?as=reply|quote|article - a compact preview lazily swapped
@@ -392,12 +398,12 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     // Hydrate the author AND any @mentioned pubkeys in the embed's content, so
     // in-content mentions resolve to @names instead of falling back to @npub.
     await ensureProfiles(s, notePubkeys([ev]));
-    // A long-form article can be quoted by event-id (nevent), not just naddr. The article handler
-    // renders the clean article card (title + cover + summary), NOT a raw-markdown note body, linking
-    // via a freshly-encoded naddr (its addressable form). Any other kind falls through to the note
-    // embed (the registry fallback) - exactly the old article-vs-everything-else branch, now dispatched.
+    // An addressable event (article, custom NIP, ...) can be quoted by event-id (nevent), not just naddr.
+    // Its handler renders the clean reference card (title + summary), NOT a raw-markdown note body, linking
+    // via a freshly-encoded naddr (its addressable form). A plain note falls through to the note embed
+    // (the registry fallback) - exactly the old article-vs-everything-else branch, now dispatched per kind.
     let naddr: string | undefined;
-    if (ev.kind === KIND_ARTICLE) {
+    if (isAddressable(ev.kind)) {
         const identifier = ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
         naddr = naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier, relays });
     }

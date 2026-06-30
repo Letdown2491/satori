@@ -11,20 +11,20 @@ import { dirname, join } from 'node:path';
 import { naddrEncode } from 'nostr-tools/nip19';
 import { debouncedFlush } from './json-store.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
-import { KIND_ARTICLE } from '../nostr/nip23.ts';
+import { isAddressable } from '../nostr/tags.ts';
 import { emojiFromTags } from '../nostr/nip30.ts';
 import { parseZapReceipt } from './notifications.ts';
 import type { Pool } from './pool.ts';
 import type { RelayList, NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
 
-/** An addressable reaction's `a`-tag (`kind:pubkey:identifier`) → the canonical naddr we key
- * article like-state by (relays:[], matching render's naddrFor). Article kinds only; else null. */
+/** An addressable reaction's `a`-tag (`kind:pubkey:identifier`) → the canonical naddr we key addressable
+ * like-state by (relays:[], matching render's naddrFor). Addressable kinds only; else null. */
 function addrToNaddr(a: string): string | null {
     const i1 = a.indexOf(':'), i2 = a.indexOf(':', i1 + 1);
     if (i1 < 0 || i2 < 0) return null;
     const kind = Number(a.slice(0, i1));
-    if (kind !== KIND_ARTICLE) return null;
+    if (!isAddressable(kind)) return null;
     const pubkey = a.slice(i1 + 1, i2), identifier = a.slice(i2 + 1);
     try { return naddrEncode({ kind, pubkey, identifier, relays: [] }); } catch { return null; }
 }

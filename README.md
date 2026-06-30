@@ -48,7 +48,7 @@ links and forms, and it is all reusable.
 
 Close to a full client: feeds, threads, profiles, long-form articles, polls, private DMs,
 search, zaps, notifications, drafts, bookmarks, follows, and mutes. Pictures, video,
-calendar events, classifieds, podcasts, and highlights render as proper cards instead of
+calendar events, classifieds, podcasts, highlights, and custom NIPs render as proper cards instead of
 sending you off to another app. Media goes through the daemon so your browser never
 connects to a stranger's host (and a dead image can be refetched by its hash), anything
 the server fetches can be routed over Tor, and a short undo window holds a post before it

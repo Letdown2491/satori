@@ -1259,6 +1259,10 @@
         .article-byline { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin-bottom: 22px; }
         .article-edit { margin-left: auto; padding: 4px 12px; background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; }
         .article-edit:hover { border-color: var(--accent); }
+        /* Custom NIP (kind:30817) - the "defines kind N" chips, on the card + reader */
+        .nip-kinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+        .article .nip-kinds { margin: -8px 0 22px; }
+        .nip-kind-chip { font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
         /* Long-form composer */
         .article-compose { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 24px; min-height: calc(100vh - 64px); }
         /* Only the writing surface fills the leftover height; everything else stays natural. */

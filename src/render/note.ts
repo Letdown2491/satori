@@ -17,7 +17,9 @@ import { replyParent } from '../nostr/nip10.ts';
 import { commentParent } from '../nostr/nip22.ts';
 import { naddrFromCoord } from '../nostr/nip19.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
-import { parseArticle, readingMinutes, KIND_ARTICLE } from '../nostr/nip23.ts';
+import { parseArticle, readingMinutes } from '../nostr/nip23.ts';
+import { parseCustomNip } from '../nostr/customnip.ts';
+import { tag1, isAddressable } from '../nostr/tags.ts';
 import { renderEvent, actionsFor } from '../manifest/registry.ts';
 import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
 import { isZapped } from '../zaps.ts';
@@ -328,7 +330,7 @@ export function facesOOB(key: string, s: Session): SafeHtml | null {
  * is already warm (a re-visited Following feed) - no needless round-trip. */
 export function facesHydrate(events: NostrEvent[], s?: Session): SafeHtml {
     if (!s) return html``;
-    const keys = events.map((e) => (e.kind === KIND_ARTICLE ? naddrFor(e) : e.kind === 1 ? e.id : '')).filter(Boolean);
+    const keys = events.map((e) => (isAddressable(e.kind) ? naddrFor(e) : e.kind === 1 ? e.id : '')).filter(Boolean);
     const cold = [...new Set(keys)].filter((k) => replyFaces(k) === null);
     if (cold.length === 0) return html``;
     return html`<li class="faces-hydrate" h-get="/faces?keys=${cold.join(',')}" h-trigger="load" h-swap="none" h-push-url="false"></li>`;
@@ -389,7 +391,7 @@ export function articleZapButton(naddr: string, recipient: string, active: boole
 /** An article's action vocabulary, in render order (no mute - articles aren't muted from the row). */
 export const ARTICLE_ACTIONS = ['reply', 'quote', 'like', 'zap', 'bookmark', 'pin'] as const;
 
-function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPage = false): SafeHtml {
+export function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPage = false): SafeHtml {
     const mine = !!s && ev.pubkey === s.me;
     const replied = !!s && hasReplied(s, engageTarget(ev));
     const reposted = !!s && hasReposted(s, engageTarget(ev));
@@ -501,8 +503,7 @@ export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts
  * reading time. The clickable card is an <a> here (Satori used a JS-onClick div). */
 function articleCard(ev: NostrEvent, profiles: ProfileMap | undefined, hideAuthor: boolean): SafeHtml {
     const a = parseArticle(ev);
-    let naddr = '';
-    try { naddr = naddrEncode({ kind: KIND_ARTICLE, pubkey: ev.pubkey, identifier: a.identifier, relays: [] }); } catch { /* */ }
+    const naddr = naddrFor(ev);
     const href = naddr ? `/a/${naddr}` : '#';
     const mins = `${readingMinutes(a.content)} min read`;
     const cover = a.image && safeUrl(a.image) !== '#'
@@ -523,10 +524,11 @@ function articleCard(ev: NostrEvent, profiles: ProfileMap | undefined, hideAutho
       </a>`;
 }
 
-/** The article's CANONICAL naddr (relays:[]) - the shared key for its like/zap state across the
- * render (action buttons), the engagement-cache like sync, and the zap-receipt hydration. */
+/** An addressable event's CANONICAL naddr (relays:[]) - the shared key for its like/zap state across the
+ * render (action buttons), the engagement-cache like sync, and the zap-receipt hydration. Encodes with the
+ * event's own kind, so it serves articles, custom NIPs, and any other addressable kind identically. */
 export function naddrFor(ev: NostrEvent): string {
-    try { return naddrEncode({ kind: KIND_ARTICLE, pubkey: ev.pubkey, identifier: parseArticle(ev).identifier, relays: [] }); } catch { return ''; }
+    try { return naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier: tag1(ev, 'd'), relays: [] }); } catch { return ''; }
 }
 
 /** An article as a feed row (Satori's ArticleRow): author head + card + actions. */
@@ -656,6 +658,82 @@ export function articleReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session
         ${renderMarkdown(a.content, profiles, coverUrl)}
         ${articleActions(ev, naddrFor(ev), s, true)}
       </article>`;
+}
+
+// --- Custom NIP (kind:30817) -----------------------------------------------
+// A NUD (community-authored NIP): markdown body like an article, plus a `title` and zero+ `k` tags naming
+// the kinds it defines. Rendered like an article (reader + rows + embed) with those defined kinds surfaced
+// as chips, per the NUD's "display custom NIPs distinctly" guidance. Reuses the article DOM + CSS.
+
+/** The "kind N · Name" chips from a custom NIP's `k` tags, or null when it defines none. */
+function definedKindChips(kinds: { num: string; name: string }[]): SafeHtml | null {
+    if (!kinds.length) return null;
+    return html`<div class="nip-kinds">${join(kinds.map((k) => html`<span class="nip-kind-chip">kind ${k.num}${k.name ? html` · ${k.name}` : null}</span>`))}</div>`;
+}
+
+/** A custom NIP preview card (the article-card layout, coverless): kicker · title · summary · defined
+ * kinds · reading time. The whole card links to its reader at /a/<naddr>. */
+function customNipCard(ev: NostrEvent): SafeHtml {
+    const c = parseCustomNip(ev);
+    const naddr = naddrFor(ev);
+    const href = naddr ? `/a/${naddr}` : '#';
+    return html`
+      <a class="article-card nip-card" href="${href}">
+        <div class="article-card-cover cover-missing">${enso(30, true)}</div>
+        <div class="article-card-body">
+          <div class="article-card-kicker">↗ Custom NIP</div>
+          <div class="article-card-title">${c.title}</div>
+          ${c.summary ? html`<div class="article-card-summary">${c.summary}</div>` : null}
+          ${definedKindChips(c.kinds)}
+          <div class="article-card-meta"><span>${readingMinutes(c.content)} min read</span></div>
+        </div>
+      </a>`;
+}
+
+/** A custom NIP as a feed row: author head + card + the addressable action row (like articleRow). */
+export function customNipRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+    const naddr = naddrFor(ev);
+    return html`
+      <li class="note article-row">
+        ${authorAvatarLink(ev.pubkey, profiles)}
+        <div class="note-body">
+          <div class="note-head">
+            ${authorName(ev.pubkey, profiles)}
+            <a class="time time-thread" href="/a/${naddr}" aria-label="Open custom NIP" h-scroll="top instant">${timeAgo(parseCustomNip(ev).publishedAt)}${icon('thread')}</a>
+          </div>
+          ${customNipCard(ev)}
+          ${articleActions(ev, naddr, s)}
+        </div>
+      </li>`;
+}
+
+/** The custom NIP reader (like articleReader, coverless): title, byline, defined-kind chips, the rendered
+ * markdown body, then the action bar. */
+export function customNipReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+    const c = parseCustomNip(ev);
+    return html`
+      <article class="article nip-article">
+        <h1 class="article-title">${c.title}</h1>
+        <div class="article-byline">
+          ${authorAvatarLink(ev.pubkey, profiles, 'sm')}
+          ${authorName(ev.pubkey, profiles)}
+          <span class="article-byline-meta">· ${timeAgo(c.publishedAt)} · ${readingMinutes(c.content)} min read</span>
+        </div>
+        ${definedKindChips(c.kinds)}
+        ${renderMarkdown(c.content, profiles)}
+        ${articleActions(ev, naddrFor(ev), s, true)}
+      </article>`;
+}
+
+/** A custom NIP as an inline embed (the article-embed card): kicker · title · author · summary. */
+export function customNipEmbedPreview(ev: NostrEvent, naddr: string, profiles?: ProfileMap): SafeHtml {
+    const c = parseCustomNip(ev);
+    return html`<a class="article-embed" href="/a/${naddr}" h-scroll="top instant">
+        <span class="quote-label">↗ custom NIP</span>
+        <span class="article-embed-title">${c.title}</span>
+        <span class="article-embed-by">${displayName(ev.pubkey, profiles)}</span>
+        ${c.summary ? html`<span class="article-embed-summary">${c.summary}</span>` : null}
+      </a>`;
 }
 
 /** A list of notes (feed / profile / thread replies). `opts.faces` appends the lazy reply-faces hydrate
