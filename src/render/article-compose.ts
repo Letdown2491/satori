@@ -6,7 +6,7 @@
 import { html, raw, type SafeHtml } from '../html.ts';
 import { icon, enso } from './svg.ts';
 import { timeAgo } from './util.ts';
-import { scheduleRow } from './compose.ts';
+import { scheduleRow, composeTypes } from './compose.ts';
 import { quote } from './quotes.ts';
 import { scheduledSection } from './scheduled.ts';
 import type { Draft } from '../drafts.ts';
@@ -51,15 +51,11 @@ export function articleComposeForm(c: ArticleComposeCtx = {}): SafeHtml {
       </form>`;
 }
 
-/** Full composer page: the Note · Poll · Article selector + the form. */
+/** Full composer page: the Note · Picture · Poll · Article selector + the form. */
 export function articleComposePage(c: ArticleComposeCtx = {}): SafeHtml {
     return html`
       <div class="view-pad">
-        <div class="compose-types">
-          <a class="compose-type" href="/compose">Note</a>
-          <a class="compose-type" href="/compose?type=poll">Poll</a>
-          <a class="compose-type active" href="/compose?type=article">Article</a>
-        </div>
+        ${composeTypes('article')}
         ${articleComposeForm(c)}
       </div>`;
 }

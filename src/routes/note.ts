@@ -22,7 +22,7 @@ import type { NostrEvent } from '../nostr/types.ts';
 import { html, raw, type SafeHtml } from '../html.ts';
 import { displayName } from '../render/util.ts';
 import { icon } from '../render/svg.ts';
-import { mediaItem, composeFileInput, undoToast, scheduleRow } from '../render/compose.ts';
+import { mediaItem, composeFileInput, undoToast, scheduleRow, composeTypes } from '../render/compose.ts';
 import { noteCard, composePreview } from '../render/note.ts';
 import { remainingSeconds, cancelPublish, commitIfDue, getHeld, getCommitted } from '../undo.ts';
 import { tryUndoWindow, sendReplyToThread, stayPutCloseModal, landOnFeed, CLOSE_MODAL_OOB } from './undo-window.ts';
@@ -43,24 +43,6 @@ import { signsOnClient } from '../session.ts';
 const MAX_INBOX_RELAYS = 4;
 
 interface ComposeCtx { reply?: { nevent: string; name: string }; quote?: string; draft?: string; error?: string; isNew?: boolean; media?: string[][]; cw?: boolean; cwReason?: string; inThread?: string; draftId?: string; status?: string; syncEl?: SafeHtml; relays?: string[]; title?: string }
-
-/** The Note · Poll · Article segmented selector (only on new top-level posts,
- * matching Satori). Article (the long-form composer) is Phase 6. In a modal the
- * Note/Poll links re-load into #modal; on the page they navigate. */
-function composeTypes(active: 'note' | 'poll' | 'picture', inModal = false): SafeHtml {
-    const tgt = inModal ? raw(' h-target="#modal" h-swap="inner"') : raw('');
-    // In the modal, focus the relevant field after the type-switch swap lands.
-    const noteFocus = inModal ? raw(' h-focus="#compose-text"') : raw('');
-    const pollFocus = inModal ? raw(' h-focus="#poll-question"') : raw('');
-    const picFocus = inModal ? raw(' h-focus="#picture-title"') : raw('');
-    return html`
-      <div class="compose-types">
-        <a class="compose-type ${active === 'note' ? 'active' : ''}" href="/compose"${tgt}${noteFocus}>Note</a>
-        <a class="compose-type ${active === 'picture' ? 'active' : ''}" href="/compose?type=picture"${tgt}${picFocus}>Picture</a>
-        <a class="compose-type ${active === 'poll' ? 'active' : ''}" href="/compose?type=poll"${tgt}${pollFocus}>Poll</a>
-        <a class="compose-type" href="/compose?type=article">Article</a>
-      </div>`;
-}
 
 /** The note compose form body (reply-to + form + help) - no wrapper/selector.
  * ONE multipart form with two submit buttons: "Attach" overrides it to POST the

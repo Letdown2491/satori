@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-01
+
+### Fixed
+
+- The composer's "Picture" mode is now reachable from the Article screen. The four compose tabs
+  (Note, Picture, Poll, Article) were built in two places, and the Article page's copy had drifted:
+  it listed only Note, Poll, and Article, so switching to Article dropped "Picture" from the row and
+  you had to back out to Note or Poll to find it again. All four composers now render the tab strip
+  from a single shared helper, so the set stays identical everywhere and cannot drift again.
+
 ## [0.4.0] - 2026-07-01
 
 ### Added

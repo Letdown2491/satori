@@ -21,6 +21,26 @@ export function scheduleRow(action: string, btnAttrs: SafeHtml = raw('')): SafeH
         </div>`;
 }
 
+/** The Note · Picture · Poll · Article segmented selector (only on new top-level
+ * posts, matching Satori). Shared by every composer (note/poll/picture routes and
+ * the article page) so the tab set can't drift. In a modal the links re-load into
+ * #modal and focus the relevant field after the swap; on a page they navigate.
+ * Article is a full-page composer (never a modal), so it passes no focus. */
+export function composeTypes(active: 'note' | 'picture' | 'poll' | 'article', inModal = false): SafeHtml {
+    const tgt = inModal ? raw(' h-target="#modal" h-swap="inner"') : raw('');
+    // In the modal, focus the relevant field after the type-switch swap lands.
+    const noteFocus = inModal ? raw(' h-focus="#compose-text"') : raw('');
+    const pollFocus = inModal ? raw(' h-focus="#poll-question"') : raw('');
+    const picFocus = inModal ? raw(' h-focus="#picture-title"') : raw('');
+    return html`
+      <div class="compose-types">
+        <a class="compose-type ${active === 'note' ? 'active' : ''}" href="/compose"${tgt}${noteFocus}>Note</a>
+        <a class="compose-type ${active === 'picture' ? 'active' : ''}" href="/compose?type=picture"${tgt}${picFocus}>Picture</a>
+        <a class="compose-type ${active === 'poll' ? 'active' : ''}" href="/compose?type=poll"${tgt}${pollFocus}>Poll</a>
+        <a class="compose-type ${active === 'article' ? 'active' : ''}" href="/compose?type=article">Article</a>
+      </div>`;
+}
+
 /** The compose file input. After an enhanced Attach, /upload re-emits this with
  * `h-oob` so helmjs swaps it (by id) back to empty - otherwise the input keeps
  * its selection and the file would ride along to the next Publish. */
