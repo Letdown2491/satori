@@ -13,6 +13,7 @@ import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, routeAuthorsToRelays } from '..
 import { HEX64 } from '../nostr/tags.ts';
 import { coalesceOne } from './coalesce.ts';
 import { fetchRelayLists } from './relays.ts';
+import { seenRelaysFor } from './seen-relays.ts';
 
 export interface FeedRoute {
     authors: string[];
@@ -144,7 +145,8 @@ async function resolveEvent(pool: Pool, id: string, relayHints: string[], author
     // can miss. The relay list is cached per pubkey, so for a followed author this adds no round-trip.
     if (author) {
         const writes = (await fetchRelayLists(pool, INDEXER_RELAYS, [author]).catch(() => null))?.get(author)?.write ?? [];
-        const primary = [...new Set([...relayHints, ...writes])].filter(Boolean);
+        // ...plus relays we've empirically seen this author on (finds events on relays they don't advertise).
+        const primary = [...new Set([...relayHints, ...writes, ...seenRelaysFor(author)])].filter(Boolean);
         if (primary.length) {
             const ev = await pool.get(primary, { ids: [id] }, maxWait).catch(() => null);
             if (ev) return rememberEvent(id, ev);

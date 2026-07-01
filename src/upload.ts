@@ -84,6 +84,37 @@ async function blossomPut(server: string, bytes: Buffer, contentType: string, si
     return { url: j.url, sha256: j.sha256 ?? '', type: j.type };
 }
 
+/** Pixel dimensions from an image byte buffer (PNG / GIF / JPEG / WebP) as a NIP-92 `dim` value "WxH", or
+ * null if unrecognized. Header-only, bounded, never throws - no image library (thin-deps). Enables NIP-68
+ * picture `dim` + (later) auto landscape-vs-short video. Videos return null (their headers aren't parsed). */
+export function imageDim(b: Buffer): string | null {
+    try {
+        // PNG: 8-byte signature, then IHDR with width@16, height@20 (big-endian uint32).
+        if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return `${b.readUInt32BE(16)}x${b.readUInt32BE(20)}`;
+        // GIF: 'GIF8', width@6, height@8 (little-endian uint16).
+        if (b.length >= 10 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return `${b.readUInt16LE(6)}x${b.readUInt16LE(8)}`;
+        // JPEG: FFD8, then walk segments to a Start-Of-Frame marker; height then width (BE uint16) follow.
+        if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+            let i = 2;
+            while (i + 9 < b.length) {
+                if (b[i] !== 0xff) { i++; continue; }
+                const marker = b[i + 1]!;
+                if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) return `${b.readUInt16BE(i + 7)}x${b.readUInt16BE(i + 5)}`;
+                if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; } // markers with no length
+                const len = b.readUInt16BE(i + 2);
+                if (len < 2) return null;
+                i += 2 + len;
+            }
+            return null;
+        }
+        // WebP (extended VP8X): 'RIFF'....'WEBP','VP8X', then (width-1),(height-1) as 24-bit little-endian.
+        if (b.length >= 30 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP' && b.toString('ascii', 12, 16) === 'VP8X') {
+            return `${1 + (b[24]! | (b[25]! << 8) | (b[26]! << 16))}x${1 + (b[27]! | (b[28]! << 8) | (b[29]! << 16))}`;
+        }
+        return null;
+    } catch { return null; }
+}
+
 /** Upload to all Blossom servers (first success wins, like Satori). */
 export async function blossomUploadAll(servers: string[], bytes: Buffer, contentType: string, hash: string, signed: NostrEvent): Promise<Upload> {
     // SSRF symmetry with torFetch: the upload PUT is outbound traffic to a user-listed host,
@@ -93,6 +124,7 @@ export async function blossomUploadAll(servers: string[], bytes: Buffer, content
     const ok = results.find((r) => r.status === 'fulfilled');
     if (!ok || ok.status !== 'fulfilled') throw new Error('no Blossom server accepted the upload');
     const blob = ok.value;
-    const imeta = ['imeta', `url ${blob.url}`, ...(blob.type || contentType ? [`m ${blob.type || contentType}`] : []), `x ${blob.sha256 || hash}`];
+    const dim = imageDim(bytes);
+    const imeta = ['imeta', `url ${blob.url}`, ...(blob.type || contentType ? [`m ${blob.type || contentType}`] : []), ...(dim ? [`dim ${dim}`] : []), `x ${blob.sha256 || hash}`];
     return { url: blob.url, imeta };
 }

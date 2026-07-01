@@ -51,9 +51,15 @@ export function normalizeRelayUrl(url: string, opts: { assumeWss?: boolean } = {
 export const writeRelaysFor = (r: RelayList | null | undefined): string[] =>
     r && r.write.length ? r.write : INDEXER_RELAYS;
 
+/** The user's OWN relay urls: read ∪ write, deduped. No indexer fallback (callers that want the indexers
+ * add them - e.g. readRelaysFor below). The relays you'd browse as a timeline, and the reader-side of the
+ * outbox model when resolving a single event by id/coordinate. */
+export const myRelayUrls = (r: RelayList | null | undefined): string[] =>
+    [...new Set([...(r?.read ?? []), ...(r?.write ?? [])])];
+
 /** The relays to QUERY the user's own data from: read ∪ write ∪ indexers (deduped). */
 export const readRelaysFor = (r: RelayList | null | undefined): string[] =>
-    [...new Set([...(r?.read ?? []), ...(r?.write ?? []), ...INDEXER_RELAYS])];
+    [...new Set([...myRelayUrls(r), ...INDEXER_RELAYS])];
 
 /** Parse a kind:10002 event into read/write lists (NIP-65 r-tag markers). */
 export function parseRelayList(event: NostrEvent): RelayList {

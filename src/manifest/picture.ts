@@ -9,11 +9,11 @@ import type { KindHandler } from './registry.ts';
 import { type SatoriDeps, notWired } from './deps.ts';
 import { html, type SafeHtml } from '../html.ts';
 import { renderContent, imageItems, mediaTiles, mediaOverlays } from '../render/content.ts';
-import { cardShell, cardTitle, cwIfFlagged } from '../render/note.ts';
+import { cardShell, cardTitle, cwIfFlagged, pictureFigure } from '../render/note.ts';
 import type { ProfileMap } from '../render/util.ts';
 import { parseImeta } from '../nostr/imeta.ts';
 import { tag1 } from '../nostr/tags.ts';
-import { KIND_PICTURE } from '../nostr/nip68.ts';
+import { KIND_PICTURE, firstCaptionLine } from '../nostr/nip68.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
 /** The picture-specific BODY (image-forward), dropped into the shared cardShell. The images now render
@@ -23,13 +23,15 @@ import type { NostrEvent } from '../nostr/types.ts';
  * tag shows as a quiet dateline. NIP-68 content-warning (NSFW) blurs the visual behind the same zero-JS
  * tap-to-reveal notes use - the title stays visible (context for the reveal); the imagery is hidden. */
 function pictureBody(ev: NostrEvent, profiles: ProfileMap | undefined, media: SafeHtml): SafeHtml {
-    const location = tag1(ev, 'location');
-    const visual = html`
-      ${media}
-      ${location ? html`<div class="picture-loc">${location}</div>` : null}
-      ${ev.content ? renderContent(ev.content, profiles, false) : null}`;
+    const caption = ev.content ? renderContent(ev.content, profiles, false) : null;
+    const visual = pictureFigure(media, caption, tag1(ev, 'location'));
+    // A blank-title picture derives its NIP-68 `title` tag from the caption's first line (see signPicture),
+    // so the tag is present for other clients. Showing it HERE would duplicate that first line above the
+    // caption, so we suppress a title that just repeats it (applies to any kind-20, whatever the source).
+    const title = tag1(ev, 'title');
+    const heading = title && title !== firstCaptionLine(ev.content) ? title : '';
     return html`
-      ${cardTitle(tag1(ev, 'title'))}
+      ${cardTitle(heading)}
       ${cwIfFlagged(ev, visual)}`;
 }
 

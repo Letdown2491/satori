@@ -51,6 +51,24 @@ export function neventFromId(id: string): string | null {
     return HEX64_RE.test(id) ? neventEncode({ id: id.toLowerCase() }) : null;
 }
 
+/** Canonicalize a reply/comment parent reference (a raw `e`-tag value) into an `nevent`, or null if it isn't
+ * one. A clean 64-hex id is encoded (carrying any author/relay hints); a value that is ALREADY a note/nevent
+ * bech is kept as-is; anything else (an `a`-coordinate, junk, or a short/padded id that `neventEncode` would
+ * reject) yields null - so callers drop a would-be-broken embed rather than emit a dead `/t/` link + an
+ * undecodable `/embed/` (which the reader surfaced as a bare "↗ link"). */
+export function neventFromRef(value: string, opts: { author?: string; relays?: string[] } = {}): string | null {
+    if (HEX64_RE.test(value)) {
+        const relays = (opts.relays ?? []).filter((r) => typeof r === 'string' && r.length > 0);
+        // `neventEncode` hex-decodes the author too, so a malformed parent pubkey (NIP-22) would throw -
+        // gate it like the id, and keep a try/catch as a backstop so any bad input yields null, never a 500.
+        const author = opts.author && HEX64_RE.test(opts.author) ? opts.author.toLowerCase() : undefined;
+        try { return neventEncode({ id: value.toLowerCase(), ...(author ? { author } : {}), ...(relays.length ? { relays } : {}) }); }
+        catch { return null; }
+    }
+    try { const d = decode(value); if (d.type === 'note' || d.type === 'nevent') return value; } catch { /* not a bech either */ }
+    return null;
+}
+
 /** Encode an `a`-tag coordinate (`kind:pubkey:identifier`) as an `naddr`, or null if malformed. */
 export function naddrFromCoord(coord: string): string | null {
     const m = COORD_RE.exec(coord);

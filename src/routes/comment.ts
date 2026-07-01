@@ -13,7 +13,7 @@ import { writeRelays } from '../actions.ts';
 import { requireSigned } from '../nip07.ts';
 import { requireLogin, ensureProfiles, notePubkeys } from './common.ts';
 import { readForm, redirect, safeReferer, sendFragment, sendSignRequest, notFound, type Ctx } from '../http.ts';
-import { HEX64 } from '../nostr/tags.ts';
+import { HEX64, coordParts } from '../nostr/tags.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -33,8 +33,7 @@ function targetFrom(form: URLSearchParams): { ra: string; rp: string; target: Co
     if (!ra || !HEX64.test(rp)) return null;
     // The root kind is the first segment of the `kind:pubkey:d` address, so a comment on a custom NIP (or
     // any addressable) carries the correct root `K` tag - not always the article kind.
-    const rootKind = Number(ra.split(':')[0]);
-    const root: CommentRef = { kind: Number.isInteger(rootKind) ? rootKind : KIND_ARTICLE, pubkey: rp, address: ra };
+    const root: CommentRef = { kind: coordParts(ra)?.kind ?? KIND_ARTICLE, pubkey: rp, address: ra };
     const parent: CommentRef = pi && HEX64.test(pi) ? { kind: KIND_COMMENT, pubkey: pp, id: pi } : root;
     return { ra, rp, target: { root, parent } };
 }

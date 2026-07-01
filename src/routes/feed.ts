@@ -28,9 +28,10 @@ import { ensureZaps } from '../zaps.ts';
 import { sendPage, sendFragment, sendSignRequest, redirect, type Ctx } from '../http.ts';
 import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
+import { myRelayUrls } from '../nostr/nip65.ts';
 import { signsOnClient } from '../session.ts';
 import { FEED_KINDS } from '../manifest/feed-config.ts';
-import { feedKinds } from '../data/content-prefs.ts';
+import { feedKinds, profileKinds } from '../data/content-prefs.ts';
 import { prepareEvents } from '../manifest/registry.ts';
 import type { FeedTab } from '../render/layout.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -110,7 +111,10 @@ const isRelay = (src: FeedSource): src is { relay: string } => 'relay' in src;
 const srcKey = (src: FeedSource): string => (isRelay(src) ? `relay:${src.relay}` : src.tab);
 const srcPageSize = (src: FeedSource): number => (isRelay(src) ? PAGE : pageSize(src.tab));
 const srcPaginates = (src: FeedSource): boolean => (isRelay(src) ? true : paginates(src.tab));
-const srcKinds = (src: FeedSource, me: string): number[] => (isRelay(src) ? feedKinds(me) : kindsFor(src.tab, me));
+// An explicit relay browse shows that relay's CONTENT across every renderable kind (profileKinds), not the
+// narrow home-feed set - otherwise a long-form-only relay (articles/wikis, no kind:1) reads as empty. This
+// also lets seen-relays learn addressable-event authors from a relay you visit (bootstrapping outbox reads).
+const srcKinds = (src: FeedSource, me: string): number[] => (isRelay(src) ? profileKinds(me) : kindsFor(src.tab, me));
 const srcIsCommons = (src: FeedSource): boolean => !isRelay(src) && src.tab === 'commons';
 const srcMutes = (src: FeedSource): boolean => isRelay(src) || srcIsCommons(src);
 function srcSentinel(src: FeedSource, until: number): SafeHtml {
@@ -403,11 +407,6 @@ export async function getFaces(ctx: Ctx): Promise<void> {
     sendFragment(ctx, els.length ? join(els) : html``);
 }
 
-/** The user's own relays (read ∪ write, deduped) - the relay picker's quick-pick list. Deliberately NOT
- * readRelaysFor (that folds in INDEXER_RELAYS, which aren't relays you'd browse as a timeline). */
-const myRelayUrls = (s: Session & { me: string }): string[] =>
-    [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? [])])];
-
 /** GET /relay/pick - the relay picker (the switcher's "Browse a relay…"): type any relay URL to browse, or
  * pick a favorite / one of your own relays. helmjs path = a modal fragment + an OOB that closes the switcher
  * <details> (a partial swap leaves the native dropdown open behind the modal otherwise); direct nav / zero-JS
@@ -415,7 +414,7 @@ const myRelayUrls = (s: Session & { me: string }): string[] =>
 export async function getRelayPick(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    const mine = myRelayUrls(s);
+    const mine = myRelayUrls(s.myRelays);
     const favs = getFavoriteRelays(s.me);
     if (ctx.isPartial) {
         const rl = ctx.query.get('rl') || undefined;
@@ -434,7 +433,7 @@ export async function postRelayFavorite(ctx: Ctx): Promise<void> {
     if (!url) { ctx.res.writeHead(204); ctx.res.end(); return; }
     const fav = toggleFavoriteRelay(s.me, url);
     if (ctx.query.get('from') === 'pick') {
-        sendFragment(ctx, relayPickerBody(getFavoriteRelays(s.me), myRelayUrls(s)));
+        sendFragment(ctx, relayPickerBody(getFavoriteRelays(s.me), myRelayUrls(s.myRelays)));
     } else {
         sendFragment(ctx, favStar(url, fav));
     }

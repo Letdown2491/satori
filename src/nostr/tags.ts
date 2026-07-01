@@ -6,6 +6,11 @@ import type { NostrEvent } from './types.ts';
 /** The first value of the first tag named `name` (`t[1]`), or '' when absent. */
 export const tag1 = (ev: NostrEvent, name: string): string => ev.tags.find((t) => t[0] === name)?.[1] ?? '';
 
+/** ALL values of every tag named `name`, flattened + de-blanked. Handles both single-tag-multi-value
+ * (`["clone", a, b]`) and repeated-tag (`["clone", a], ["clone", b]`) shapes - NIP-34 uses both. */
+export const tagValues = (ev: NostrEvent, name: string): string[] =>
+    ev.tags.filter((t) => t[0] === name).flatMap((t) => t.slice(1)).filter(Boolean);
+
 /** A 64-char hex id / pubkey. Case-INSENSITIVE (some sources emit uppercase); callers should lowercase
  * at the boundary if using the value as a tag/key. One canonical validator for every route. */
 export const HEX64 = /^[0-9a-f]{64}$/i;
@@ -16,6 +21,17 @@ export const nowSec = (): number => Math.floor(Date.now() / 1000);
 
 /** The addressable coordinate `kind:pubkey:dtag` for an event. */
 export const coordinateOf = (ev: NostrEvent): string => `${ev.kind}:${ev.pubkey}:${tag1(ev, 'd')}`;
+
+/** Parse an addressable coordinate `kind:pubkey:dtag` back into its parts, or null if malformed. Splits on
+ * the FIRST TWO colons only, so a `d` identifier that itself contains colons survives intact. The inverse
+ * of coordinateOf - one parser for every site that used to hand-split with `.split(':')` indices. */
+export const coordParts = (coord: string): { kind: number; pubkey: string; d: string } | null => {
+    const i1 = coord.indexOf(':'), i2 = coord.indexOf(':', i1 + 1);
+    if (i1 < 0 || i2 < 0) return null;
+    const kind = Number(coord.slice(0, i1)), pubkey = coord.slice(i1 + 1, i2);
+    if (!Number.isInteger(kind) || !HEX64.test(pubkey)) return null;
+    return { kind, pubkey, d: coord.slice(i2 + 1) };
+};
 
 /** An addressable (parameterized-replaceable) kind: 30000-39999 (NIP-01). These are referenced by their
  * `kind:pubkey:d` coordinate (naddr), so engagement/like state keys off the coordinate, not the event id. */

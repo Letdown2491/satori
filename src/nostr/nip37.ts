@@ -15,10 +15,14 @@ export const KIND_DRAFT_RELAYS = 10013;   // NIP-51 "draft relays" list (where t
 /** The unsigned kind:31234 wrap, given already-encrypted content. `kind` = the wrapped draft's
  * kind (the `k` tag). Pass an empty `encrypted` (and a fresh createdAt) to DELETE the draft. */
 export function draftWrapTemplate(me: string, identifier: string, kind: number, encrypted: string, createdAt?: number): UnsignedEvent {
+    const created = createdAt ?? Math.floor(Date.now() / 1000);
+    // NIP-37 recommends a NIP-40 expiration so relays can auto-purge stale synced drafts (the LOCAL
+    // draft is unaffected - it lives on disk regardless). 90 days, refreshed on every save.
+    const expiration = String(created + 90 * 24 * 60 * 60);
     return {
         kind: KIND_DRAFT,
-        created_at: createdAt ?? Math.floor(Date.now() / 1000),
-        tags: [['d', identifier], ['k', String(kind)]],
+        created_at: created,
+        tags: [['d', identifier], ['k', String(kind)], ['expiration', expiration]],
         content: encrypted,
         pubkey: me,
     };

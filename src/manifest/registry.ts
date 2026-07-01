@@ -35,6 +35,10 @@ export interface KindHandler<D = unknown> {
     kinds: readonly number[];
     /** How an inline reference to this kind renders inline in content (optional). */
     ref?: RefDescriptor;
+    /** True if this kind earns the full-page reader (`/a/`, markdown/asciidoc body) rather than a focused
+     * card. The `/a/` route derives its reader set from this flag, so which kinds are "long-form" stays a
+     * per-handler capability, not a literal the route hand-maintains. */
+    reader?: boolean;
     /** Render this event for a given surface. The SAME code Satori runs today, relocated not rewritten. */
     render(ev: NostrEvent, surface: Surface, deps: D): SafeHtml;
     /** Optional kind-specific prefetch for a page of events (keeps routes from hardcoding hydration).

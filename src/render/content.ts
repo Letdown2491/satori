@@ -6,7 +6,10 @@
 // quotes → /t/, articles → /a/). Media and links are scheme-checked.
 
 import { tokenize } from '../nostr/content.ts';
-import { parseBlocks, parseInline } from '../nostr/markdown.ts';
+import { parseBlocks, parseInline, type Inline, type Block } from '../nostr/markdown.ts';
+import { parseAdocBlocks, parseAdocInline, normalizeWikiTopic, type WikiLink } from '../nostr/asciidoc.ts';
+import { naddrEncode } from 'nostr-tools/nip19';
+import { KIND_WIKI } from '../nostr/nip54.ts';
 import { html, raw, join, safeUrl, type SafeHtml } from '../html.ts';
 import { npub, displayName, shortHash, type ProfileMap } from './util.ts';
 import { icon } from './svg.ts';
@@ -483,42 +486,77 @@ function inlineEntities(text: string, profiles?: ProfileMap): SafeHtml {
     return join(parts);
 }
 
-function renderInline(text: string, profiles?: ProfileMap): SafeHtml {
-    const parts: SafeHtml[] = [];
-    for (const tok of parseInline(text)) {
-        if (tok.t === 'text') parts.push(inlineText(tok.v, profiles));
-        else if (tok.t === 'strong') parts.push(html`<strong>${inlineEntities(tok.v, profiles)}</strong>`);
-        else if (tok.t === 'em') parts.push(html`<em>${inlineEntities(tok.v, profiles)}</em>`);
-        else if (tok.t === 'code') parts.push(html`<code class="md-code">${tok.v}</code>`);
-        else if (tok.t === 'link') parts.push(extLink(tok.href, tok.text));
-        else parts.push(image(tok.url));
-    }
-    return join(parts);
+/** Render pre-parsed inline tokens to safe HTML - shared by the Markdown and AsciiDoc bodies (same token
+ * shape, same escaped leaf renderers; only the tokenizer differs). Text runs flow through inlineEntities
+ * so URLs + nostr: entities resolve identically in both. */
+function renderInlineToken(tok: Inline, profiles?: ProfileMap): SafeHtml {
+    if (tok.t === 'text') return inlineText(tok.v, profiles);
+    if (tok.t === 'strong') return html`<strong>${inlineEntities(tok.v, profiles)}</strong>`;
+    if (tok.t === 'em') return html`<em>${inlineEntities(tok.v, profiles)}</em>`;
+    if (tok.t === 'code') return html`<code class="md-code">${tok.v}</code>`;
+    if (tok.t === 'link') return extLink(tok.href, tok.text);
+    return image(tok.url);
 }
 
-/** Render a Markdown article body to safe HTML (no innerHTML; everything escaped). */
-export function renderMarkdown(md: string, profiles?: ProfileMap, coverUrl?: string): SafeHtml {
+function renderInlineTokens(tokens: Inline[], profiles?: ProfileMap): SafeHtml {
+    return join(tokens.map((t) => renderInlineToken(t, profiles)));
+}
+
+function renderInline(text: string, profiles?: ProfileMap): SafeHtml {
+    return renderInlineTokens(parseInline(text), profiles);
+}
+
+/** A NIP-54 wikilink → an in-app link to the SAME author's wiki article on that topic (kind:30818,
+ * d = normalized topic); the article's own reader + seen-relays resolve it. Without an author to key
+ * against (or if the topic won't encode), it degrades to clean styled text - never the raw `[[ ]]`. */
+function wikiLink(w: WikiLink, author?: string, cache?: Map<string, string>): SafeHtml {
+    const slug = normalizeWikiTopic(w.target);
+    if (author && slug) {
+        let naddr = cache?.get(slug);
+        if (naddr === undefined) { // encode once per topic per render (dense wikis repeat topics heavily)
+            try { naddr = naddrEncode({ kind: KIND_WIKI, pubkey: author, identifier: slug, relays: [] }); } catch { naddr = ''; }
+            cache?.set(slug, naddr);
+        }
+        if (naddr) return html`<a class="wikilink" href="/a/${naddr}" h-scroll="top instant">${w.display}</a>`;
+    }
+    return html`<span class="wikilink">${w.display}</span>`;
+}
+
+/** The shared block-render loop for the article-body reader. Markdown and AsciiDoc share the same Block AST
+ * and the escaped `.article-body` typography; they differ only in the parser, the inline renderer, and the
+ * heading-level shift (Markdown's `#` → h2, so shift 1; AsciiDoc's `==` → h2, so shift 0). */
+function renderBlocks(blocks: Block[], inl: (t: string) => SafeHtml, headingShift: number): SafeHtml[] {
     const out: SafeHtml[] = [];
-    const blocks = parseBlocks(md);
-    // Drop a leading body image that duplicates the article's cover (the NIP-23 `image`
-    // tag) - many authors put the hero in both, which would render it twice. Only the
-    // FIRST block, exact-URL match → near-zero false positives. (Divergence from
-    // Satori, which renders both; a deliberate reading-quality fix.)
-    const start = coverUrl && blocks[0]?.t === 'image' && blocks[0].url === coverUrl ? 1 : 0;
-    for (const b of blocks.slice(start)) {
-        if (b.t === 'heading') {
-            const level = Math.min(b.level + 1, 6);
-            out.push(raw(`<h${level}>`));
-            out.push(renderInline(b.text, profiles));
-            out.push(raw(`</h${level}>`));
-        } else if (b.t === 'paragraph') out.push(html`<p>${renderInline(b.text, profiles)}</p>`);
-        else if (b.t === 'list') {
-            const items = join(b.items.map((it) => html`<li>${renderInline(it, profiles)}</li>`));
-            out.push(b.ordered ? html`<ol>${items}</ol>` : html`<ul>${items}</ul>`);
-        } else if (b.t === 'quote') out.push(html`<blockquote>${renderInline(b.text, profiles)}</blockquote>`);
+    for (const b of blocks) {
+        if (b.t === 'heading') { const level = Math.min(b.level + headingShift, 6); out.push(raw(`<h${level}>`)); out.push(inl(b.text)); out.push(raw(`</h${level}>`)); }
+        else if (b.t === 'paragraph') out.push(html`<p>${inl(b.text)}</p>`);
+        else if (b.t === 'list') { const items = join(b.items.map((it) => html`<li>${inl(it)}</li>`)); out.push(b.ordered ? html`<ol>${items}</ol>` : html`<ul>${items}</ul>`); }
+        else if (b.t === 'quote') out.push(html`<blockquote>${inl(b.text)}</blockquote>`);
         else if (b.t === 'code') out.push(html`<pre class="md-pre"><code>${b.text}</code></pre>`);
         else if (b.t === 'hr') out.push(raw('<hr>'));
         else out.push(image(b.url));
     }
-    return html`<div class="article-body">${join(out)}</div>`;
+    return out;
+}
+
+/** Render a Markdown article body to safe HTML (no innerHTML; everything escaped). */
+export function renderMarkdown(md: string, profiles?: ProfileMap, coverUrl?: string): SafeHtml {
+    const blocks = parseBlocks(md);
+    // Drop a leading body image that duplicates the article's cover (the NIP-23 `image` tag) - many authors
+    // put the hero in both, which would render it twice. FIRST block, exact-URL match → near-zero false positives.
+    const start = coverUrl && blocks[0]?.t === 'image' && blocks[0].url === coverUrl ? 1 : 0;
+    return html`<div class="article-body">${join(renderBlocks(blocks.slice(start), (t) => renderInline(t, profiles), 1))}</div>`;
+}
+
+/** Render an AsciiDoc body (NIP-54 wiki, Alexandria publications) to safe HTML - the SAME escaped,
+ * no-innerHTML pipeline + `.article-body` shell as renderMarkdown, so the wiki reader reuses the article
+ * typography. Only the parser + inline (wikilink-aware) differ. A leading level-1 heading is dropped:
+ * AsciiDoc's doc title is `= Title`, which the reader already shows as the page <h1>. */
+export function renderAsciiDoc(src: string, profiles?: ProfileMap, author?: string): SafeHtml {
+    const naddrCache = new Map<string, string>(); // memoize per render: a link-dense wiki repeats topics
+    const inl = (t: string): SafeHtml => join(parseAdocInline(t).map((tok) =>
+        tok.t === 'wikilink' ? wikiLink(tok, author, naddrCache) : renderInlineToken(tok, profiles)));
+    const blocks = parseAdocBlocks(src);
+    const start = blocks[0]?.t === 'heading' && blocks[0].level === 1 ? 1 : 0;
+    return html`<div class="article-body">${join(renderBlocks(blocks.slice(start), inl, 0))}</div>`;
 }

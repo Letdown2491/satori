@@ -45,6 +45,10 @@ export function npub(pubkey: string): string {
     try { return npubEncode(pubkey); } catch { return pubkey; }
 }
 
+/** A URL's display text: drop the http(s):// scheme + trailing slash for a clean look. Shared by every
+ * "show a link tidily" surface (profile website, repo web urls, and future issue/patch metadata). */
+export const stripScheme = (url: string): string => url.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+
 export function shortNpub(pubkey: string): string {
     const n = npub(pubkey);
     return `${n.slice(0, 12)}…${n.slice(-6)}`;

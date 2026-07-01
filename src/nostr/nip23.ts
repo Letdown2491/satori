@@ -29,11 +29,6 @@ export function parseArticle(ev: NostrEvent): Article {
     };
 }
 
-/** The addressable id `kind:pubkey:d` for an article event. */
-export function articleAddress(ev: NostrEvent): string {
-    return `${KIND_ARTICLE}:${ev.pubkey}:${tag1(ev, 'd')}`;
-}
-
 /** Estimated reading time in whole minutes (≥1), at ~220 wpm. */
 export function readingMinutes(markdown: string): number {
     const words = markdown.trim().split(/\s+/).filter(Boolean).length;

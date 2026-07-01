@@ -4,6 +4,96 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-01
+
+### Added
+
+- You can now compose and post picture events (NIP-68, kind 20), not just images inline in a note. A
+  new "Picture" mode in the composer (next to Note and Poll) takes a title, a caption, and one or more
+  images and publishes a proper kind-20 picture post, with a content-warning toggle for sensitive
+  images. Uploaded images now also record their pixel dimensions (a NIP-92 `dim` tag), so pictures and
+  other media can render at the right aspect from the start. Works in both signing modes with the same
+  undo window as a note. (Composing video is a later phase.)
+- Git repositories (NIP-34, kind 30617) now render as a first-class addressable card instead of an
+  "unsupported kind" fallback. A repository announcement gets a card in feeds and on profiles (a git
+  glyph, the repo name, and description), a detail page (name, description, a Browse action for the
+  repo's web page, copyable clone URLs, topics, maintainers, and relays), and a clean preview when referenced
+  inline, plus like/zap/bookmark
+  and NIP-22 comments keyed by the repo's address. Read-only for now (browse and reference repos);
+  issues and patches are a later phase. Repositories default to showing on profiles but not the main
+  feed (a per-kind toggle in Settings, like articles and wikis).
+- Wiki articles (NIP-54, kind 30818) now render like an article instead of a bare "open in another
+  app" link. These are collaborative, topic-slugged articles with an AsciiDoc body: Satori gives
+  them the full reader (title, byline, rendered body), a card in feeds and on profiles, and a clean
+  preview when one is quoted or referenced inline, plus the usual reply/like/zap/bookmark keyed by
+  the article's coordinate. A pragmatic AsciiDoc renderer (headings, lists, links, quotes, code,
+  images, inline bold/italic/monospace, and `[[wikilinks]]`) reuses the same escaped, no-innerHTML
+  pipeline as the Markdown reader. Wikilinks render as clean links (no raw `[[ ]]` brackets) that
+  navigate in-app to the same author's wiki article on that topic, styled with a dotted underline so
+  they read distinctly from ordinary (solid-underlined) external links. Wiki articles default to showing on profiles but not the main feed (a per-kind
+  toggle in Settings, like articles). This also fixes notes that quote a wiki article: the reference
+  now shows a wiki card rather than a generic event link.
+
+### Changed
+
+- A thread or profile URL containing a bare hex id (for example, pasted from a client that does
+  not use bech32) now redirects to its canonical `nevent` / `npub` form instead of showing an
+  error or serving the raw hex, so the address bar self-heals to the app's bech32 convention.
+- The reader-side relay widening (querying your own relays for an event with a stale hint) now
+  also covers addressable events - articles, custom NIPs, calendar events, videos - reached
+  directly (`/a/`) or as a quoted or embedded reference, not just plain notes and their threads.
+- Satori now remembers which relays it has actually seen each author's events on and reuses them
+  when fetching that author's notes or articles later. So an event living on a relay the author
+  does not advertise in their relay list (and that carries no relay hint in the reference) becomes
+  findable once you have encountered that author there, for example by browsing that relay's
+  timeline. This is the read side of the outbox model, learned from experience rather than only
+  from declared relay lists, and it is remembered across restarts.
+
+### Fixed
+
+- Browsing a single relay now shows its content across every kind you can render (articles, wiki
+  articles, and the rest), not just notes and polls. A long-form-only relay - one that serves
+  articles and wikis but no plain notes - previously read as an empty timeline; now you see what is
+  actually there. As a side benefit this lets Satori learn (see below) which relay an author's
+  long-form events live on, just by visiting that relay.
+- Notes referenced by an `nevent` that carries no author and a stale relay hint (the hinted
+  relay no longer has the event) no longer show "Note not found" when the note is alive on a
+  relay you are connected to. Opening a thread, and loading a quoted or replied-to preview,
+  now also queries your own read/write relays, not just the shared indexer relays - the
+  reader-side of the outbox model. Replies hosted on your relays surface for the same reason.
+- Replies and NIP-22 comments whose parent reference is not a resolvable event id (a bech32
+  string in the id slot, an address coordinate, a malformed pubkey, or junk) no longer render
+  a stray "↗ link" placeholder that points nowhere, and no longer trigger an internal error.
+  Satori now cleanly omits the unresolvable "in reply to" context card instead.
+
+- Write-side NIP spec-compliance pass (a multi-NIP audit of the events Satori builds and signs):
+  - Replies (NIP-10) now carry the thread **root** marker and the full ancestor participant list, not
+    just the immediate parent. A top-level reply is marked `root`; a deeper reply carries both `root`
+    and `reply`, so other clients group your replies into the correct thread and every prior
+    participant is notified.
+  - Reactions (NIP-25) now carry relay + author-pubkey hints on their `e`/`a`/`p` tags and the reacted
+    event's real `kind` (previously hardcoded to 1, so a like on a picture, video, or comment was
+    mislabeled as a like on a note). Reactions to an addressable event (an article or other
+    parameterized-replaceable kind) now also carry the required `e` tag (the specific event id,
+    resolved best-effort), not just the `a` coordinate.
+  - Zap requests (NIP-57) now include the recommended `lnurl` tag (the recipient's pay endpoint,
+    bech32-encoded), so zap receipts can be cross-validated.
+  - Synced drafts (NIP-37) now carry a NIP-40 `expiration` (90 days, refreshed on each save) so relays
+    can purge stale private drafts. Your local draft is unaffected.
+  - Picture posts (NIP-68) always carry a `title` tag now; if you leave the title blank it is derived
+    from the caption's first line.
+
+### Security
+
+- The relays Satori learns from experience (see "remembers which relays" above) are screened against
+  private / loopback / link-local hosts before being remembered, so a crafted event's relay hint can
+  never teach the daemon to keep re-contacting an internal address.
+- Private DMs (NIP-17) are now published only to the recipient's own relays, never to public indexer
+  relays. Gift-wrapped messages go to the recipient's kind:10050 DM-inbox relays (and your own for your
+  kept copy); if a recipient has published no DM-inbox list, delivery falls back to their declared
+  NIP-65 read relays rather than broadcasting to indexers, and if they have neither the send fails
+  loudly instead of leaking the encrypted wrap (and its recipient metadata) onto shared relays.
+
 ## [0.3.1] - 2026-06-30
 
 ### Added

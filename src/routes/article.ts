@@ -15,7 +15,7 @@ import { syncDraft, unsyncDraft, fetchSyncedDrafts, draftToEvent, publishDraftWr
 import { serializeDraft, draftWrapTemplate, KIND_DRAFT } from '../nostr/nip37.ts';
 import { page } from '../render/layout.ts';
 import { html, type SafeHtml } from '../html.ts';
-import { readSignedEvent, readSignResult, verifySigned, requireSigned } from '../nip07.ts';
+import { readSignedEvent, readSignResult, verifySigned } from '../nip07.ts';
 import { requireLogin, ensureProfiles, chromeFor } from './common.ts';
 import { readForm, redirect, sendPage, sendFragment, sendSignRequest, readBatchResults, type Ctx } from '../http.ts';
 import type { Session } from '../session.ts';

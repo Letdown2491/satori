@@ -66,14 +66,19 @@ function reactionGlyph(emoji: string, url?: string): SafeHtml {
  *  - not reacted: a one-click heart PLUS a CSS-revealed palette (zero-JS via a hidden checkbox, like the
  *    compose toggles) of the rest of the curated set; each emoji is a submit button carrying its value.
  * No counts of others are ever shown - your reaction is a personal gesture, not a scoreboard. */
-export function likeButton(s: Session, noteId: string, author: string): SafeHtml {
+export function likeButton(s: Session, noteId: string, author: string, kind: number, eventId?: string): SafeHtml {
     const id = `like-${noteId}`;
     const mine = s.me ? cachedReaction(s.me, noteId) : undefined;
     // h-optimistic adds `.reacting` the instant you submit (pick or retract), so the gesture registers
     // before the relay round-trip: the picker collapses + the smiley takes the accent on a pick, the heart
     // empties on a retract. The response swap reconciles to the real glyph; an h:error reverts the class.
+    // `k` carries the reacted event's kind so the kind:7's NIP-25 `k` tag is accurate (not hardcoded 1).
+    // `eid` (addressable targets only) carries the concrete event id so the required `e` tag needs no
+    // extra relay fetch; postLike falls back to resolving it only when absent.
     const head = html`<form id="${id}" class="act-form react" action="/like/${noteId}" method="post" h-post h-target="#${id}" h-swap="outer" h-optimistic="class:reacting" h-optimistic-target="#${id}">
-        <input type="hidden" name="author" value="${author}">`;
+        <input type="hidden" name="author" value="${author}">
+        <input type="hidden" name="k" value="${String(kind)}">
+        ${eventId ? html`<input type="hidden" name="eid" value="${eventId}">` : null}`;
     if (mine) {
         return html`${head}
         <button type="submit" name="emoji" value="${mine.emoji}" class="note-act like active" title="Remove reaction" aria-label="Remove reaction" aria-pressed="true">${reactionGlyph(mine.emoji, mine.url)}</button>

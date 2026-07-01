@@ -6,7 +6,7 @@
 // an external wallet (lightning: link). Private mode (inner kind:9733) deferred.
 
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
-import { decodeLnurl } from '../nostr/lnurl.ts';
+import { decodeLnurl, encodeLnurl } from '../nostr/lnurl.ts';
 import { isPublicHttpUrl } from '../ssrf.ts';
 import { torFetch } from './torfetch.ts';
 import type { UnsignedEvent, NostrEvent } from '../nostr/types.ts';
@@ -24,6 +24,13 @@ function lnurlPayUrl(addr: string): string | null {
     return null;
 }
 
+/** The NIP-57 `lnurl` tag value for a recipient: the pay url, bech32-encoded (LUD-06). Returns
+ * undefined for an address we can't resolve to a url (the tag is recommended, so we just skip it). */
+export function zapLnurl(addr: string): string | undefined {
+    const url = lnurlPayUrl(addr);
+    return url ? encodeLnurl(url) : undefined;
+}
+
 /** Resolve a recipient address (lud16/lud06/lnurl) to its LNURL-pay parameters. */
 export async function resolveLnurlPay(addr: string): Promise<LnurlPay> {
     const url = lnurlPayUrl(addr);
@@ -37,20 +44,26 @@ export async function resolveLnurlPay(addr: string): Promise<LnurlPay> {
     return { callback: j.callback, allowsNostr: !!j.allowsNostr, nostrPubkey: j.nostrPubkey, min: j.minSendable ?? 1000, max: j.maxSendable ?? 1e11 };
 }
 
-export interface ZapRef { recipientPubkey: string; eventId?: string; address?: string; amountMsats: number; comment: string; relays: string[] }
+export interface ZapRef { recipientPubkey: string; eventId?: string; address?: string; amountMsats: number; comment: string; relays: string[]; lnurl?: string }
+
+/** The shared 9734 tags (NIP-57): relays, amount, the recommended `lnurl`, recipient `p`, then the
+ * target `e` (event) or `a` (addressable). `extra` appends before the target (e.g. the `anon` tag). */
+function zapTags(o: ZapRef, extra: string[][] = []): string[][] {
+    const tags: string[][] = [['relays', ...o.relays], ['amount', String(o.amountMsats)]];
+    if (o.lnurl) tags.push(['lnurl', o.lnurl]);
+    tags.push(['p', o.recipientPubkey], ...extra);
+    if (o.eventId) tags.push(['e', o.eventId]); else if (o.address) tags.push(['a', o.address]);
+    return tags;
+}
 
 /** The unsigned kind:9734 zap request (public mode - signed by the user). */
 export function zapRequestTemplate(me: string, o: ZapRef): UnsignedEvent {
-    const tags: string[][] = [['relays', ...o.relays], ['amount', String(o.amountMsats)], ['p', o.recipientPubkey]];
-    if (o.eventId) tags.push(['e', o.eventId]); else if (o.address) tags.push(['a', o.address]);
-    return { kind: 9734, created_at: Math.floor(Date.now() / 1000), pubkey: me, content: o.comment, tags };
+    return { kind: 9734, created_at: Math.floor(Date.now() / 1000), pubkey: me, content: o.comment, tags: zapTags(o) };
 }
 
 /** A fully-signed anonymous kind:9734 (throwaway key + `anon` tag - unlinkable). */
 export function anonZapRequest(o: ZapRef): NostrEvent {
-    const tags: string[][] = [['relays', ...o.relays], ['amount', String(o.amountMsats)], ['p', o.recipientPubkey], ['anon', '']];
-    if (o.eventId) tags.splice(3, 0, ['e', o.eventId]); else if (o.address) tags.splice(3, 0, ['a', o.address]);
-    return finalizeEvent({ kind: 9734, created_at: Math.floor(Date.now() / 1000), content: o.comment, tags }, generateSecretKey()) as NostrEvent;
+    return finalizeEvent({ kind: 9734, created_at: Math.floor(Date.now() / 1000), content: o.comment, tags: zapTags(o, [['anon', '']]) }, generateSecretKey()) as NostrEvent;
 }
 
 /** Call the LNURL callback with the (signed) zap request → bolt11 invoice. */

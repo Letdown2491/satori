@@ -18,6 +18,8 @@ import { videoHandler } from './video.ts';
 import { highlightHandler } from './highlight.ts';
 import { commentHandler } from './comment.ts';
 import { customNipHandler } from './customnip.ts';
+import { wikiHandler } from './wiki.ts';
+import { repoHandler } from './repo.ts';
 import { fromManifest } from './engine.ts';
 import { LOCAL_MANIFESTS } from './manifests.ts';
 import { fallbackHandler } from './fallback.ts';
@@ -34,6 +36,8 @@ export function registerSatoriKinds(): void {
     registerKind(highlightHandler);
     registerKind(commentHandler);
     registerKind(customNipHandler);
+    registerKind(wikiHandler);
+    registerKind(repoHandler);
     // DECLARATIVE kinds: pure-data manifests synthesized into handlers by the engine. The registry can't
     // tell these from the hand-coded handlers above - a kind is data OR code, dispatched identically.
     for (const m of LOCAL_MANIFESTS) registerKind(fromManifest(m));

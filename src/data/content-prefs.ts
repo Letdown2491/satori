@@ -17,6 +17,8 @@ import { VIDEO_KINDS } from '../nostr/nip71.ts';
 import { KIND_HIGHLIGHT } from '../nostr/nip84.ts';
 import { KIND_COMMENT } from '../nostr/nip22.ts';
 import { KIND_CUSTOM_NIP } from '../nostr/customnip.ts';
+import { KIND_WIKI } from '../nostr/nip54.ts';
+import { KIND_REPO } from '../nostr/nip34.ts';
 
 export type Surface = 'feed' | 'profile';
 
@@ -44,6 +46,8 @@ export const CONTENT_TYPES: ContentType[] = [
     { id: 'listing', label: 'Listings', kinds: [KIND_LISTING], feed: false, profile: true },
     { id: 'highlight', label: 'Highlights', kinds: [KIND_HIGHLIGHT], feed: false, profile: true },
     { id: 'customnip', label: 'Custom NIPs', kinds: [KIND_CUSTOM_NIP], feed: false, profile: true },
+    { id: 'wiki', label: 'Wiki articles', kinds: [KIND_WIKI], feed: false, profile: true },
+    { id: 'repo', label: 'Git repositories', kinds: [KIND_REPO], feed: false, profile: true },
 ];
 
 export type ContentPrefs = { feed: Record<string, boolean>; profile: Record<string, boolean> };

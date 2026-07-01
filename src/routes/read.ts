@@ -2,14 +2,13 @@
 // (article reader). Flat bech32 routing, mirroring Satori's entity URLs.
 
 import { decode, neventEncode, naddrEncode } from 'nostr-tools/nip19';
-import { pubkeyFromBech } from '../nostr/nip19.ts';
+import { pubkeyFromBech, neventFromId } from '../nostr/nip19.ts';
 import { fetchEvent, fetchReplies, fetchAuthorNotes } from '../data/feeds.ts';
 import { fetchPinnedItems, fetchAuthorArticles } from '../data/profile-extras.ts';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, myRelayUrls } from '../nostr/nip65.ts';
 import { fetchRelayLists } from '../data/relays.ts';
-import { KIND_ARTICLE } from '../nostr/nip23.ts';
-import { KIND_CUSTOM_NIP } from '../nostr/customnip.ts';
-import { coordinateOf, isAddressable } from '../nostr/tags.ts';
+import { seenRelaysFor } from '../data/seen-relays.ts';
+import { coordinateOf, isAddressable, tag1, HEX64 } from '../nostr/tags.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { commentSection } from '../render/comments.ts';
 import { replyParent } from '../nostr/nip10.ts';
@@ -18,10 +17,10 @@ import { getFilters, compileFilters } from '../data/filters.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
 import { profileHeader, noteCard, noteList, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
-import { renderEvent, prepareEvents } from '../manifest/registry.ts';
+import { renderEvent, prepareEvents, handlerFor } from '../manifest/registry.ts';
 import { emptyItem, quoteEmpty } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
-import { type ProfileMap } from '../render/util.ts';
+import { npub, type ProfileMap } from '../render/util.ts';
 import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
 import { ensureLists, mutedPubkeys } from '../actions.ts';
 import { pendingPrivateKinds, listPrimer } from './feed.ts';
@@ -39,10 +38,6 @@ import { profileKinds } from '../data/content-prefs.ts';
 const PAGE = 30;
 const PROFILE_FILL = 4; // cap loop-fill fetches on a profile (mirrors the feed's MAX_FILL)
 const MAX_DEPTH = 4;
-// The markdown long-form kinds that earn the rich /a/ reader (title + body + NIP-22 comments): the NIP-23
-// article and the NIP-30817 custom NIP. Every other addressable kind renders its focused card instead.
-const READER_KINDS = new Set([KIND_ARTICLE, KIND_CUSTOM_NIP]);
-
 function untilOf(ctx: Ctx): number | undefined {
     const u = ctx.query.get('until');
     return u && /^\d+$/.test(u) ? Number(u) : undefined;
@@ -56,6 +51,9 @@ export async function getProfile(ctx: Ctx): Promise<void> {
     const entity = ctx.params.npub ?? '';
     const pubkey = pubkeyFromBech(entity);
     if (!pubkey) { notFound(ctx, 'Not a profile'); return; }
+    // Canonicalize a bare-hex pubkey to its npub (mirrors the /t/ thread route), so the address bar
+    // self-heals to the app's bech32 convention instead of keeping the raw hex.
+    if (HEX64.test(entity)) { redirect(ctx, `/u/${npub(pubkey)}`); return; }
 
     const until = untilOf(ctx);
     const meta = Promise.all([ensureProfiles(s, [pubkey]), ensureLists(s, ['follow', 'mute', 'bookmark', 'pin'])]);
@@ -193,11 +191,21 @@ export async function getThread(ctx: Ctx): Promise<void> {
         if (d.type === 'note') id = d.data;
         else if (d.type === 'nevent') { id = d.data.id; relays = d.data.relays ?? []; author = d.data.author; }
         else { notFound(ctx, 'Not a note'); return; }
-    } catch { notFound(ctx, 'Bad note id'); return; }
+    } catch {
+        // A bare 64-hex event id (hand-typed, or copied from a client/njump that uses raw hex): canonicalize
+        // to an nevent and redirect, so the address bar self-heals to the app's bech32 convention.
+        const nev = neventFromId(entity);
+        if (nev) { redirect(ctx, `/t/${nev}`); return; }
+        notFound(ctx, 'Bad note id'); return;
+    }
 
+    // Reader-side of the outbox model: also query the viewer's OWN relays. An author-less nevent with a
+    // stale relay hint (event not actually on the hinted relay, no author to resolve outbox from) would
+    // otherwise only hit INDEXER_RELAYS - missing notes that live on a relay you're connected to.
+    const hints = [...new Set([...relays, ...myRelayUrls(s.myRelays)])];
     const [focused, replies] = await Promise.all([
-        fetchEvent(s.pool, id, relays, author),
-        fetchReplies(s.pool, id, relays).catch(() => [] as NostrEvent[]),
+        fetchEvent(s.pool, id, hints, author),
+        fetchReplies(s.pool, id, hints).catch(() => [] as NostrEvent[]),
     ]);
 
     if (!focused) {
@@ -315,7 +323,7 @@ export async function getArticle(ctx: Ctx): Promise<void> {
     } catch { notFound(ctx, 'Bad naddr'); return; }
 
     const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
-    const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the article author's write relays first
+    const queryRelays = [...new Set([...relays, ...writes, ...seenRelaysFor(pubkey), ...myRelayUrls(s.myRelays), ...INDEXER_RELAYS])]; // author's write relays (outbox) + where we've seen them + your own, then indexers
     const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }).catch(() => null);
 
     if (!ev) {
@@ -327,7 +335,7 @@ export async function getArticle(ctx: Ctx): Promise<void> {
     // the rich reader + comments below. Any other recognized addressable kind renders its focused card; an
     // unknown one hits the honest fallback ("Satori doesn't render this yet · open in app") - never a
     // misleading not-found for a valid event we simply fetched.
-    if (!READER_KINDS.has(ev.kind)) {
+    if (!handlerFor(ev.kind)?.reader) {
         await ensureProfiles(s, notePubkeys([ev]));
         sendPage(ctx, html`<ul class="feed">${renderEvent(ev, 'focused', { profiles: s.profiles, s })}</ul>`, chromeFor(ctx, s, { title: kindLabel(ev.kind) }));
         return;
@@ -349,7 +357,7 @@ export async function getArticle(ctx: Ctx): Promise<void> {
     // state - the article page was missing the primer that the feed/profile already have.
     const primer = pendingPrivateKinds(s).length ? listPrimer({ ret: `/a/${entity}` }) : html``;
     sendPage(ctx, html`${renderEvent(ev, 'reader', { profiles: s.profiles, s })}${commentSection(s, ra, ev.pubkey, comments, s.profiles)}${primer}`,
-        chromeFor(ctx, s, { title: ev.kind === KIND_ARTICLE ? 'Article' : kindLabel(ev.kind), contentH1: true })); // the reader title is the page <h1>
+        chromeFor(ctx, s, { title: kindLabel(ev.kind), contentH1: true })); // the reader title is the page <h1> (kindLabel now covers Article)
 }
 
 /** GET /embed/<bech>?as=reply|quote|article - a compact preview lazily swapped
@@ -376,7 +384,7 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     if (decoded.type === 'naddr') {
         const { kind, pubkey, identifier, relays } = { ...decoded.data, relays: decoded.data.relays ?? [] };
         const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
-        const queryRelays = [...new Set([...relays, ...writes, ...INDEXER_RELAYS])]; // outbox: the author's write relays first
+        const queryRelays = [...new Set([...relays, ...writes, ...seenRelaysFor(pubkey), ...myRelayUrls(s.myRelays), ...INDEXER_RELAYS])]; // author's write relays (outbox) + where we've seen them + your own, then indexers
         const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }, EMBED_MAX_WAIT).catch(() => null);
         if (!ev) { sendFragment(ctx, embedFallback(`/a/${entity}`, `↗ ${kindLabel(kind).toLowerCase()}`)); return; }
         await ensureProfiles(s, notePubkeys([ev]));
@@ -393,7 +401,8 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     if (decoded.type === 'note') id = decoded.data;
     else if (decoded.type === 'nevent') { id = decoded.data.id; relays = decoded.data.relays ?? []; author = decoded.data.author; }
     else { sendFragment(ctx, fb()); return; }
-    const ev = await fetchEvent(s.pool, id, relays, author, { maxWait: EMBED_MAX_WAIT }).catch(() => null);
+    const hints = [...new Set([...relays, ...myRelayUrls(s.myRelays)])]; // + viewer's own relays (see getThread)
+    const ev = await fetchEvent(s.pool, id, hints, author, { maxWait: EMBED_MAX_WAIT }).catch(() => null);
     if (!ev) { sendFragment(ctx, fb()); return; }
     // Hydrate the author AND any @mentioned pubkeys in the embed's content, so
     // in-content mentions resolve to @names instead of falling back to @npub.
@@ -404,7 +413,7 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
     // (the registry fallback) - exactly the old article-vs-everything-else branch, now dispatched per kind.
     let naddr: string | undefined;
     if (isAddressable(ev.kind)) {
-        const identifier = ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
+        const identifier = tag1(ev, 'd');
         naddr = naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier, relays });
     }
     sendFragment(ctx, renderEvent(ev, 'embed', { profiles: s.profiles, bech: entity, naddr, label: as === 'quote' ? '↗ quoted note' : '↩ in reply to' }));

@@ -13,7 +13,7 @@ import { cardShell, clampIfTall } from '../render/note.ts';
 import { npub, displayName, type ProfileMap } from '../render/util.ts';
 import { ensureProfiles } from '../routes/common.ts';
 import { neventFromId, naddrFromCoord } from '../nostr/nip19.ts';
-import { tag1 } from '../nostr/tags.ts';
+import { tag1, coordParts } from '../nostr/tags.ts';
 import { KIND_HIGHLIGHT } from '../nostr/nip84.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
@@ -41,7 +41,7 @@ function sourceLink(ev: NostrEvent): SafeHtml | null {
     if (a) {
         const bech = naddrFromCoord(a);
         if (bech) {
-            const ref = refFor(Number(a.split(':')[0]));
+            const ref = refFor(coordParts(a)?.kind ?? 0);
             return ref
                 ? mentionChip(ref.path(bech), ref.label)
                 : html`<a class="mention" href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer">↗ source</a>`;

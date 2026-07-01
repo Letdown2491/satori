@@ -24,7 +24,7 @@ import { getHandlers } from './routes/handlers.ts';
 import { getAvatar } from './routes/avatar.ts';
 import { getMedia, getVideoEmbed } from './routes/media.ts';
 import { getYtCard, getYtThumb, getYtPlay, getYtPlaylistCard, getYtPlaylistPlay } from './routes/youtube.ts';
-import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postPrivateReplySeal, postPrivateReplyWrap, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
+import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postPicture, postPicturePublish, postPrivateReplySeal, postPrivateReplyWrap, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
 import { postAppearance, getWallet, postWallet, getMetrics } from './routes/pages.ts';
 import { getBookmarks, getMuted, getListDecrypt, postListDecrypted } from './routes/saved.ts';
 import { getSettings, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContent } from './routes/settings.ts';
@@ -75,6 +75,8 @@ const ROUTES: Route[] = [
     route('POST', '/note', postNote),
     route('POST', '/note/draft', postNoteDraft),
     route('POST', '/note/publish', postNotePublish),
+    route('POST', '/picture', postPicture),
+    route('POST', '/picture/publish', postPicturePublish),
     route('POST', '/note/private/seal', postPrivateReplySeal),
     route('POST', '/note/private/wrap', postPrivateReplyWrap),
     route('GET', '/note/tick', getNoteTick),

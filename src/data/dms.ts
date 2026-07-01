@@ -433,11 +433,6 @@ export async function hasUnprocessedWraps(s: Session): Promise<boolean> {
     return wraps.some((w) => !cache.has(w.id));
 }
 
-/** The requests bucket (opened explicitly) - stranger conversations (NIP-17 + legacy). */
-export async function loadRequests(s: Session): Promise<Conversation[]> {
-    return (await loadConversations(s))?.requests ?? [];
-}
-
 /** Legacy NIP-04 (kind:4) messages between you and `peer`, decrypted via the bunker.
  * Read-only; we never send this format. Real timestamps (not fuzzed). */
 async function legacyThread(sg: Signed, peer: string, relays: string[]): Promise<DmMessage[]> {

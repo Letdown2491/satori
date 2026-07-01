@@ -35,6 +35,41 @@
         html[data-theme^="sumi-e"] .content a:not(.article-embed),
         html[data-theme^="sumi-e"] .quote-text a,
         html[data-theme^="sumi-e"] .article-body a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+        /* NIP-54 wikilinks [[topic]]: stay ink (the vermilion seal stays rare) but take a DOTTED underline,
+           so an internal wiki-topic link reads distinctly from a solid-underlined external link. Links are
+           BEST-EFFORT - they point at the same author's topic, which may not exist yet (a wiki red-link);
+           the muted span is only the fallback when there is no author to resolve against at all. */
+        html[data-theme^="sumi-e"] .article-body a.wikilink { text-decoration-style: dotted; text-underline-offset: 3px; }
+        .article-body span.wikilink { color: var(--muted); }
+        /* NIP-34 repo detail: a git glyph by the title, a quiet primary Browse action, and labeled
+           clone/web/maintainer rows. Clone urls are copyable monospace, one per line + horizontal scroll
+           (git/ssh aren't clickable), so long ngit urls don't wrap into a wall. Ink-disciplined: the accent
+           only appears on Browse hover (a rare seal), everything else stays ink + panel. */
+        .repo-title .icon { width: 0.72em; height: 0.72em; color: var(--muted); margin-right: 0.35em; vertical-align: baseline; }
+        .repo-desc { margin: 0 0 16px; }
+        .repo-browse { display: inline-flex; align-items: center; gap: 6px; margin: 4px 0; padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-weight: 500; text-decoration: none; }
+        .repo-browse:hover { border-color: var(--accent); color: var(--accent); }
+        .repo-browse .icon { width: 16px; height: 16px; }
+        /* Generic labeled metadata row (label + inline items) - shared by repo web/maintainer/relay rows and
+           reusable by future addressable kinds (issue/patch status, labels, ...). */
+        .meta-row { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+        .meta-label { color: var(--muted); font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.04em; }
+        .repo-clones { margin: 12px 0; }
+        .repo-clones .meta-label { display: block; margin-bottom: 5px; }
+        .repo-clone { display: block; font-family: ui-monospace, monospace; font-size: 0.85em; background: var(--panel); padding: 5px 9px; border-radius: 5px; margin-top: 5px; user-select: all; white-space: nowrap; overflow-x: auto; }
+        .repo-relay { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.85em; }
+        .repo-topics { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 6px; }
+        /* Picture composer (NIP-68) title field - sits above the caption textarea in the compose box. */
+        .picture-title { width: 100%; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 1.05em; font-weight: 600; }
+        .picture-title:focus { outline: none; border-color: var(--accent); }
+        /* NIP-68 picture: image + caption as ONE card. The figure clips the image's own corners (overflow)
+           so it sits flush; the caption is a footer on a quiet panel below, sharing the rounded card - so the
+           caption reads as part of the image, not stray text. Restrained (ink discipline): the panel does the
+           work, not colour. Used by the real kind-20 card AND the compose preview (WYSIWYG). */
+        .picture-figure { margin: 8px 0 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+        .picture-figure .media { margin: 0; border: none; border-radius: 0; }
+        .picture-caption { display: block; padding: 8px 12px; background: var(--panel); }
+        .picture-caption .picture-loc { display: block; margin: 0 0 3px; }
         html[data-theme^="sumi-e"] .quote { border-left-color: var(--border); }
         /* The compose FAB as a sumi ink-dot - present without vermilion, distinct
            from the pale jump-to-top circle. */

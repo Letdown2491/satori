@@ -6,19 +6,21 @@
 
 import { neventEncode, naddrEncode } from 'nostr-tools/nip19';
 import { html, join, raw, safeUrl, type SafeHtml } from '../html.ts';
-import { renderContent, renderMarkdown, mediaLightboxes, imgSrc, withEmoji, cleanTrackingParams, type MediaPrefs } from './content.ts';
+import { renderContent, renderMarkdown, renderAsciiDoc, mediaLightboxes, imgSrc, withEmoji, cleanTrackingParams, imageItems, mediaTiles, type MediaPrefs } from './content.ts';
 import { parseImeta, type ImetaMap } from '../nostr/imeta.ts';
 import { parseEmojiTags } from '../nostr/nip30.ts';
 import { tokenize } from '../nostr/content.ts';
-import { npub, shortNpub, displayName, timeAgo, avatar, type ProfileMap } from './util.ts';
+import { npub, shortNpub, displayName, timeAgo, avatar, stripScheme, type ProfileMap } from './util.ts';
 import { icon, enso } from './svg.ts';
 import { quote } from './quotes.ts';
 import { replyParent } from '../nostr/nip10.ts';
 import { commentParent } from '../nostr/nip22.ts';
-import { naddrFromCoord } from '../nostr/nip19.ts';
+import { naddrFromCoord, neventFromRef } from '../nostr/nip19.ts';
 import { formatNip05 } from '../nostr/nip05.ts';
 import { parseArticle, readingMinutes } from '../nostr/nip23.ts';
 import { parseCustomNip } from '../nostr/customnip.ts';
+import { parseWiki } from '../nostr/nip54.ts';
+import { parseRepo } from '../nostr/nip34.ts';
 import { tag1, isAddressable } from '../nostr/tags.ts';
 import { renderEvent, actionsFor } from '../manifest/registry.ts';
 import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
@@ -182,13 +184,19 @@ export function replyContext(ev: NostrEvent): SafeHtml | null {
     const nip10 = replyParent(ev);
     if (nip10) {
         key = nip10.id;
-        try { bech = neventEncode({ id: nip10.id, relays: nip10.relays.slice(0, 1) }); } catch { bech = nip10.id; }
+        // A malformed parent ref (a bech in the id slot, an `a`-coord, junk) can't encode to a resolvable
+        // nevent - drop the card rather than emit a dead /t/ link + an undecodable /embed/ ("↗ link").
+        const nev = neventFromRef(nip10.id, { relays: nip10.relays.slice(0, 1) });
+        if (!nev) return null;
+        bech = nev;
     } else {
         const c = commentParent(ev);
         if (!c) return null;
         if (c.type === 'e') {
             key = c.value;
-            try { bech = neventEncode({ id: c.value, author: c.pubkey, relays: c.relay ? [c.relay] : [] }); } catch { bech = c.value; }
+            const nev = neventFromRef(c.value, { author: c.pubkey, relays: c.relay ? [c.relay] : [] });
+            if (!nev) return null;
+            bech = nev;
         } else if (c.type === 'a') {
             const naddr = naddrFromCoord(c.value);
             if (!naddr) return null;
@@ -222,13 +230,7 @@ export function embedPreview(ev: NostrEvent, bech: string, profiles?: ProfileMap
 /** An article preview for an naddr embed card - title + author + summary. */
 export function articleEmbedPreview(ev: NostrEvent, naddr: string, profiles?: ProfileMap): SafeHtml {
     const a = parseArticle(ev);
-    return html`<a class="article-embed" href="/a/${naddr}" h-scroll="top instant">
-        <span class="quote-label">↗ article</span>
-        ${a.image && safeUrl(a.image) !== '#' ? html`<img class="article-embed-cover" src="${imgSrc(a.image)}" alt="" loading="lazy">` : null}
-        <span class="article-embed-title">${a.title}</span>
-        <span class="article-embed-by">${displayName(ev.pubkey, profiles)}</span>
-        ${a.summary ? html`<span class="article-embed-summary">${a.summary}</span>` : null}
-      </a>`;
+    return addressableEmbed(ev, naddr, '↗ article', a.title, a.summary, profiles, a.image);
 }
 
 /** The label-only fallback (parent not found) - keeps the thread link. */
@@ -239,18 +241,36 @@ export const embedFallback = (href: string, label: string): SafeHtml => html`<a 
  * + name + "now" + the rendered draft - with no action row. `content` is the published
  * assembly (text + media urls); `imeta` carries NIP-92 dims/alt. Mentions/quotes/media
  * render through the same pipeline as a real note, so it's a true what-you-get view. */
-export function composePreview(me: string, content: string, imeta: string[][], profiles?: ProfileMap): SafeHtml {
-    const imetaMap = parseImeta({ tags: imeta, content } as NostrEvent);
-    // Force autoLoad in the preview - you always want to see your own attached media,
-    // regardless of the feed's "load media" setting.
-    const previewMedia: MediaPrefs = { autoLoad: true };
+/** Picture (NIP-68) media + caption as ONE card: the image flush at the top, a caption footer on a panel
+ * below, sharing the card's rounded corners - so the caption reads as part of the image, not stray text.
+ * `caption` is pre-rendered SafeHtml (or null); `location` an optional quiet dateline above it. Shared by the
+ * kind:20 card (pictureBody) and the compose preview so the two stay WYSIWYG. */
+export function pictureFigure(media: SafeHtml, caption: SafeHtml | null, location = ''): SafeHtml {
+    const footer = caption || location
+        ? html`<figcaption class="picture-caption">${location ? html`<span class="picture-loc">${location}</span>` : null}${caption}</figcaption>`
+        : null;
+    return html`<figure class="picture-figure">${media}${footer}</figure>`;
+}
+
+export function composePreview(me: string, content: string, imeta: string[][], profiles?: ProfileMap, opts: { picture?: boolean; title?: string } = {}): SafeHtml {
+    // The body differs by mode; the preview shell (avatar + head + "now") is shared. Picture (NIP-68) mirrors
+    // the real kind-20 card layout - title, image(s), then caption below - so the preview is WYSIWYG (the note
+    // pipeline would wrongly show caption-above-image). Force autoLoad so you always see your own attached media.
+    let body: SafeHtml;
+    if (opts.picture) {
+        const items = imageItems([...parseImeta({ tags: imeta } as NostrEvent)].map(([url, meta]) => ({ url, meta })));
+        body = html`${cardTitle(opts.title ?? '')}${pictureFigure(mediaTiles(items, true), content ? renderContent(content, profiles, false) : null)}`;
+    } else {
+        const imetaMap = parseImeta({ tags: imeta, content } as NostrEvent);
+        body = renderContent(content, profiles, true, { autoLoad: true }, imetaMap);
+    }
     return html`
       <div class="preview-label">Preview</div>
       <div class="note preview-note">
         ${avatar(me, pic(me, profiles))}
         <div class="note-body">
           <div class="note-head">${authorName(me, profiles)}<span class="time">now</span></div>
-          ${renderContent(content, profiles, true, previewMedia, imetaMap)}
+          ${body}
         </div>
       </div>`;
 }
@@ -355,7 +375,7 @@ export function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThrea
     const acts: Record<string, SafeHtml | null> = {
         reply: html`<a class="note-act reply ${replied ? 'engaged' : ''}${convo}" href="${replyHref}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`,
         quote: html`<a class="note-act quote-act ${reposted ? 'engaged' : ''}" href="/compose?quote=${nevent}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="Quote" aria-label="Quote">${icon('quote', reposted)}</a>`,
-        like: !mine && s?.reactions ? likeButton(s, ev.id, ev.pubkey) : null,
+        like: !mine && s?.reactions ? likeButton(s, ev.id, ev.pubkey, ev.kind) : null,
         zap: !mine ? zapAct(ev, s) : null,
         bookmark: s ? bookmarkButton(s, ev.id) : null,
         mute: mute && s && !mine ? muteAct(s, ev.pubkey, ev.id) : null,
@@ -403,7 +423,7 @@ export function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPag
             ? html`<a class="note-act reply ${replied ? 'engaged' : ''}" href="#comment-form" h-boost="false" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`
             : html`<a class="note-act reply ${replied ? 'engaged' : ''}${convo}" href="/a/${naddr}" h-scroll="top instant" title="${label}" aria-label="${label}">${icon('reply', replied)}</a>`,
         quote: html`<a class="note-act quote-act ${reposted ? 'engaged' : ''}" href="/compose?quote=${naddr}" h-target="#modal" h-swap="inner" h-focus="#compose-text" title="Quote" aria-label="Quote">${icon('quote', reposted)}</a>`,
-        like: !mine && s?.reactions ? likeButton(s, naddr, ev.pubkey) : null,
+        like: !mine && s?.reactions ? likeButton(s, naddr, ev.pubkey, ev.kind, ev.id) : null,
         zap: !mine ? articleZapAct(ev, naddr, s) : null,
         bookmark: s && naddr ? bookmarkButton(s, naddr) : null,
         pin: mine && s && naddr ? pinButton(s, naddr) : null,
@@ -531,21 +551,50 @@ export function naddrFor(ev: NostrEvent): string {
     try { return naddrEncode({ kind: ev.kind, pubkey: ev.pubkey, identifier: tag1(ev, 'd'), relays: [] }); } catch { return ''; }
 }
 
-/** An article as a feed row (Satori's ArticleRow): author head + card + actions. */
-export function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
-    const a = parseArticle(ev);
+// Shared shells for the article-like addressable kinds (article / custom NIP / wiki), which render the SAME
+// row/byline/embed and differ only in their card body + label. The card/body is passed in so each kind keeps
+// its own shape; these hold the identical scaffolding (rule-of-three, met once wiki landed).
+
+/** Feed-row skeleton: author head + a `time-thread` link into /a/ + the kind's card + the action row. */
+function addressableRow(ev: NostrEvent, card: SafeHtml, publishedAt: number, ariaLabel: string, profiles?: ProfileMap, s?: Session): SafeHtml {
+    const naddr = naddrFor(ev);
     return html`
       <li class="note article-row">
         ${authorAvatarLink(ev.pubkey, profiles)}
         <div class="note-body">
           <div class="note-head">
             ${authorName(ev.pubkey, profiles)}
-            <a class="time time-thread" href="/a/${naddrFor(ev)}" aria-label="Open article" h-scroll="top instant">${timeAgo(a.publishedAt)}${icon('thread')}</a>
+            <a class="time time-thread" href="/a/${naddr}" aria-label="${ariaLabel}" h-scroll="top instant">${timeAgo(publishedAt)}${icon('thread')}</a>
           </div>
-          ${articleCard(ev, profiles, true)}
-          ${articleActions(ev, naddrFor(ev), s)}
+          ${card}
+          ${articleActions(ev, naddr, s)}
         </div>
       </li>`;
+}
+
+/** Reader byline: author avatar + name + "· time · N min read". */
+function addressableByline(ev: NostrEvent, publishedAt: number, content: string, profiles?: ProfileMap): SafeHtml {
+    return html`<div class="article-byline">
+          ${authorAvatarLink(ev.pubkey, profiles, 'sm')}
+          ${authorName(ev.pubkey, profiles)}
+          <span class="article-byline-meta">· ${timeAgo(publishedAt)} · ${readingMinutes(content)} min read</span>
+        </div>`;
+}
+
+/** Inline embed card: label · optional cover · title · author · summary. */
+function addressableEmbed(ev: NostrEvent, naddr: string, label: string, title: string, summary: string, profiles?: ProfileMap, coverUrl?: string): SafeHtml {
+    return html`<a class="article-embed" href="/a/${naddr}" h-scroll="top instant">
+        <span class="quote-label">${label}</span>
+        ${coverUrl && safeUrl(coverUrl) !== '#' ? html`<img class="article-embed-cover" src="${imgSrc(coverUrl)}" alt="" loading="lazy">` : null}
+        <span class="article-embed-title">${title}</span>
+        <span class="article-embed-by">${displayName(ev.pubkey, profiles)}</span>
+        ${summary ? html`<span class="article-embed-summary">${summary}</span>` : null}
+      </a>`;
+}
+
+/** An article as a feed row (Satori's ArticleRow): author head + card + actions. */
+export function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+    return addressableRow(ev, articleCard(ev, profiles, true), parseArticle(ev).publishedAt, 'Open article', profiles, s);
 }
 
 /** The focused note in a thread - an <li class="note focused"> in the feed list
@@ -634,8 +683,7 @@ function websiteLink(raw0?: string): SafeHtml | null {
     const url = cleanTrackingParams(/^https?:\/\//i.test(raw0) ? raw0 : `https://${raw0}`);
     const href = safeUrl(url);
     if (href === '#') return null;
-    const text = url.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-    return html`<a class="profile-website" href="${href}" target="_blank" rel="noopener noreferrer">${icon('globe')}${text}</a>`;
+    return html`<a class="profile-website" href="${href}" target="_blank" rel="noopener noreferrer">${icon('globe')}${stripScheme(url)}</a>`;
 }
 
 /** The article reader (NIP-23): cover, title, byline, rendered markdown body,
@@ -650,11 +698,7 @@ export function articleReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session
       <article class="article">
         ${cover}
         <h1 class="article-title">${a.title}</h1>
-        <div class="article-byline">
-          ${authorAvatarLink(ev.pubkey, profiles, 'sm')}
-          ${authorName(ev.pubkey, profiles)}
-          <span class="article-byline-meta">· ${timeAgo(a.publishedAt)} · ${readingMinutes(a.content)} min read</span>
-        </div>
+        ${addressableByline(ev, a.publishedAt, a.content, profiles)}
         ${renderMarkdown(a.content, profiles, coverUrl)}
         ${articleActions(ev, naddrFor(ev), s, true)}
       </article>`;
@@ -692,19 +736,7 @@ function customNipCard(ev: NostrEvent): SafeHtml {
 
 /** A custom NIP as a feed row: author head + card + the addressable action row (like articleRow). */
 export function customNipRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
-    const naddr = naddrFor(ev);
-    return html`
-      <li class="note article-row">
-        ${authorAvatarLink(ev.pubkey, profiles)}
-        <div class="note-body">
-          <div class="note-head">
-            ${authorName(ev.pubkey, profiles)}
-            <a class="time time-thread" href="/a/${naddr}" aria-label="Open custom NIP" h-scroll="top instant">${timeAgo(parseCustomNip(ev).publishedAt)}${icon('thread')}</a>
-          </div>
-          ${customNipCard(ev)}
-          ${articleActions(ev, naddr, s)}
-        </div>
-      </li>`;
+    return addressableRow(ev, customNipCard(ev), parseCustomNip(ev).publishedAt, 'Open custom NIP', profiles, s);
 }
 
 /** The custom NIP reader (like articleReader, coverless): title, byline, defined-kind chips, the rendered
@@ -714,11 +746,7 @@ export function customNipReader(ev: NostrEvent, profiles?: ProfileMap, s?: Sessi
     return html`
       <article class="article nip-article">
         <h1 class="article-title">${c.title}</h1>
-        <div class="article-byline">
-          ${authorAvatarLink(ev.pubkey, profiles, 'sm')}
-          ${authorName(ev.pubkey, profiles)}
-          <span class="article-byline-meta">· ${timeAgo(c.publishedAt)} · ${readingMinutes(c.content)} min read</span>
-        </div>
+        ${addressableByline(ev, c.publishedAt, c.content, profiles)}
         ${definedKindChips(c.kinds)}
         ${renderMarkdown(c.content, profiles)}
         ${articleActions(ev, naddrFor(ev), s, true)}
@@ -728,12 +756,136 @@ export function customNipReader(ev: NostrEvent, profiles?: ProfileMap, s?: Sessi
 /** A custom NIP as an inline embed (the article-embed card): kicker · title · author · summary. */
 export function customNipEmbedPreview(ev: NostrEvent, naddr: string, profiles?: ProfileMap): SafeHtml {
     const c = parseCustomNip(ev);
-    return html`<a class="article-embed" href="/a/${naddr}" h-scroll="top instant">
-        <span class="quote-label">↗ custom NIP</span>
-        <span class="article-embed-title">${c.title}</span>
-        <span class="article-embed-by">${displayName(ev.pubkey, profiles)}</span>
-        ${c.summary ? html`<span class="article-embed-summary">${c.summary}</span>` : null}
+    return addressableEmbed(ev, naddr, '↗ custom NIP', c.title, c.summary, profiles);
+}
+
+// --- Wiki article (kind:30818, NIP-54) -------------------------------------
+// A collaborative wiki article: an AsciiDoc body, `d` = the normalized topic slug, optional `title`.
+// Rendered like an article (reader + rows + embed) but through renderAsciiDoc. Reuses the article DOM + CSS.
+
+/** A wiki preview card (the article-card layout, coverless): kicker · title · summary · reading time. */
+function wikiCard(ev: NostrEvent): SafeHtml {
+    const w = parseWiki(ev);
+    const naddr = naddrFor(ev);
+    const href = naddr ? `/a/${naddr}` : '#';
+    return html`
+      <a class="article-card wiki-card" href="${href}">
+        <div class="article-card-cover cover-missing">${enso(30, true)}</div>
+        <div class="article-card-body">
+          <div class="article-card-kicker">↗ Wiki</div>
+          <div class="article-card-title">${w.title}</div>
+          ${w.summary ? html`<div class="article-card-summary">${w.summary}</div>` : null}
+          <div class="article-card-meta"><span>${readingMinutes(w.content)} min read</span></div>
+        </div>
       </a>`;
+}
+
+/** A wiki article as a feed row: author head + card + the addressable action row (like articleRow). */
+export function wikiRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+    return addressableRow(ev, wikiCard(ev), parseWiki(ev).publishedAt, 'Open wiki article', profiles, s);
+}
+
+/** The wiki reader (like articleReader, coverless): title, byline, the rendered AsciiDoc body, action bar. */
+export function wikiReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+    const w = parseWiki(ev);
+    return html`
+      <article class="article wiki-article">
+        <h1 class="article-title">${w.title}</h1>
+        ${addressableByline(ev, w.publishedAt, w.content, profiles)}
+        ${renderAsciiDoc(w.content, profiles, ev.pubkey)}
+        ${articleActions(ev, naddrFor(ev), s, true)}
+      </article>`;
+}
+
+/** A wiki article as an inline embed (the article-embed card): kicker · title · author · summary. */
+export function wikiEmbedPreview(ev: NostrEvent, naddr: string, profiles?: ProfileMap): SafeHtml {
+    const w = parseWiki(ev);
+    return addressableEmbed(ev, naddr, '↗ wiki article', w.title, w.summary, profiles);
+}
+
+// --- Git repository (kind:30617, NIP-34) -----------------------------------
+// A repository announcement: name + description + clone/web urls + maintainers, addressable by naddr. Its
+// OWN card shape (not the article title/summary/reading-time one): a git glyph + the repo name + clone
+// affordances. Read-only (browse / reference); patches and issues are a later phase.
+
+/** A safe external repo web link, scheme dropped from the visible text (like the profile-website link). */
+function repoWebLink(u: string): SafeHtml | null {
+    const href = safeUrl(u);
+    if (href === '#') return null;
+    return html`<a href="${href}" target="_blank" rel="noopener noreferrer">${stripScheme(u)}</a>`;
+}
+
+/** A generic labeled metadata row: an uppercase label + inline items, or null when empty. Shared by the repo
+ * web/maintainer/relay rows and reusable by future addressable kinds (issue/patch status, labels, ...). */
+function labeledRow(label: string, items: SafeHtml[]): SafeHtml | null {
+    return items.length ? html`<div class="meta-row"><span class="meta-label">${label}</span>${join(items, ' ')}</div>` : null;
+}
+
+/** A repo preview card (coverless, article-card layout): git glyph · name · description · repo id. */
+function repoCard(ev: NostrEvent): SafeHtml {
+    const r = parseRepo(ev);
+    const naddr = naddrFor(ev);
+    return html`
+      <a class="article-card repo-card" href="${naddr ? `/a/${naddr}` : '#'}">
+        <div class="article-card-cover cover-missing">${icon('git')}</div>
+        <div class="article-card-body">
+          <div class="article-card-kicker">↗ Repository</div>
+          <div class="article-card-title">${r.name}</div>
+          ${r.description ? html`<div class="article-card-summary">${r.description}</div>` : null}
+          <div class="article-card-meta"><span>${r.identifier}</span></div>
+        </div>
+      </a>`;
+}
+
+/** A repo as a feed/profile row: the shared addressable row wrapper + the repo card. */
+export function repoRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+    return addressableRow(ev, repoCard(ev), ev.created_at, 'Open repository', profiles, s);
+}
+
+/** A repo as an inline embed - reuses the article-embed card (name → title, description → summary). */
+export function repoEmbed(ev: NostrEvent, naddr: string, profiles?: ProfileMap): SafeHtml {
+    const r = parseRepo(ev);
+    return addressableEmbed(ev, naddr, '↗ repository', r.name, r.description, profiles);
+}
+
+/** Clone urls: a label above a vertical stack of single-line (scrollable) copyable monospace urls - git/ssh
+ * urls aren't clickable, so they're select-all text, one per line rather than a wrapping wall of panels. */
+function repoCloneBlock(urls: string[]): SafeHtml | null {
+    return urls.length ? html`<div class="repo-clones"><span class="meta-label">Clone</span>${join(urls.map((u) => html`<code class="repo-clone">${u}</code>`))}</div>` : null;
+}
+
+/** Extra web urls (beyond the primary Browse button) as a labeled row of safe links. */
+function repoWebRow(urls: string[]): SafeHtml | null {
+    return labeledRow('Web', urls.map(repoWebLink).filter((x): x is SafeHtml => x !== null));
+}
+
+/** The repo detail page (/a/): name (git glyph), byline, description, a primary Browse action, clone urls,
+ * any extra web urls, topics, maintainers (the announcer is dropped - they're already the byline), actions. */
+export function repoReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
+    const r = parseRepo(ev);
+    // the announcer is already the byline, so drop them from the maintainers row
+    const maintainers = labeledRow('Maintainers', r.maintainers.filter((pk) => pk !== ev.pubkey).map((pk) => html`<a href="/u/${npub(pk)}" h-scroll="top instant">${displayName(pk, profiles)}</a>`));
+    const relays = labeledRow('Relays', r.relays.map((u) => html`<span class="repo-relay">${u}</span>`));
+    const topics = r.topics.length ? html`<div class="repo-topics">${join(r.topics.map((t) => html`<span class="nip-kind-chip">#${t}</span>`))}</div>` : null;
+    const browseUrl = r.web.find((u) => safeUrl(u) !== '#'); // the primary "go see the code" action
+    const browse = browseUrl ? html`<a class="repo-browse" href="${safeUrl(browseUrl)}" target="_blank" rel="noopener noreferrer">${icon('globe')} Browse ↗</a>` : null;
+    return html`
+      <article class="article repo-article">
+        <h1 class="article-title repo-title">${icon('git')}${r.name}</h1>
+        <div class="article-byline">
+          ${authorAvatarLink(ev.pubkey, profiles, 'sm')}
+          ${authorName(ev.pubkey, profiles)}
+          <span class="article-byline-meta">· ${timeAgo(ev.created_at)}</span>
+        </div>
+        ${r.description ? html`<p class="repo-desc">${r.description}</p>` : null}
+        ${browse}
+        ${repoCloneBlock(r.clone)}
+        ${repoWebRow(r.web.filter((u) => u !== browseUrl))}
+        ${topics}
+        ${maintainers}
+        ${relays}
+        ${articleActions(ev, naddrFor(ev), s, true)}
+      </article>`;
 }
 
 /** A list of notes (feed / profile / thread replies). `opts.faces` appends the lazy reply-faces hydrate

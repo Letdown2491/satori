@@ -8,6 +8,7 @@
 
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { coalesceOne } from './coalesce.ts';
+import { fetchRelayLists } from './relays.ts';
 import { parseDmRelays, KIND_DM_RELAYS } from '../nostr/nip17.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
@@ -22,17 +23,38 @@ export function clearDmRelaysCache(pubkey?: string): void {
     if (pubkey) dmRelaysCache.delete(pubkey); else dmRelaysCache.clear();
 }
 
-/** A pubkey's kind:10050 DM-inbox relays (or the indexers as a fallback), memoized. */
-export async function dmRelaysOf(s: Session, pubkey: string): Promise<string[]> {
+/** A pubkey's RAW kind:10050 DM-inbox relays (empty if none published), memoized. Callers layer their
+ * own fallback: READ paths widen to indexers (dmRelaysOf); the PUBLISH path stays strict (NIP-17). */
+async function rawDmRelays(s: Session, pubkey: string): Promise<string[]> {
     const hit = dmRelaysCache.get(pubkey);
     if (hit && Date.now() - hit.at < DM_RELAYS_TTL_MS) return hit.relays;
     return coalesceOne(dmRelaysInflight, pubkey, async (): Promise<string[]> => {
         const ev = await s.pool.get([...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], { kinds: [KIND_DM_RELAYS], authors: [pubkey] }).catch(() => null);
-        const list = ev ? parseDmRelays(ev) : [];
-        const relays = list.length ? list : INDEXER_RELAYS;
-        dmRelaysCache.set(pubkey, { relays, at: Date.now() }); // cache the fallback too (negatives)
+        const relays = ev ? parseDmRelays(ev) : [];
+        dmRelaysCache.set(pubkey, { relays, at: Date.now() }); // cache raw (incl. empty = negative cache)
         return relays;
     });
+}
+
+/** A pubkey's kind:10050 DM-inbox relays (or the indexers as a fallback), memoized. For READ/discovery. */
+export async function dmRelaysOf(s: Session, pubkey: string): Promise<string[]> {
+    const raw = await rawDmRelays(s, pubkey);
+    return raw.length ? raw : INDEXER_RELAYS;
+}
+
+/** Where to PUBLISH a gift wrap for a pubkey (NIP-17: "clients MUST only publish to the relays listed
+ * in the recipient's kind:10050"). We honor that strictly: the recipient's 10050 relays, and NEVER
+ * public indexers. Soft fallback (the user's choice) when they published no 10050: their NIP-65 read
+ * relays (where they receive regular events) - still their own declared relays, not a broadcast. Self
+ * uses our own configured read set. Empty means undeliverable (the caller surfaces it). */
+async function dmPublishRelays(s: Session, pubkey: string): Promise<string[]> {
+    const raw = await rawDmRelays(s, pubkey);
+    if (raw.length) return raw;
+    if (pubkey === s.me) return s.myRelays?.read ?? [];
+    // Discover the peer's relay list from indexers (reading it there is fine - we don't publish the wrap
+    // there), then deliver only to their read relays.
+    const lists = await fetchRelayLists(s.pool, [...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], [pubkey]).catch(() => null);
+    return lists?.get(pubkey)?.read ?? [];
 }
 
 /** Where to READ your own incoming wraps: your DM relays ∪ your read relays ∪ indexers.
@@ -43,10 +65,15 @@ export async function myDmReadRelays(s: Session): Promise<string[]> {
     return [...new Set([...(await dmRelaysOf(s, s.me!)), ...(s.myRelays?.read ?? []), ...INDEXER_RELAYS])];
 }
 
-/** Publish a sealed DM to both inboxes: the wrap-to-peer to the peer's DM relays, the
- * wrap-to-self to your own read relays. Shared by both signing paths so the routing stays
- * identical. Best-effort; failures are the caller's to surface. */
+/** Publish a sealed DM to both inboxes: the wrap-to-peer to the peer's DM/read relays, the wrap-to-self
+ * to your own. Shared by both signing paths so the routing stays identical. NIP-17: publishes ONLY to the
+ * recipients' own relays, never public indexers. Throws if the peer has no deliverable relays, so the
+ * caller's existing send-failure path surfaces "couldn't deliver" rather than silently leaking nowhere. */
 export async function publishWrapPair(s: Session, peer: string, toPeer: NostrEvent, toSelf: NostrEvent): Promise<void> {
-    const [peerRelays, myRelays] = await Promise.all([dmRelaysOf(s, peer), myDmReadRelays(s)]);
-    await Promise.all([s.pool.publish(peerRelays, toPeer), s.pool.publish(myRelays, toSelf)]);
+    const [peerRelays, selfRelays] = await Promise.all([dmPublishRelays(s, peer), dmPublishRelays(s, s.me!)]);
+    if (!peerRelays.length) throw new Error('recipient has no DM inbox (kind:10050) or relay list to deliver to');
+    await Promise.all([
+        s.pool.publish(peerRelays, toPeer),
+        selfRelays.length ? s.pool.publish(selfRelays, toSelf) : Promise.resolve([]), // no self-copy if we have no relays; not fatal
+    ]);
 }

@@ -8,9 +8,11 @@
 // tags, content-warning, mention p-tags, and relay-hint/inbox routing - both modes
 // go through it, so there's one source of truth for note construction.
 
-import { signNote, signComment, publishSigned, captureSigner, type Prepared, type ReplyTo, type QuoteRef, type CommentTarget, type CommentRef } from '../data/publish.ts';
+import { signNote, signComment, signPicture, publishSigned, captureSigner, type Prepared, type ReplyTo, type QuoteRef, type CommentTarget, type CommentRef } from '../data/publish.ts';
+import { KIND_PICTURE } from '../nostr/nip68.ts';
 import { fetchEvent } from '../data/feeds.ts';
 import { commentRoot, KIND_COMMENT } from '../nostr/nip22.ts';
+import { isAddressable, tag1 } from '../nostr/tags.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { normalizeRelayUrl, relayLabel } from '../data/relay-favorites.ts';
@@ -40,19 +42,21 @@ import { signsOnClient } from '../session.ts';
 
 const MAX_INBOX_RELAYS = 4;
 
-interface ComposeCtx { reply?: { nevent: string; name: string }; quote?: string; draft?: string; error?: string; isNew?: boolean; media?: string[][]; cw?: boolean; cwReason?: string; inThread?: string; draftId?: string; status?: string; syncEl?: SafeHtml; relays?: string[] }
+interface ComposeCtx { reply?: { nevent: string; name: string }; quote?: string; draft?: string; error?: string; isNew?: boolean; media?: string[][]; cw?: boolean; cwReason?: string; inThread?: string; draftId?: string; status?: string; syncEl?: SafeHtml; relays?: string[]; title?: string }
 
 /** The Note · Poll · Article segmented selector (only on new top-level posts,
  * matching Satori). Article (the long-form composer) is Phase 6. In a modal the
  * Note/Poll links re-load into #modal; on the page they navigate. */
-function composeTypes(active: 'note' | 'poll', inModal = false): SafeHtml {
+function composeTypes(active: 'note' | 'poll' | 'picture', inModal = false): SafeHtml {
     const tgt = inModal ? raw(' h-target="#modal" h-swap="inner"') : raw('');
     // In the modal, focus the relevant field after the type-switch swap lands.
     const noteFocus = inModal ? raw(' h-focus="#compose-text"') : raw('');
     const pollFocus = inModal ? raw(' h-focus="#poll-question"') : raw('');
+    const picFocus = inModal ? raw(' h-focus="#picture-title"') : raw('');
     return html`
       <div class="compose-types">
         <a class="compose-type ${active === 'note' ? 'active' : ''}" href="/compose"${tgt}${noteFocus}>Note</a>
+        <a class="compose-type ${active === 'picture' ? 'active' : ''}" href="/compose?type=picture"${tgt}${picFocus}>Picture</a>
         <a class="compose-type ${active === 'poll' ? 'active' : ''}" href="/compose?type=poll"${tgt}${pollFocus}>Poll</a>
         <a class="compose-type" href="/compose?type=article">Article</a>
       </div>`;
@@ -153,6 +157,38 @@ function pollFormPart(d: PollDraft | null = null, inModal = false, status = '', 
       </form>`;
 }
 
+/** The picture (NIP-68 kind:20) compose form: a title + caption + the shared media strip (≥1 image required
+ * to publish). Reuses the note's upload/attach + live-preview + @mention wiring; posts to /picture. Top-level
+ * only, and lean in v1 (no reply/quote/schedule/relay-picker). A local draft is deferred too - unlike a note/
+ * poll draft, it would have to carry already-uploaded Blossom blobs, which is more machinery than v1 needs. */
+function pictureFormPart(c: ComposeCtx, inModal = false): SafeHtml {
+    return html`
+      ${c.error ? html`<div class="notice error">${c.error}</div>` : null}
+      <form class="compose-box" action="/upload" method="post" h-post enctype="multipart/form-data"
+        h-trigger="submit, change from:#compose-attach" h-target="#media" h-swap="append">
+        ${inModal ? html`<input type="hidden" name="inmodal" value="1">` : null}
+        <input class="picture-title" type="text" name="title" id="picture-title" value="${c.title ?? ''}" placeholder="Title (optional)" autocomplete="off" maxlength="200">
+        <textarea name="content" id="compose-text" aria-label="Caption"
+          h-get="/compose/suggest" h-trigger="input debounce:150" h-include="#compose-text" h-busy="false"
+          h-selection="" h-target="#suggest" h-swap="inner" h-push-url="false" h-combobox="#suggest"
+          placeholder="Add a caption…">${c.draft ?? ''}</textarea>
+        <div id="suggest" class="mention-box" role="listbox" aria-label="Suggestions"></div>
+        <input type="checkbox" id="cw-toggle" name="cw" value="1" class="cw-check"${c.cw ? raw(' checked') : raw('')}>
+        <div class="cw-row"><input class="cw-reason-input" type="text" name="cw_reason" value="${c.cwReason ?? ''}" placeholder="Content warning reason (optional)" autocomplete="off"></div>
+        <div class="compose-media" id="media">${(c.media ?? []).map((m) => mediaItem(m))}</div>
+        <div id="compose-preview" class="compose-preview" h-get="/compose/preview?type=picture"
+          h-trigger="input from:#compose-text debounce:180, input from:#picture-title debounce:180, compose-media from:body" h-include="#picture-title, #compose-text, #media input[name=imeta]"
+          h-target="#compose-preview" h-swap="inner" h-busy="false" h-push-url="false"></div>
+        <div class="compose-foot">
+          <label class="attach-btn" id="compose-attach" title="Add a photo" aria-label="Add a photo">${icon('image')}${composeFileInput()}</label>
+          <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
+          <noscript><button type="submit" class="attach-go">Attach</button></noscript>
+          <span class="compose-status">${c.status ?? ''}</span>
+          <button type="submit" class="publish-btn" formaction="/picture" formmethod="post" h-target="body" h-swap="inner">Post picture</button>
+        </div>
+      </form>`;
+}
+
 /** Wrap compose body in Satori's modal overlay (the helmjs-enhanced presentation;
  * the /compose page is the zero-JS baseline). The ✕ clears #modal. Submitting the
  * form swaps the <body> (boosted) → the modal vanishes and the feed updates. */
@@ -182,6 +218,13 @@ export function getComposePreview(ctx: Ctx): void {
     if (!s) return;
     const text = (ctx.query.get('content') ?? '').trim();
     const imeta = ctx.query.getAll('imeta').map(parseImeta).filter((t): t is string[] => !!t);
+    // Picture (kind:20): preview the real image-first card (title → images → caption), not the note layout.
+    if (ctx.query.get('type') === 'picture') {
+        const title = (ctx.query.get('title') ?? '').trim();
+        if (!text && !title && imeta.length === 0) { sendFragment(ctx, html``); return; }
+        sendFragment(ctx, composePreview(s.me, text, imeta, s.profiles, { picture: true, title }));
+        return;
+    }
     const mediaUrls = imeta.map((t) => t.find((x) => x.startsWith('url '))?.slice(4)).filter((u): u is string => !!u);
     const content = [text, ...mediaUrls].filter(Boolean).join('\n');
     if (!content) { sendFragment(ctx, html``); return; }
@@ -197,8 +240,6 @@ function decodeReplyTo(nevent: string): ReplyTo | null {
     } catch { /* */ }
     return null;
 }
-
-const isAddressable = (k: number): boolean => k >= 30000 && k < 40000;
 
 /** NIP-22: a reply to anything that ISN'T a kind:1 note must be a kind:1111 comment (the spec forbids
  * commenting on kind:1 - those stay NIP-10). Resolve the comment's root+parent scope from the target:
@@ -222,7 +263,7 @@ async function commentTargetFor(s: Session & { me: string }, rt: ReplyTo): Promi
     if (!rt.pubkey) return null; // need the author to scope a comment; without it fall back to NIP-10
     if (isAddressable(kind)) {
         const ev = await fetchEvent(s.pool, rt.id, [], rt.pubkey).catch(() => null);
-        const d = ev?.tags.find((t) => t[0] === 'd')?.[1] ?? '';
+        const d = ev ? tag1(ev, 'd') : '';
         const ref: CommentRef = { kind, pubkey: rt.pubkey, address: `${kind}:${rt.pubkey}:${d}` };
         return { root: ref, parent: ref };
     }
@@ -300,6 +341,13 @@ export async function getCompose(ctx: Ctx): Promise<void> {
         const pd = draft?.type === 'poll' ? draft : null;
         if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(pd, true))); return; }
         sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(pd)}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
+        return;
+    }
+
+    // Picture (NIP-68 kind:20) - a lean top-level composer (title + caption + images), like poll.
+    if (isNew && ctx.query.get('type') === 'picture') {
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('picture', true), pictureFormPart({ isNew: true }, true))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('picture')}${pictureFormPart({ isNew: true })}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Picture' }));
         return;
     }
 
@@ -397,6 +445,53 @@ function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string 
     const custom = normalizeRelayUrl(p.get('customrelay') ?? '');
     const targets = [...new Set([...picked, ...(custom ? [custom] : [])])];
     return targets.length ? targets : all;
+}
+
+/** POST /picture - compose a NIP-68 picture (kind:20). Both signing families like notes/polls: bunker signs
+ * server-side (with an undo window); nip07 returns a sign request continued at /picture/publish. */
+export async function postPicture(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const form = await readForm(ctx.req, 30 * 1024 * 1024);
+    const title = (form.get('title') ?? '').trim();
+    const content = (form.get('content') ?? '').trim();
+    const imeta = form.getAll('imeta').map(parseImeta).filter((t): t is string[] => !!t);
+    const cw = form.get('cw') === '1';
+    const cwReason = (form.get('cw_reason') ?? '').trim();
+    const fromModal = form.get('inmodal') === '1';
+    if (imeta.length === 0) { redirect(ctx, '/compose?type=picture'); return; } // a picture needs at least one image
+    const opts = { title, content, imeta, contentWarning: cw ? (cwReason || '') : null };
+    if (signsOnClient(s)) {
+        const prepared = await signPicture(captureSigner, s.me, s.myRelays!, opts);
+        sendSignRequest(ctx, prepared.signed, fromModal ? '/picture/publish?inmodal=1' : '/picture/publish');
+        return;
+    }
+    try {
+        const prepared = await signPicture(s.signer!, s.me, s.myRelays!, opts);
+        if (await tryUndoWindow(ctx, s, prepared, { fromModal })) return; // hold + countdown toast (helmjs)
+        await publishSigned(s.pool, prepared);
+    } catch (err) {
+        sendFragment(ctx, html`<div class="notice error">Couldn't post the picture: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
+        return;
+    }
+    if (ctx.isPartial) { if (fromModal) stayPutCloseModal(ctx); else await landOnFeed(ctx, s as Session & { me: string }); return; }
+    redirect(ctx, '/');
+}
+
+/** nip07 continuation for a composed picture (the browser-signed kind:20 comes back here). */
+export async function postPicturePublish(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const signed = await requireSigned(ctx, s.me, KIND_PICTURE, 'the picture');
+    if (!signed) return;
+    const fromModal = ctx.query.get('inmodal') === '1';
+    const prepared: Prepared = { signed, isReply: false, writeTargets: writeRelaysFor(s.myRelays), inboxTargets: [] };
+    if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, fromModal })) return; // nip07 = always JS
+    try { await publishSigned(s.pool, prepared); } catch (err) {
+        sendFragment(ctx, html`<div class="notice error">Couldn't publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
+        return;
+    }
+    if (fromModal) stayPutCloseModal(ctx); else await landOnFeed(ctx, s as Session & { me: string });
 }
 
 export async function postNote(ctx: Ctx): Promise<void> {

@@ -37,18 +37,25 @@ function reactionFields(r: Reaction): { content: string; emojiTag?: string[] } {
     return r.url ? { content: `:${r.emoji}:`, emojiTag: ['emoji', r.emoji, r.url] } : { content: r.emoji };
 }
 
-/** Unsigned reaction (kind:7) for a note. `r` defaults to a plain heart. */
-export function likeTemplate(me: string, note: { id: string; pubkey: string }, r: Reaction = { emoji: '+' }): UnsignedEvent {
+/** Unsigned reaction (kind:7) for a note (NIP-25): `e` = the reacted event (with relay + author-pubkey
+ * hints), `p` = the author (relay hint), `k` = the reacted event's real kind. `r` defaults to a heart. */
+export function likeTemplate(me: string, note: { id: string; pubkey: string; kind: number; relayHint?: string }, r: Reaction = { emoji: '+' }): UnsignedEvent {
     const { content, emojiTag } = reactionFields(r);
-    const tags = [['e', note.id], ['p', note.pubkey], ['k', '1'], ...(emojiTag ? [emojiTag] : [])];
+    const hint = note.relayHint ?? '';
+    const tags = [['e', note.id, hint, note.pubkey], ['p', note.pubkey, hint], ['k', String(note.kind)], ...(emojiTag ? [emojiTag] : [])];
     return { kind: 7, created_at: now(), pubkey: me, content, tags };
 }
 
-/** Unsigned reaction (kind:7) for an addressable event (NIP-25): `a` = the address, `p` = the author,
- * `k` = the reacted kind. Used for articles (kind:30023). */
-export function articleLikeTemplate(me: string, article: { address: string; pubkey: string; kind: number }, r: Reaction = { emoji: '+' }): UnsignedEvent {
+/** Unsigned reaction (kind:7) for an addressable event (NIP-25): `a` = the address, plus the `e` tag
+ * (the specific event id) which the spec REQUIRES "together with the `a` tag" - included when we could
+ * resolve the current event id, else `a`-only. `p` = the author, `k` = the reacted kind; all with relay
+ * hints. Used for articles (30023) + other addressable kinds. */
+export function articleLikeTemplate(me: string, article: { address: string; pubkey: string; kind: number; relayHint?: string; eventId?: string }, r: Reaction = { emoji: '+' }): UnsignedEvent {
     const { content, emojiTag } = reactionFields(r);
-    const tags = [['a', article.address], ['p', article.pubkey], ['k', String(article.kind)], ...(emojiTag ? [emojiTag] : [])];
+    const hint = article.relayHint ?? '';
+    const tags = [['a', article.address, hint]];
+    if (article.eventId) tags.push(['e', article.eventId, hint, article.pubkey]); // NIP-25: e-tag required alongside a
+    tags.push(['p', article.pubkey, hint], ['k', String(article.kind)], ...(emojiTag ? [emojiTag] : []));
     return { kind: 7, created_at: now(), pubkey: me, content, tags };
 }
 

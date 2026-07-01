@@ -6,12 +6,19 @@ import type { Signer } from './signer.ts';
 import type { NostrEvent, RelayList, UnsignedEvent } from '../nostr/types.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { fetchRelayLists } from './relays.ts';
+import { fetchEvent } from './feeds.ts';
+import { isHex64 } from '../nostr/tags.ts';
 import { KIND_POLL, generateOptionId, buildPollTags } from '../nostr/nip88.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
+import { KIND_PICTURE, firstCaptionLine } from '../nostr/nip68.ts';
 import type { PollType } from '../nostr/nip88.ts';
 import { tokenize } from '../nostr/content.ts';
 
 const MAX_INBOX_RELAYS = 4;
+const MAX_ANCESTOR_P = 20; // cap on p-tags copied from a (untrusted) parent event - anti mention-spam + bloat
+
+/** Sanitize a relay hint carried over from another user's event: keep only a plausible, short ws(s) URL. */
+const hintOf = (h?: string): string => (h && h.length <= 200 && /^wss?:\/\//i.test(h) ? h : '');
 
 /** A no-op "signer" that returns the unsigned template verbatim - for capturing the event a signing
  * flow WOULD produce (e.g. the nip07 path, which signs in the browser) without actually signing. */
@@ -75,8 +82,38 @@ export async function signNote(
         }
         const writeHint = recipientList?.write[0] ?? '';
         const readHint = recipientList?.read[0] ?? '';
-        tags.push(['e', replyTo.id, writeHint, 'reply']);
-        if (replyTo.pubkey) tags.push(['p', replyTo.pubkey, readHint]);
+
+        // NIP-10 (marked tags): fetch the parent so the reply carries the thread ROOT and the ancestry,
+        // not just the immediate parent. Via the cached fetchEvent (the parent was usually just rendered,
+        // so this is a cache hit + outbox routing); best-effort, degrades to a lone 'reply' e-tag on a miss.
+        const parent = await fetchEvent(pool, replyTo.id, recipientList?.write ?? [], replyTo.pubkey, { maxWait: 3000 }).catch(() => null);
+        const parentEtags = parent?.tags.filter((t) => t[0] === 'e') ?? [];
+        // The parent's root: its explicit 'root' marker, else its first non-'mention' e-tag (positional
+        // scheme), taken only if it's a valid event id. No valid root → the parent IS the thread root.
+        const rootRef = parentEtags.find((t) => t[3] === 'root') ?? parentEtags.find((t) => t[3] !== 'mention') ?? null;
+        const rootId = rootRef && isHex64(rootRef[1] ?? '') ? rootRef[1]! : '';
+        // A marked e-tag: ['e', id, relayHint, marker, authorPubkey?] - drop the trailing author when unknown/invalid.
+        const eTag = (id: string, hint: string, marker: string, author?: string): string[] =>
+            author && isHex64(author) ? ['e', id, hint, marker, author] : ['e', id, hint, marker];
+        if (rootId) {
+            tags.push(eTag(rootId, hintOf(rootRef![2]), 'root', rootRef![4]));
+            tags.push(eTag(replyTo.id, writeHint, 'reply', replyTo.pubkey));
+        } else {
+            // Parent is the root (marker 'root'), or unknown (fall back to legacy 'reply').
+            tags.push(eTag(replyTo.id, writeHint, parent ? 'root' : 'reply', replyTo.pubkey));
+        }
+
+        // p-tags (NIP-10): the parent's participants + the parent's author, deduped, so the thread is
+        // notified. The parent is another user's event, so its tags are UNTRUSTED: copy only valid hex
+        // pubkeys, cap the count (anti mention-spam + bloat), and sanitize each carried relay hint.
+        const pSeen = new Set<string>();
+        const pushP = (pk?: string, hint = '') => { if (pk && !pSeen.has(pk)) { tags.push(hint ? ['p', pk, hint] : ['p', pk]); pSeen.add(pk); } };
+        let ancestors = 0;
+        for (const t of parent?.tags ?? []) {
+            if (t[0] === 'p' && isHex64(t[1] ?? '') && ancestors < MAX_ANCESTOR_P) { pushP(t[1], hintOf(t[2])); ancestors++; }
+        }
+        pushP(replyTo.pubkey, readHint);
+
         const read = recipientList?.read ?? [];
         inboxRelays.push(...(read.length ? read : INDEXER_RELAYS).slice(0, MAX_INBOX_RELAYS));
     }
@@ -96,6 +133,45 @@ export async function signNote(
     });
     const myWrite = writeRelaysFor(myRelays);
     return { signed, isReply: !!replyTo?.id, writeTargets: myWrite, inboxTargets: inboxRelays };
+}
+
+/** Build + sign a NIP-68 picture post (kind:20): a title + caption (content) + the uploaded images as
+ * NIP-92 `imeta` tags. Top-level only (no reply/quote); mirrors signNote's content-warning + @mention
+ * handling and its scheduling (`createdAt`). No pool round-trip - a picture post resolves no recipient. */
+export async function signPicture(
+    signer: Signer,
+    me: string,
+    myRelays: RelayList,
+    { title, content, imeta = [], contentWarning = null, createdAt }:
+        { title: string; content: string; imeta?: string[][]; contentWarning?: string | null; createdAt?: number },
+): Promise<Prepared> {
+    const tags: string[][] = [];
+    // NIP-68: a picture event carries a `title` tag (structural). If the composer's title is blank we
+    // derive one from the caption's first non-empty line so the tag is always present + meaningful.
+    tags.push(['title', title.trim() || firstCaptionLine(content)]);
+    if (contentWarning !== null) tags.push(contentWarning ? ['content-warning', contentWarning] : ['content-warning']);
+    for (const m of imeta) tags.push(m); // NIP-92 image metadata - the picture's payload
+    // NIP-68 also surfaces each image's hash (`x`) + mime (`m`) as TOP-LEVEL tags (relay/client filtering),
+    // mirroring the values already inside the imeta: one `x` per image, `m` deduped across them.
+    const xs = new Set<string>(), mimes = new Set<string>();
+    for (const im of imeta) {
+        const x = im.find((v) => v.startsWith('x '))?.slice(2); if (x) xs.add(x);
+        const mm = im.find((v) => v.startsWith('m '))?.slice(2); if (mm) mimes.add(mm);
+    }
+    for (const x of xs) tags.push(['x', x]);
+    for (const mm of mimes) tags.push(['m', mm]);
+    const tagged = new Set<string>();
+    for (const tok of tokenize(content)) {
+        if (tok.t === 'mention' && !tagged.has(tok.pubkey)) { tags.push(['p', tok.pubkey]); tagged.add(tok.pubkey); }
+    }
+    const signed = await signer.signEvent({
+        kind: KIND_PICTURE,
+        created_at: createdAt ?? Math.floor(Date.now() / 1000),
+        tags,
+        content,
+        pubkey: me,
+    });
+    return { signed, isReply: false, writeTargets: writeRelaysFor(myRelays), inboxTargets: [] };
 }
 
 /** Build + sign a NIP-22 comment (kind:1111) - root scope in uppercase tags, the

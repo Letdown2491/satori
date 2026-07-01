@@ -6,22 +6,17 @@
 
 import type { KindHandler } from './registry.ts';
 import { type SatoriDeps, notWired } from './deps.ts';
-import { customNipRow, customNipReader, focusedNote, customNipEmbedPreview, naddrFor, ARTICLE_ACTIONS } from '../render/note.ts';
-import { ensureArticleReplies, replierPubkeys } from '../replies.ts';
-import { ensureProfiles } from '../routes/common.ts';
+import { customNipRow, customNipReader, focusedNote, customNipEmbedPreview, ARTICLE_ACTIONS } from '../render/note.ts';
+import { articleLikeReplies } from './article.ts';
 import { KIND_CUSTOM_NIP } from '../nostr/customnip.ts';
 
 export const customNipHandler: KindHandler<SatoriDeps> = {
     kinds: [KIND_CUSTOM_NIP],
+    reader: true, // the full-page /a/ markdown reader (with defined-kind chips)
     actions: ARTICLE_ACTIONS, // comment(reply) · quote · like · zap · bookmark · pin, keyed by naddr
     ref: { as: 'article', label: '↗ custom NIP', path: (bech) => `/a/${bech}` }, // inline naddr → the reader
 
-    // Warm reply-presence (NIP-22 comments, keyed by naddr) + replier avatars, exactly like articles.
-    async prepare(events, s, opts) {
-        const naddrs = events.map(naddrFor);
-        await ensureArticleReplies(s, naddrs, opts.full ? 'paint' : 'race');
-        void ensureProfiles(s, replierPubkeys(naddrs)).catch(() => {});
-    },
+    prepare: articleLikeReplies, // NIP-22 reply-presence + replier avatars, shared with articles
 
     render(ev, surface, d) {
         if (surface === 'timeline') return customNipRow(ev, d.profiles, d.s);

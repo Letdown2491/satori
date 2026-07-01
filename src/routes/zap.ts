@@ -5,7 +5,7 @@
 // nip07 public zaps sign-and-resubmit through POST /zap/invoice.
 
 import { html, type SafeHtml } from '../html.ts';
-import { resolveLnurlPay, zapRequestTemplate, anonZapRequest, fetchZapInvoice, type ZapRef } from '../data/zap.ts';
+import { resolveLnurlPay, zapRequestTemplate, anonZapRequest, fetchZapInvoice, zapLnurl, type ZapRef } from '../data/zap.ts';
 import { writeRelays } from '../actions.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { decodeNaddr } from '../nostr/nip19.ts';
@@ -77,7 +77,7 @@ export async function postZap(ctx: Ctx): Promise<void> {
     if (sats <= 0) { back('Enter an amount.'); return; }
     if (sats > ZAP_MAX) { back(`That’s over the ${ZAP_MAX.toLocaleString()} sats limit.`); return; }
 
-    const ref: ZapRef = { recipientPubkey: recipient, eventId, address, amountMsats: sats * 1000, comment, relays: zapRelays(s) };
+    const ref: ZapRef = { recipientPubkey: recipient, eventId, address, amountMsats: sats * 1000, comment, relays: zapRelays(s), lnurl: zapLnurl(lud16) };
 
     let info;
     try { info = await resolveLnurlPay(lud16); } catch (e) { back(e instanceof Error ? e.message : 'Could not reach the lightning address.'); return; }

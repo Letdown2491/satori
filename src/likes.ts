@@ -3,13 +3,9 @@
 // and read as an instant set lookup. `ensureLikes` just makes sure that sync has been
 // kicked off (idempotent, background) - no per-note round-trip.
 
-import { cachedLikeId, ensureEngagementSynced } from './data/engagement-cache.ts';
+import { ensureEngagementSynced } from './data/engagement-cache.ts';
 import { ensureUserEmoji } from './data/emoji-sets.ts';
 import type { Session } from './session.ts';
-
-export function isLiked(s: Session, noteId: string): boolean {
-    return !!s.me && cachedLikeId(s.me, noteId) !== undefined;
-}
 
 /** Ensure the engagement cache is syncing (background, idempotent). No per-note query. When reactions
  * are enabled, also warm the user's NIP-30 custom emoji - FIRE-AND-FORGET (not awaited): the picker

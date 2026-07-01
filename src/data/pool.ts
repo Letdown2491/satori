@@ -6,6 +6,7 @@ import { SimplePool } from 'nostr-tools/pool';
 import type { Filter } from 'nostr-tools';
 import { toPoolUrls, fromPoolUrl } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
+import { recordSeen } from './seen-relays.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 
 /** True if at least one relay accepted a publish (a settled fan-out succeeds on any acceptance). Lives
@@ -46,6 +47,8 @@ export class Pool {
 
     constructor() {
         this.raw.maxWaitForConnection = CONNECT_MAX_WAIT;
+        this.raw.trackRelays = true; // populate seenOn so we can learn which relays actually carry an author's events
+
         (this.raw as { automaticallyAuth?: unknown }).automaticallyAuth = (url: string) => {
             if (!this.authSign || !this.authRelays.has(normUrl(url))) return undefined;
             const sign = this.authSign;
@@ -60,6 +63,21 @@ export class Pool {
     }
     setAuthRelays(relays: string[]): void {
         this.authRelays = new Set(toPoolUrls(relays).map(normUrl));
+    }
+
+    /** Record which relays each event actually arrived on (empirical outbox memory, keyed by author), then
+     * DRAIN the consumed seenOn entries - nostr-tools never bounds that map, and we've extracted what we
+     * need, so dropping them keeps enabling trackRelays from leaking. Relay urls are mapped back through
+     * fromPoolUrl so a Tor-proxied .onion is stored by its real url, not the proxy. */
+    private recordSeenOn(events: NostrEvent[]): void {
+        if (!events.length) return;
+        const seenOn = this.raw.seenOn;
+        for (const e of events) {
+            const relays = seenOn.get(e.id);
+            if (!relays) continue;
+            recordSeen(e.pubkey, [...relays].map((r) => fromPoolUrl(r.url)));
+            seenOn.delete(e.id);
+        }
     }
 
     // Resolves on all-relay EOSE or maxWait (the safe, complete default). `opts.fast` ALSO resolves once
@@ -87,7 +105,9 @@ export class Pool {
                 clearTimeout(quietTimer);
                 clearTimeout(hardTimer);
                 try { sub?.close(); } catch { /* already closed */ }
-                resolve([...events.values()]);
+                const list = [...events.values()];
+                this.recordSeenOn(list);
+                resolve(list);
             };
             hardTimer = setTimeout(finish, maxWait);
             try {
@@ -110,7 +130,8 @@ export class Pool {
     get(relays: string[], filter: Filter, maxWait?: number): Promise<NostrEvent | null> {
         const tor = relaysViaTor();
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
-        return this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : (maxWait ?? GET_MAX_WAIT) }) as Promise<NostrEvent | null>;
+        return (this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : (maxWait ?? GET_MAX_WAIT) }) as Promise<NostrEvent | null>)
+            .then((ev) => { if (ev) this.recordSeenOn([ev]); return ev; });
     }
 
     publish(relays: string[], event: NostrEvent): Promise<PromiseSettledResult<string>[]> {
@@ -118,7 +139,11 @@ export class Pool {
     }
 
     subscribe(relays: string[], filter: Filter, handlers: SubHandlers) {
-        return this.raw.subscribeMany(toPoolUrls(relays), filter as never, handlers as never);
+        // trackRelays populates seenOn for these events too, but only query()/get() drain it - so a
+        // long-lived subscription (e.g. the NIP-46 bunker) would accumulate seenOn entries forever.
+        // receivedEvent runs before onevent (relay.js), so seenOn is ready here: record + drain per event.
+        const wrapped: SubHandlers = { ...handlers, onevent: (e) => { this.recordSeenOn([e]); handlers.onevent?.(e); } };
+        return this.raw.subscribeMany(toPoolUrls(relays), filter as never, wrapped as never);
     }
 
     /** Live status of content relays - every open relay minus the given transport

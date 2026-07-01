@@ -9,14 +9,14 @@ import { relayLabel, type SavedRelay } from '../data/relay-favorites.ts';
 
 /** A favorite-toggle star. `target`/`swap` define what the toggle re-renders; `id` is set on the relay-bar
  * star (so it can self-swap) and omitted on picker rows. Shared by the bar and the picker list. */
-function starButton(url: string, fav: boolean, cls: string, post: string, target: string, swap: string, id?: string): SafeHtml {
+function starButton(fav: boolean, cls: string, post: string, target: string, swap: string, id?: string): SafeHtml {
     const lbl = fav ? 'Remove from favorites' : 'Add to favorites';
     return html`<button${id ? raw(` id="${id}"`) : raw('')} class="${cls}${fav ? ' on' : ''}" h-post="${post}" h-target="${target}" h-swap="${swap}" h-push-url="false" title="${lbl}" aria-label="${lbl}" aria-pressed="${fav ? 'true' : 'false'}">${fav ? '★' : '☆'}</button>`;
 }
 
 /** The favorite star for the current relay (the relay-feed bar): posts a toggle and re-renders itself. */
 export function favStar(url: string, fav: boolean): SafeHtml {
-    return starButton(url, fav, 'relay-fav', `/relay/favorite?r=${encodeURIComponent(url)}`, '#relay-fav', 'outer', 'relay-fav');
+    return starButton(fav, 'relay-fav', `/relay/favorite?r=${encodeURIComponent(url)}`, '#relay-fav', 'outer', 'relay-fav');
 }
 
 /** The bar above a relay timeline: the relay's label + a favorite star. */
@@ -64,7 +64,7 @@ export function relayPickerBody(favorites: SavedRelay[], myRelays: string[]): Sa
         const enc = encodeURIComponent(url);
         return html`<li class="relay-pick-row">
           <a class="relay-pick-name" href="/relay?r=${enc}" h-get h-scroll="top instant">${icon('globe')} ${relayLabel(url, name)}</a>
-          ${starButton(url, fav, 'relay-fav-mini', `/relay/favorite?r=${enc}&from=pick`, '#relay-picker-body', 'inner')}
+          ${starButton(fav, 'relay-fav-mini', `/relay/favorite?r=${enc}&from=pick`, '#relay-picker-body', 'inner')}
         </li>`;
     };
     return html`
