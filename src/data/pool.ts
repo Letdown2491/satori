@@ -89,7 +89,7 @@ export class Pool {
     // straggler relay adds nothing a fast one didn't. NEVER use it for non-redundant fetches (gift-wrapped
     // DMs/drafts live on one relay set; a read-modify-write of your own lists must see every version) -
     // there an early resolve silently DROPS events. That asymmetry is why complete is the default.
-    query(relays: string[], filter: Filter, opts: { fast?: boolean } = {}): Promise<NostrEvent[]> {
+    query(relays: string[], filter: Filter, opts: { fast?: boolean; profile?: boolean } = {}): Promise<NostrEvent[]> {
         const tor = relaysViaTor();
         const maxWait = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
         const quiet = tor ? 1800 : 700;
@@ -111,10 +111,12 @@ export class Pool {
                 try { sub?.close(); } catch { /* already closed */ }
                 const list = [...events.values()];
                 this.recordSeenOn(list);
-                // Per-relay latency profiling (observation only - see relay-latency.ts). Only attributable
-                // for a single-relay query (the feed fan-out path); measure to the LAST event, not to finish,
-                // so the quiet-collapse tail isn't counted as relay time.
-                if (relays.length === 1) {
+                // Per-relay latency profiling (observation only - see relay-latency.ts). Gated on opts.profile
+                // so ONLY the outbox following/followers fan-out feeds it - NOT the "browse a relay" firehose
+                // (kinds-only, no author filter), which streams far more events and truncates readily, and would
+                // otherwise inflate a browsed relay's outbox budget. Single-relay is a precondition (attribution);
+                // measure to the LAST event, not to finish, so the quiet-collapse tail isn't counted as relay time.
+                if (opts.profile && relays.length === 1) {
                     const ms = lastEventAt ? lastEventAt - started : Date.now() - started;
                     recordLatency(relays[0]!, ms, truncated);
                     if (process.env.SATORI_REQ_LOG) console.log(`[relay-latency] ${relays[0]} lastEvent=${ms}ms events=${list.length} truncated=${truncated}`);

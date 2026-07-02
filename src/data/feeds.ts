@@ -75,7 +75,7 @@ export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>
     for (const [relay, authorSet] of route) {
         for (const authorChunk of chunk([...authorSet], MAX_AUTHORS_PER_FILTER)) {
             const filter = { kinds, authors: authorChunk, limit: limit * 2, ...(until ? { until } : {}), ...(since ? { since } : {}) };
-            queries.push(pool.query([relay], filter, { fast: true }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
+            queries.push(pool.query([relay], filter, { fast: true, profile: true }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
         }
     }
     return mergeNewest(await Promise.all(queries), limit);
