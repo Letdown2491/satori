@@ -73,9 +73,9 @@ function convRow(c: Conversation, profiles: ProfileMap): SafeHtml {
       </li>`;
 }
 
-/** The empty-inbox state: enso + a calm line + a way to start. */
+/** The empty-inbox state: a calm line, the enso below it, then a way to start. */
 function listEmpty(): SafeHtml {
-    return html`<li class="dm-list-empty">${enso(56, true)}<p class="search-quote">${quote('empty')}</p><a class="empty-cta" href="/messages/new" h-target="#modal" h-swap="inner" h-focus="#dm-search-input" h-push-url="false">New message</a></li>`;
+    return html`<li class="dm-list-empty"><p class="search-quote">${quote('empty')}</p>${enso(40, true)}<a class="empty-cta" href="/messages/new" h-target="#modal" h-swap="inner" h-focus="#dm-search-input" h-push-url="false">New message</a></li>`;
 }
 
 /** Conversation list body (the <ul>). */
@@ -172,7 +172,7 @@ function olderLoader(peer: string, cursor: number): SafeHtml {
 /** The #dm-messages inner region: older-loader (if more history may exist) + bubbles, or a hint. */
 export function threadInner(peer: string, messages: DmMessage[], me: string, cursor: number | null): SafeHtml {
     const older = cursor != null ? olderLoader(peer, cursor) : null;
-    return messages.length ? html`${older}${bubblesWithDividers(messages, me)}` : html`${older}<li class="empty dm-empty">${enso(36, true)}<span>Say something.</span></li>`;
+    return messages.length ? html`${older}${bubblesWithDividers(messages, me)}` : html`${older}<li class="empty dm-empty">${enso(40, true)}<span>Say something.</span></li>`;
 }
 
 /** The prepend payload for a "load older" step (re-armed sentinel + older bubbles). */

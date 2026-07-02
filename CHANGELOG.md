@@ -4,6 +4,72 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-07-02
+
+### Added
+
+- Per-relay latency profiling (observation only, no behavior change): Satori now records how quickly each
+  relay responds to the feed queries it already runs, into a small persisted profile (`.data/relay-latency.json`,
+  override with `SATORI_RELAY_LATENCY_FILE`). Nothing uses it yet; it's the groundwork for adaptive per-relay
+  timeouts, so a relay that's genuinely slow can be given more time without slowing the fast majority (which
+  will make following feeds more complete on slow connections/hosts). Set `SATORI_REQ_LOG=1` to see the
+  per-relay timings in the logs.
+
+### Removed
+
+- Removed "The Commons" timeline. It was a curated trending feed backed by a single hardcoded external
+  relay (`feeds.nostrarchives.com`), which ran against the goal of not hardcoding relays; it also
+  wasn't pulling its weight. The tab, its route (`/commons`), the trending fetch, its cached page, and
+  its empty-state quote are all gone. Following, Followers, and Longform are unaffected.
+
+### Changed
+
+- The header title is now a dropdown on every page, not just the timelines. On a timeline it's the same
+  tab switcher as before; on any other page (Drafts, Bookmarks, Muted, Settings, a profile, an article,
+  etc.) the title opens a menu showing the current page, then the timelines (Following / Followers /
+  Longform) and "Browse a relay…" below, so you can jump to a feed from anywhere without going Home first.
+- Bumped the bundled helmjs to v0.14.2, adding general primitives now used here: `H-Current-URL` (the
+  server can tell which page an action fired from), trigger-relative `H-Retarget` (`closest`/`this`/
+  `find`), and `h-dismiss` (opt-in light-dismiss for `<details>` dropdowns, close on outside click or
+  Escape). Also picks up a helmjs fix where a declined `h-confirm` fell through to a native form submit.
+
+### Fixed
+
+- The timeline switcher and the account (avatar) dropdowns now close when you click elsewhere on the
+  page or press Escape, instead of staying open. Native `<details>` don't light-dismiss on their own;
+  the new `h-dismiss` attribute handles it (also applied to the draft-delete confirm).
+- Fixed the composer's draft sync getting stuck on "syncing…" forever with nip07 signers. The sync ran
+  as an automatic background sign, but browser extensions gate signing on a user gesture (auto-approve
+  doesn't bypass that), so the background sign silently stalled and the status never cleared. Now the
+  "Save draft" click itself drives the sync: the encrypt/sign/publish chain runs inside that gesture, so
+  signing works and can't hang, and the status settles on "Draft saved ✓" (or "Draft saved · not synced"
+  if the relay publish failed) with no second button to press. Bunker still syncs automatically and
+  silently. Covers note, poll, and article drafts.
+- Literal `<br>` tags in article and wiki content now render as line breaks instead of showing as
+  escaped text. Authors commonly type `<br />` for spacing; the safe-subset renderer escaped it (correct
+  for security) but displayed it verbatim. The bare, attribute-less break (`<br>` / `<br/>` / `<br />`)
+  now emits a real line break; any `<br>` carrying attributes stays escaped, so there's no HTML injection.
+- Markdown headings written in the underline (Setext) style now render as headings in articles and
+  custom-NIP events: a line underlined with `=` becomes an H1 and `-` becomes an H2. Previously only
+  `#`-style headings were recognized, so pasted NIP specs and READMEs (which commonly use the underline
+  style, e.g. `NIP-54` over `======`) showed the underline as literal text plus a stray horizontal rule.
+
+- Deleting a draft now collapses the row out of the list (a smooth height transition) with the count
+  shown in the header ("Drafts · N"), matching the Bookmarks and Muted pages. Deleting the last draft
+  shows the empty state in place instead of a blank list (it previously went blank until reload).
+  Applies to both signing modes.
+- Replaced the draft-delete confirmation: instead of the browser's native "are you sure" dialog, the ✕
+  now reveals an inline "Delete" (a two-tap confirm) that matches the app's look, is keyboard-accessible,
+  and works with JavaScript off. Clicking ✕ again cancels.
+- Unbookmarking an item on the Bookmarks page now collapses it out of the list (a smooth height
+  transition) instead of leaving it behind as an un-filled card. Removing the last bookmark shows the
+  empty state in place (no reload), and the bookmark count now lives in the header ("Bookmarks · N")
+  where it stays live. Works in both signing modes and for both note and article bookmarks.
+- The Muted page count moved to the header ("Muted · N") to match Bookmarks, replacing the in-list
+  "N muted" row; it stays live as you unmute (the row still collapses as before). Unmuting the last
+  person now shows the empty state in place instead of leaving a blank list until reload. Bookmarks and
+  mutes now share one removal path (collapse-in-place + live header count).
+
 ## [0.4.1] - 2026-07-01
 
 ### Fixed

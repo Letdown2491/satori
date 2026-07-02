@@ -17,7 +17,7 @@ import { getScheduled, postScheduledCancel } from './routes/scheduled.ts';
 import { prunePersisted, persistedPubkeys } from './store.ts';
 import { adoptOwnerIfUnclaimed, accessMode } from './access.ts';
 import { getSession, isLoggedIn } from './session.ts';
-import { getFeed, getFollowers, getCommons, getLongform, getRelay, getRelayPick, postRelayFavorite, getFaces, getNotesDot, getFeedSeen, getListPrime, postListPrimed } from './routes/feed.ts';
+import { getFeed, getFollowers, getLongform, getRelay, getRelayPick, postRelayFavorite, getFaces, getNotesDot, getFeedSeen, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
 import { getProfile, getProfileExtras, getThread, getThreadPrivate, postThreadPrivateSeals, postThreadPrivateRumors, getArticle, getEmbed } from './routes/read.ts';
 import { getHandlers } from './routes/handlers.ts';
@@ -37,7 +37,7 @@ import { getSuggest } from './routes/suggest.ts';
 import { getSearch } from './routes/search.ts';
 import { postLike, postLikePublish } from './routes/like.ts';
 import { getZap, postZap, postZapInvoice, postZapPaid } from './routes/zap.ts';
-import { postArticle, postArticlePublish, postDraft, getDrafts, postDraftDelete, postDraftDeleteFinish, postDraftSync, postDraftSyncWrap, postDraftSyncPublish, getDraftsSync, postDraftsSyncApply } from './routes/article.ts';
+import { postArticle, postArticlePublish, postDraft, getDrafts, postDraftDelete, postDraftDeleteFinish, postDraftSyncWrap, postDraftSyncPublish, getDraftsSync, postDraftsSyncApply } from './routes/article.ts';
 import { postComment, postCommentPublish, getCommentForm } from './routes/comment.ts';
 import { getPoll, getPollOption, postPoll, postPollPublish, postPollVote, postPollVotePublish } from './routes/poll.ts';
 import { getCalIcs, getCalRsvp, postCalRsvp, postCalRsvpPublish } from './routes/calendar.ts';
@@ -86,7 +86,6 @@ const ROUTES: Route[] = [
     route('POST', '/draft', postDraft),
     route('POST', '/draft/delete/:id', postDraftDelete),
     route('POST', '/draft/delete/:id/finish', postDraftDeleteFinish),
-    route('POST', '/draft/sync/:id', postDraftSync),
     route('POST', '/draft/sync/:id/wrap', postDraftSyncWrap),
     route('POST', '/draft/sync/:id/publish', postDraftSyncPublish),
     route('GET', '/comment/form', getCommentForm),
@@ -143,7 +142,6 @@ const ROUTES: Route[] = [
     route('POST', '/settings/media', postMedia),
     route('POST', '/settings/media/publish', postMediaPublish),
     route('GET', '/followers', getFollowers),
-    route('GET', '/commons', getCommons),
     route('GET', '/longform', getLongform),
     route('GET', '/faces', getFaces),
     route('GET', '/relay', getRelay),

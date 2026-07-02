@@ -70,6 +70,12 @@ export function privateReadable(s: Session, kind: number): boolean {
     return Array.isArray(s.privateTags.get(kind));
 }
 
+/** How many items are bookmarked (NIP-51 kind:10003 `e`/`a` tags - public + decrypted private).
+ * Counts tags, not resolved events, so it's cheap + matches the /bookmarks header chip live. */
+export function bookmarkCount(s: Session): number {
+    return listTags(s, DEFS.bookmark.kind).filter((t) => (t[0] === 'e' || t[0] === 'a') && !!t[1]).length;
+}
+
 /** Muted pubkeys (NIP-51 kind:10000 `p` tags - public + decrypted private). */
 export function mutedPubkeys(s: Session): Set<string> {
     const set = new Set<string>();

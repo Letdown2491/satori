@@ -89,6 +89,10 @@ touches the internet. Add Tor client authorization (`sh tor/gen-client-auth.sh`)
 address becomes invisible to anyone without your key. Everything except the login page
 requires a session, so a stranger who finds the address meets a wall, not your data.
 
+Running a [Start9](https://start9.com) server? Satori is packaged for StartOS 0.4.0+ at
+[Letdown2491/satori-startos](https://github.com/Letdown2491/satori-startos), so you can
+install it as a service on your own sovereign hardware.
+
 ## License
 
 [MIT](LICENSE) © 2026 Letdown2491 · changes are tracked in [CHANGELOG.md](CHANGELOG.md).

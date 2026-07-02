@@ -15,7 +15,7 @@ export type ActiveView =
     | 'feed' | 'profile' | 'compose' | 'notifications' | 'bookmarks'
     | 'settings' | 'wallet' | 'drafts' | 'muted' | 'search' | null;
 
-export type FeedTab = 'following' | 'followers' | 'commons' | 'longform';
+export type FeedTab = 'following' | 'followers' | 'longform';
 
 export interface ChromeOpts {
     title?: string;
@@ -31,6 +31,9 @@ export interface ChromeOpts {
     /** Content already renders its own <h1> (e.g. the article reader) - suppress the
      * injected sr-only page heading so there's exactly one h1. */
     contentH1?: boolean;
+    /** A small count chip after the title (e.g. Bookmarks · 5). Lives in the visible bar only,
+     * not the document <title>; an action can OOB-swap it live (see titleCount). */
+    titleCount?: number;
 }
 
 /** The poller h-trigger string. On first mount (`initial`) it carries `load` for a one-shot check;
@@ -42,7 +45,6 @@ const FEED_TABS: { tab: FeedTab; label: string; href: string }[] = [
     { tab: 'following', label: 'Following', href: '/' },
     { tab: 'followers', label: 'Followers', href: '/followers' },
     { tab: 'longform', label: 'Longform', href: '/longform' },
-    { tab: 'commons', label: 'The Commons', href: '/commons' },
 ];
 
 
@@ -70,19 +72,25 @@ export function dmDotInner(unread = false, initial = false): SafeHtml {
     return html`${unread ? html`<span class="notif-dot dm-dot-mark"></span>` : null}${poll}`;
 }
 
-/** The centered feed switcher - a native <details> dropdown (zero-JS). The four built-in feeds, then
- * "Browse a relay…" which opens the relay picker modal (type any relay / pick a favorite). On a relay view
- * `relayLabel` is the current label (no tab highlighted). The pick link carries the current tab/label so the
- * picker response can OOB this <details> back CLOSED (`oob`) - opening a modal is a partial swap, so the
- * native dropdown would otherwise stay open behind it. The switcher's markup is fully (tab, label)-derived. */
-export function feedSwitch(active: FeedTab, relayLabel?: string, oob = false): SafeHtml {
-    const currentLabel = relayLabel ?? (FEED_TABS.find((t) => t.tab === active) ?? FEED_TABS[0]!).label;
-    const pickHref = `/relay/pick?tab=${active}${relayLabel ? `&rl=${encodeURIComponent(relayLabel)}` : ''}`;
+/** The centered header switcher - a native <details h-dismiss> dropdown (zero-JS), shown on EVERY page.
+ * On a timeline the summary is the current tab (or relay label) with the tabs below (active one highlighted).
+ * On any other page, pass `title` (+ optional `titleCount`): the summary becomes that page's title, and the
+ * menu lists the page as a dim context row, a divider, then the timelines - so you can jump to a timeline
+ * from anywhere without going Home first. Every menu ends in "Browse a relay…" (the relay-picker modal).
+ * The pick link carries the switcher's context (tab/label OR title) so the picker response can OOB this
+ * <details> back CLOSED (`oob`) - opening a modal is a partial swap that would otherwise leave it open. */
+export function feedSwitch(o: { active?: FeedTab; relayLabel?: string; title?: string; titleCount?: number; oob?: boolean } = {}): SafeHtml {
+    const onPage = o.title !== undefined; // a non-timeline page: the summary is the page title, no tab active
+    const label = onPage ? o.title! : (o.relayLabel ?? (FEED_TABS.find((t) => t.tab === o.active) ?? FEED_TABS[0]!).label);
+    const pickHref = onPage
+        ? `/relay/pick?title=${encodeURIComponent(o.title!)}${o.titleCount != null ? `&tc=${String(o.titleCount)}` : ''}`
+        : `/relay/pick?tab=${o.active ?? 'following'}${o.relayLabel ? `&rl=${encodeURIComponent(o.relayLabel)}` : ''}`;
     return html`
-      <details id="feed-switch"${oob ? raw(' h-oob="true"') : raw('')} class="feed-switch">
-        <summary class="feed-toggle"><span>${currentLabel}</span> <span class="chevron">▾</span></summary>
+      <details id="feed-switch"${o.oob ? raw(' h-oob="true"') : raw('')} class="feed-switch" h-dismiss>
+        <summary class="feed-toggle"><span>${label}</span>${onPage ? titleCount(o.titleCount) : null} <span class="chevron">▾</span></summary>
         <div class="feed-menu">
-          ${FEED_TABS.map((t) => html`<a class="feed-item ${!relayLabel && t.tab === active ? 'active' : ''}" href="${t.href}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
+          ${onPage ? html`<span class="feed-current">${o.title}</span>` : null}
+          ${FEED_TABS.map((t) => html`<a class="feed-item ${!o.relayLabel && !onPage && t.tab === o.active ? 'active' : ''}" href="${t.href}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
           <a class="feed-item feed-item-add" href="${pickHref}" h-target="#modal" h-swap="inner" h-focus="#relay-pick-url" h-push-url="false">Browse a relay…</a>
         </div>
       </details>`;
@@ -102,7 +110,7 @@ export function accountMenu(me: Me, oob = false): SafeHtml {
     // id="account-hub" so a Privacy Mode toggle can OOB-swap the hub (avatar ↔ shield)
     // live, without a full reload.
     return html`
-      <details class="menu-wrap" id="account-hub"${oob ? raw(' h-oob="true"') : raw('')}>
+      <details class="menu-wrap" id="account-hub"${oob ? raw(' h-oob="true"') : raw('')} h-dismiss>
         <summary class="avatar-btn" aria-label="${onTor ? `Account, Privacy Mode ${modeLabel}` : 'Account'}">${face}</summary>
         <div class="menu menu-right">
           <!-- The head doubles as the Profile link (the standalone "Profile" item is retired).
@@ -143,6 +151,13 @@ export function notesHome(hasNew = false, initial = false, oob = false): SafeHtm
     return html`<a id="notes-home"${oob ? raw(' h-oob="true"') : raw('')} class="notes-mark ${hasNew ? 'has-new' : ''}" href="/" title="Home" aria-label="Home" h-get h-prefetch="hover" h-scroll="top instant">${icon('home')}${hasNew ? html`<span class="notif-dot"></span>` : null}${poll}</a>`;
 }
 
+/** The small count chip after a page title (e.g. "Bookmarks · 5"). Its own element (id="title-count")
+ * so an action can OOB-swap it live as the list changes; `oob` marks that swap. 0/undefined renders an
+ * empty (but present) chip, so the element always exists as an OOB target and shows just the bare title. */
+export function titleCount(n?: number, oob = false): SafeHtml {
+    return html`<span id="title-count" class="title-count"${oob ? raw(' h-oob="true"') : raw('')}>${typeof n === 'number' && n > 0 ? html`· ${String(n)}` : null}</span>`;
+}
+
 function bar(o: ChromeOpts): SafeHtml {
     if (!o.me) return html``;
     const onFeed = o.active === 'feed';
@@ -151,9 +166,11 @@ function bar(o: ChromeOpts): SafeHtml {
     // than the old per-tab "load new notes" control that sat inert when there was nothing new.
     // The title is a location label, not the page's heading (the real <h1> lives in <main>).
     const left = html`<nav class="bar-left" aria-label="Primary">${notesHome(false, true)}${notifBell(false, true)}</nav>`;
-    const center = onFeed
-        ? html`<div class="header-center">${feedSwitch(o.feedTab ?? 'following', o.relayLabel)}</div>`
-        : html`<div class="header-center"><span class="page-title">${o.title ?? ''}</span></div>`;
+    // Every page gets the switcher: on a timeline it's the tab switcher; elsewhere the summary is the
+    // page title and the menu drops the timelines below it (jump to a feed from anywhere).
+    const center = html`<div class="header-center">${onFeed
+        ? feedSwitch({ active: o.feedTab ?? 'following', relayLabel: o.relayLabel })
+        : feedSwitch({ title: o.title ?? '', titleCount: o.titleCount })}</div>`;
     // Search + the account hub. The avatar itself becomes the privacy shield when Tor
     // is on (in accountMenu), so no separate indicator crowds the bar.
     const right = html`<nav class="bar-right" aria-label="Account"><a class="notes-mark" href="/search" aria-label="Search" h-focus="#search-input" h-scroll="top instant">${icon('search')}</a>${accountMenu(o.me)}</nav>`;

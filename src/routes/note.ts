@@ -28,7 +28,7 @@ import { remainingSeconds, cancelPublish, commitIfDue, getHeld, getCommitted } f
 import { tryUndoWindow, sendReplyToThread, stayPutCloseModal, landOnFeed, CLOSE_MODAL_OOB } from './undo-window.ts';
 import { articleComposePage, draftsScreen, type ArticleComposeCtx } from '../render/article-compose.ts';
 import { getDraft, saveDraft, listDrafts, newDraftId, type NoteDraft, type PollDraft } from '../drafts.ts';
-import { composeSyncEl } from './article.ts';
+import { saveDraftAndSync, savedStatus } from './article.ts';
 import { holdScheduled, SCHEDULE_FULL_MSG, listScheduled } from '../data/scheduled.ts';
 import { sendPrivateReply, syntheticReply } from '../data/dms.ts';
 import { beginPrivateReplySend, sealStep, wrapPrivateReplyStep } from '../data/dms-nip07.ts';
@@ -42,7 +42,7 @@ import { signsOnClient } from '../session.ts';
 
 const MAX_INBOX_RELAYS = 4;
 
-interface ComposeCtx { reply?: { nevent: string; name: string }; quote?: string; draft?: string; error?: string; isNew?: boolean; media?: string[][]; cw?: boolean; cwReason?: string; inThread?: string; draftId?: string; status?: string; syncEl?: SafeHtml; relays?: string[]; title?: string }
+interface ComposeCtx { reply?: { nevent: string; name: string }; quote?: string; draft?: string; error?: string; isNew?: boolean; media?: string[][]; cw?: boolean; cwReason?: string; inThread?: string; draftId?: string; status?: string; relays?: string[]; title?: string }
 
 /** The note compose form body (reply-to + form + help) - no wrapper/selector.
  * ONE multipart form with two submit buttons: "Attach" overrides it to POST the
@@ -68,7 +68,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         ${c.reply ? html`<input type="hidden" name="reply" value="${c.reply.nevent}">` : null}
         ${c.inThread ? html`<input type="hidden" name="inthread" value="${c.inThread}">` : null}
         ${c.quote ? html`<input type="hidden" name="quote" value="${c.quote}">` : null}
-        ${c.draftId ? html`<input type="hidden" name="draftid" value="${c.draftId}">` : null}
+        <input type="hidden" id="compose-draftid" name="draftid" value="${c.draftId ?? ''}">
         <textarea name="content" id="compose-text"
           aria-label="${c.quote ? 'Add a comment' : title ? 'Write a reply' : 'Write a note'}"
           h-get="/compose/suggest" h-trigger="input debounce:150" h-include="#compose-text" h-busy="false"
@@ -112,10 +112,10 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
           <!-- Zero-JS only: with JS the file auto-uploads on select, so this fallback
                button is hidden (noscript). It submits the form to its /upload action. -->
           <noscript><button type="submit" class="attach-go">Attach</button></noscript>
-          <span class="compose-status">${c.status ?? ''}</span>
-          ${c.syncEl ?? null}
-          <!-- Save draft (new notes only): re-renders the composer in place with a saved status,
-               not the feed. Replies/quotes are transient, so no draft there. -->
+          <span id="compose-status" class="compose-status">${c.status ?? ''}</span>
+          <!-- Save draft (new notes only): saves locally, then (nip07) runs the relay-sync sign chain in
+               this click's gesture and OOB-updates #compose-status + #compose-draftid; bunker syncs inline.
+               Replies/quotes are transient, so no draft there. -->
           ${c.isNew ? html`<button type="submit" class="ghost" formaction="/note/draft" formmethod="post" h-target="${inModal ? '#modal' : 'body'}" h-swap="inner">Save draft</button>` : null}
           <button type="submit" class="publish-btn" formaction="/note" formmethod="post" h-target="body" h-swap="inner">${title ?? 'Publish'}</button>
         </div>
@@ -123,16 +123,15 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
 }
 
 /** The poll compose form body (question + poll fields → POST /poll). */
-function pollFormPart(d: PollDraft | null = null, inModal = false, status = '', syncEl?: SafeHtml): SafeHtml {
+function pollFormPart(d: PollDraft | null = null, inModal = false, status = ''): SafeHtml {
     return html`
       <form class="compose-box" action="/poll" method="post" h-post>
         ${inModal ? html`<input type="hidden" name="inmodal" value="1">` : null}
-        ${d?.id ? html`<input type="hidden" name="draftid" value="${d.id}">` : null}
+        <input type="hidden" id="compose-draftid" name="draftid" value="${d?.id ?? ''}">
         <textarea name="content" id="poll-question" required placeholder="Ask a question…">${d?.question ?? ''}</textarea>
         ${pollComposeFields({ options: d?.options, multiple: d?.multi, duration: d?.duration })}
         <div class="compose-foot">
-          <span class="compose-status">${status}</span>
-          ${syncEl ?? null}
+          <span id="compose-status" class="compose-status">${status}</span>
           <button type="submit" class="ghost" formaction="/poll/draft" formmethod="post" h-target="${inModal ? '#modal' : 'body'}" h-swap="inner">Save draft</button>
           <button type="submit" class="publish-btn" formaction="/poll" formmethod="post" h-target="body" h-swap="inner">Post poll</button>
         </div>
@@ -388,8 +387,10 @@ export async function postNoteDraft(ctx: Ctx): Promise<void> {
     const prev = getDraft(s.me, id);
     const draft: NoteDraft = { type: 'note', id, content, imeta, cw, cwReason, savedAt: Date.now(), synced: prev?.synced, syncedAt: prev?.syncedAt };
     saveDraft(s.me, draft);
-    const syncEl = await composeSyncEl(s, draft); // auto-sync to relays (bunker inline; nip07 trigger)
-    render({ isNew: true, draft: content, media: imeta, cw, cwReason, draftId: id, status: 'Draft saved ✓', syncEl });
+    // bunker syncs inline + renders "saved"; nip07 runs the sync chain in this click's gesture, then OOB-
+    // updates #compose-status + #compose-draftid (the modal stays put meanwhile).
+    await saveDraftAndSync(ctx, s, draft, (synced) =>
+        render({ isNew: true, draft: content, media: imeta, cw, cwReason, draftId: id, status: savedStatus(synced) }));
 }
 
 /** POST /poll/draft - save the poll composer as a LOCAL draft, then re-render in place with a
@@ -406,14 +407,14 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
     const prev = getDraft(s.me, id);
     const draft: PollDraft = { type: 'poll', id, question, options, multi, duration, savedAt: Date.now(), synced: prev?.synced, syncedAt: prev?.syncedAt };
     const inModal = ctx.isPartial && ctx.hTarget === '#modal';
-    const render = (status: string, syncEl?: SafeHtml): void => {
-        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(draft, true, status, syncEl))); return; }
-        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(draft, false, status, syncEl)}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
+    const render = (status: string): void => {
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(draft, true, status))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(draft, false, status)}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
     };
     if (!question && options.length === 0) { render('Nothing to save yet.'); return; } // don't persist empty
     saveDraft(s.me, draft);
-    const syncEl = await composeSyncEl(s, draft); // auto-sync to relays (bunker inline; nip07 trigger)
-    render('Draft saved ✓', syncEl);
+    // bunker syncs inline + renders "saved"; nip07 runs the sync chain in this click's gesture, then OOB-updates the composer.
+    await saveDraftAndSync(ctx, s, draft, (synced) => render(savedStatus(synced)));
 }
 
 /** The relays to publish a top-level note to, from the compose relay-picker: the checked write relays (the

@@ -442,7 +442,7 @@ export interface NoteOpts {
     depth?: number;
     inThread?: string;                          // the thread's nevent → reply appends here
     pending?: { token: string; seconds: number }; // an optimistic (not-yet-published) reply
-    mute?: boolean;                             // stranger-facing rows (notifications, Commons): add a mute glyph that dismisses the card
+    mute?: boolean;                             // stranger-facing rows (notifications, relay timelines): add a mute glyph that dismisses the card
     isPrivate?: boolean;                         // a gift-wrapped private reply (NIP-59): badge it with a lock
     faces?: boolean;                            // LIST-level: append the lazy reply-faces hydrate trigger for this page (feeds/profile, not search)
 }

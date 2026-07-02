@@ -495,6 +495,7 @@ function renderInlineToken(tok: Inline, profiles?: ProfileMap): SafeHtml {
     if (tok.t === 'em') return html`<em>${inlineEntities(tok.v, profiles)}</em>`;
     if (tok.t === 'code') return html`<code class="md-code">${tok.v}</code>`;
     if (tok.t === 'link') return extLink(tok.href, tok.text);
+    if (tok.t === 'break') return raw('<br>');
     return image(tok.url);
 }
 
@@ -534,6 +535,7 @@ function renderBlocks(blocks: Block[], inl: (t: string) => SafeHtml, headingShif
         else if (b.t === 'quote') out.push(html`<blockquote>${inl(b.text)}</blockquote>`);
         else if (b.t === 'code') out.push(html`<pre class="md-pre"><code>${b.text}</code></pre>`);
         else if (b.t === 'hr') out.push(raw('<hr>'));
+        else if (b.t === 'break') out.push(raw('<br>'));
         else out.push(image(b.url));
     }
     return out;

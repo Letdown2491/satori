@@ -2,7 +2,7 @@
 // full reader page (/a/), the note-shaped thread anchor when reached via /t/ (matching Satori today),
 // or the clean article preview when embedded. Render code is shared (render/note.ts); this is the handler.
 
-import type { KindHandler, PrepareOpts } from './registry.ts';
+import type { KindHandler } from './registry.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
 import { type SatoriDeps, notWired } from './deps.ts';
@@ -15,9 +15,9 @@ import { KIND_ARTICLE } from '../nostr/nip23.ts';
  * reply-presence (keyed by naddr) + the replier avatars for a page of rows. Identical across all three, so
  * it lives here and the customNip/wiki handlers reference it. Replier avatars are a secondary touch (the
  * reply faces); don't block first paint on them - they fill from cache or upgrade on the next render. */
-export async function articleLikeReplies(events: NostrEvent[], s: Session & { me: string }, opts: PrepareOpts): Promise<void> {
+export async function articleLikeReplies(events: NostrEvent[], s: Session & { me: string }): Promise<void> {
     const naddrs = events.map(naddrFor);
-    await ensureArticleReplies(s, naddrs, opts.full ? 'paint' : 'race');
+    await ensureArticleReplies(s, naddrs, 'race');
     void ensureProfiles(s, replierPubkeys(naddrs)).catch(() => {});
 }
 

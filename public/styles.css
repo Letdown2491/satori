@@ -259,6 +259,9 @@
         }
         .feed-item:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
         .feed-item.active { color: var(--accent); font-weight: 600; }
+        /* On a non-timeline page the current page shows as a dim, non-clickable context row above the
+           timelines (a divider sets it off), so the menu reads "you are here / jump to a feed". */
+        .feed-current { display: block; text-align: center; color: var(--muted); font-size: 13px; padding: 4px 12px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
         /* "Browse a relay…" - opens the relay picker modal; a quiet divider sets it off from the feeds. */
         .feed-item-add { margin-top: 4px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
         /* Relay timeline bar: the relay you're browsing + a favorite star. Sits above the feed list. */
@@ -324,6 +327,8 @@
         .home-btn { background: transparent; border: none; color: var(--muted); padding: 2px 6px; cursor: pointer; line-height: 0; display: inline-flex; align-items: center; }
         .home-btn:hover { color: var(--accent); }
         .page-title { font-size: 17px; color: var(--text); margin: 0; } /* match the feed switcher's title styling */
+        .title-count { font-size: 15px; color: var(--muted); } /* the "· N" count chip after a page title (e.g. Bookmarks) */
+        .title-count:empty { display: none; } /* no chip (and no stray gap) when the count is zero/absent */
         .page-bar-action { margin-left: auto; display: inline-flex; align-items: center; }
         .settings-page section { padding: 16px 0; border-top: 1px solid var(--border); }
         .settings-page section:first-child { border-top: none; }
@@ -997,8 +1002,6 @@
         .mute-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
         .mute-row .mute-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .mute-nip05 { font-size: 12px; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        /* Count header above a saved/muted list (quiet, like the comment count). */
-        .list-count { list-style: none; color: var(--muted); font-size: 13px; padding: 12px 4px 6px; }
         /* Muted page: the state button reads "Unmute" (clear action, red) while muted;
            after you unmute it reverts to the normal "Mute" toggle. Scoped to .mute-row. */
         .mute-row .mute-btn { position: relative; min-width: 78px; text-align: center; }
@@ -1008,13 +1011,18 @@
            so the row collapses on the spot; the server's reconcile swap keeps the button
            un-muted, and an h:error springs the class (and the row) back. No JS, no route change. */
         .mute-row:has(.mute-btn:not(.muted)) { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; border-bottom-color: transparent; pointer-events: none; }
-        /* Live muted count: the count <li> is DOM-last (so the counter tallies every row)
-           but flex-order'd to the top; only still-muted rows increment, so it ticks down
-           as rows collapse on unmute. */
-        .mute-list { display: flex; flex-direction: column; counter-reset: mutes; }
-        .mute-list .list-count { order: -1; }
-        .mute-list .mute-row:has(.mute-btn.muted) { counter-increment: mutes; }
-        .mute-list .list-count .count-n::before { content: counter(mutes); }
+        /* The muted count lives in the header bar (chrome titleCount, OOB-refreshed on unmute), not
+           an in-list row; rows still collapse via the :has() rule above. */
+        .mute-list { display: flex; flex-direction: column; }
+        /* Bookmarks page: the same optimistic-collapse idea as mutes, but for the shared (variable-height)
+           note/article card. Un-bookmarking flips the glyph's .active off (h-optimistic); the reconcile
+           swap keeps it un-filled. We collapse via grid-template-rows 1fr->0fr (smooth at ANY height,
+           unlike max-height) by treating the card's own <li> as a 2-col grid (avatar | body) with one
+           collapsing row. Scoped to #list-10003 so feed/thread cards keep their flex layout untouched. */
+        #list-10003 > li.note { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 13px; grid-template-rows: 1fr; transition: grid-template-rows .32s ease, opacity .22s ease, padding .32s ease; }
+        #list-10003 > li.note > * { min-width: 0; overflow: hidden; }
+        #list-10003 > li.note:has(.note-act.bookmark:not(.active)) { grid-template-rows: 0fr; opacity: 0; padding-top: 0; padding-bottom: 0; pointer-events: none; }
+        #list-10003 > li.note:has(.note-act.bookmark:not(.active)) > * { min-height: 0; }
         .feed { list-style: none; padding: 0; margin: 0; }
         /* The clearing's top border is a DIVIDER between notes and the clearing. When the clearing stands
            alone (caught up, no notes above), that line is a redundant rule right under the header - drop it. */
@@ -1076,7 +1084,10 @@
         .search-go:hover { color: var(--text); }
         .search-hint { text-align: center; padding: 24px 0; }
         .search-empty { padding: 40px 16px; }
-        .search-quote { font-size: 15px; font-style: italic; color: var(--text); max-width: 34ch; margin: 0 auto; line-height: 1.5; }
+        .search-quote { font-size: 15px; font-style: italic; color: var(--text); margin: 0 auto; line-height: 1.5; }
+        /* Quote marks (like the feed's .empty line) so it reads as a quotation; .search-quote is only ever a quote. */
+        .search-quote::before { content: '\201C'; }
+        .search-quote::after { content: '\201D'; }
         .search-noresults { font-size: 13px; color: var(--muted); margin-top: 12px; }
         .search-ops { font-size: 12px; color: var(--muted); margin-top: 18px; opacity: 0.8; } /* operator hint on the seek state */
         /* Shared CSS-only tabs (radio hack): radios are off-screen but focusable
@@ -1313,8 +1324,6 @@
         .ac-cover-row .ghost { flex: none; }
         .ac-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
         .ac-head-actions { display: flex; align-items: center; gap: 8px; }
-        .ac-draft-status { color: var(--muted); font-size: 12px; white-space: nowrap; opacity: 0; transition: opacity .4s ease; }
-        .ac-draft-status.show { opacity: 1; }
         .ac-toolbar { display: flex; gap: 4px; flex-wrap: wrap; }
         .ac-toolbar[hidden] { display: none; }
         .ac-tool {
@@ -1341,8 +1350,25 @@
         .draft-title { font-family: var(--serif); font-size: 17px; font-weight: 600; }
         .draft-snippet { color: var(--muted); font-size: 14px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .draft-meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
-        .draft-del { flex: none; }
-        .draft-del.confirming { color: var(--accent); border-color: var(--accent); font-size: 13px; }
+        /* Delete = a native <details> two-tap (no ugly system confirm(), works with JS off): the ✕
+           summary reveals a "Delete" button; clicking ✕ again cancels. Delete then h-post's + collapses
+           the row (h-optimistic). Marker hidden like the other dropdowns (.feed-switch/.menu-wrap). */
+        .draft-del { flex: none; display: flex; align-items: center; gap: 6px; }
+        /* Both controls are small pill buttons. Closed: a subtle ✕ (borderless). Open: the ✕ becomes a
+           neutral "cancel" pill and a red "Delete" pill sits beside it - two little buttons, not plain text. */
+        .draft-del > summary { list-style: none; cursor: pointer; color: var(--muted); border: 1px solid transparent; border-radius: 999px; padding: 3px 9px; font-size: 13px; line-height: 1; transition: color .15s ease, border-color .15s ease; }
+        .draft-del > summary::-webkit-details-marker { display: none; }
+        .draft-del > summary::marker { content: ''; }
+        .draft-del > summary:hover { color: var(--err); }
+        .draft-del[open] > summary { color: var(--muted); border-color: var(--border); }
+        .draft-del[open] > summary:hover { color: var(--text); border-color: var(--text); }
+        .draft-del .del-confirm { cursor: pointer; color: var(--err); background: none; border: 1px solid var(--err); border-radius: 999px; padding: 3px 10px; font-size: 13px; line-height: 1; margin-right: 5px; transition: background .15s ease; }
+        .draft-del .del-confirm:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
+        /* Delete = collapse-in-place, matching the mutes page: the ✕ form's h-optimistic adds `.deleting`
+           to the row on click, and (draft rows being small + uniform) a max-height transition slides it
+           out; the server keeps the row (H-Reswap:none) so it lingers at 0 height. Scoped to #drafts-view. */
+        #drafts-view .draft-row { overflow: hidden; max-height: 160px; transition: max-height .28s ease, opacity .18s ease, padding .28s ease; }
+        #drafts-view .draft-row.deleting { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; border-bottom-color: transparent; pointer-events: none; }
         .article-body { font-size: 17px; line-height: 1.7; overflow-wrap: anywhere; }
         .article-body p { margin: 0 0 18px; }
         .article-body h2 { font-family: var(--serif); font-size: 24px; margin: 28px 0 12px; }
@@ -1812,7 +1838,6 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
 .draft-title { font-weight: 600; }
 .draft-meta { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .draft-del button:hover { color: var(--err); }
-.compose-sync { font-size: 13px; color: var(--muted); }
 /* Schedule: a clock icon (.schedule-btn) toggles #schedule-toggle; the row reveals on :checked,
    the icon lights accent - mirrors the content-warning pattern. Pure CSS, no app JS. Shared by the
    note and article composers, so the row/accent selectors are NOT scoped to .compose-box/.compose-foot

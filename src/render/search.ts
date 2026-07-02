@@ -40,9 +40,9 @@ export function searchResults(
     // On-theme empty states: a still ensō + a rotating Zen/Taoist line (the input's placeholder
     // carries the actual instruction). Pre-query / still-typing draws from the `seek` pool
     // (naming/seeking); no-results draws from `empty` with the query underneath.
-    if (!q) return html`<div class="view-empty search-empty">${enso(52, true)}<p class="search-quote">${quote('seek')}</p><p class="search-ops">Filters: #tag · by:name · p:name · has:image · site:domain · since:2024-01-01</p></div>`;
+    if (!q) return html`<div class="view-empty search-empty"><p class="search-quote">${quote('seek')}</p>${enso(40, true)}<p class="search-ops">Filters: #tag · by:name · p:name · has:image · site:domain · since:2024-01-01</p></div>`;
     if (people.length === 0 && notes.length === 0) {
-        return html`<div class="view-empty search-empty">${enso(52, true)}<p class="search-quote">${quote('empty')}</p><p class="search-noresults">Nothing found for “${q}”.</p></div>`;
+        return html`<div class="view-empty search-empty"><p class="search-quote">${quote('empty')}</p>${enso(40, true)}<p class="search-noresults">Nothing found for “${q}”.</p></div>`;
     }
     // CSS radio-hack tabs: both result sets are already fetched, so switching is instant + zero-JS
     // (native radio arrow-key nav works). Count badges keep the other tab discoverable. Default to

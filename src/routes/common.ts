@@ -20,7 +20,7 @@ export function meFor(s: Session & { me: string }): Me {
 
 export function chromeFor(
     ctx: Ctx, s: Session & { me: string },
-    opts: { active?: ActiveView; title?: string; feedTab?: FeedTab; notesSince?: number; contentH1?: boolean; relayLabel?: string } = {},
+    opts: { active?: ActiveView; title?: string; feedTab?: FeedTab; notesSince?: number; contentH1?: boolean; relayLabel?: string; titleCount?: number } = {},
 ): ChromeOpts {
     const a = readAppearance(ctx);
     return { loggedIn: true, me: meFor(s), theme: a.theme, ...opts };

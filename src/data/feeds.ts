@@ -1,11 +1,6 @@
 // Feed builders. Following = the outbox model over people you follow. Followers =
-// the same machinery over people who follow *you* (discovered via kind:3 #p).
-// The Commons (key 'commons') = an algorithmic relay (feeds.nostrarchives.com). All paginate
-// with an `until` cursor except this, a curated single page. We rank by REPLIES over a 7-day window
-// (conversation-led discovery, "network not a scoreboard"). The JSON game-bot spam that replies
-// otherwise surface (chess moves etc.) is dropped by isMachineNote. (ZAPS was tried but is
-// self-zap-gameable - you can zap your own note a high amount nearly free.) The relay's path encodes
-// the algorithm; metrics: reactions/replies/reposts/zaps, ranges: today/7d/30d/1y/all - one-line swap.
+// the same machinery over people who follow *you* (discovered via kind:3 #p). All paginate with an
+// `until` cursor.
 
 import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
@@ -21,8 +16,6 @@ export interface FeedRoute {
 }
 
 const MAX_FOLLOWERS = 200; // cap follower discovery for performance
-export const TRENDING_RELAY = 'wss://feeds.nostrarchives.com/notes/trending/replies/7d';
-export const TRENDING_LIMIT = 50;
 
 function chunk<T>(arr: T[], size: number): T[][] {
     const out: T[][] = [];
@@ -94,23 +87,6 @@ export async function fetchRelayPage(pool: Pool, url: string, limit: number, unt
     const filter = { kinds, limit, ...(until ? { until } : {}) };
     const raw = await pool.query([url], filter, { fast: true }).catch((err) => { console.warn(`[relay-feed] query failed for ${url}:`, err?.message ?? err); return [] as NostrEvent[]; });
     return mergeNewest([raw], limit);
-}
-
-/** Trending notes from the algorithmic relay (curated single page, relay order).
- * Single external relay with no fallback - a cold/slow connection can return
- * nothing, so an empty first attempt gets one retry before we give up. */
-export async function fetchTrendingPage(pool: Pool): Promise<NostrEvent[]> {
-    const fetch = () => pool.query([TRENDING_RELAY], { kinds: [1, 1068], limit: TRENDING_LIMIT })
-        .catch((err) => { console.warn('[beyond] failed:', err?.message ?? err); return [] as NostrEvent[]; });
-    // This external feed-relay returns nothing on a COLD pooled connection (it needs a round-trip to
-    // warm up), so retry a couple times with a beat between - the connection is warm by the 2nd/3rd try.
-    let events: NostrEvent[] = [];
-    for (let i = 0; i < 3 && events.length === 0; i++) {
-        if (i) await new Promise((r) => setTimeout(r, 700));
-        events = await fetch();
-    }
-    const seen = new Set<string>();
-    return events.filter((e) => (seen.has(e.id) ? false : seen.add(e.id))); // dedupe, keep relay order
 }
 
 // A resolved event is immutable, so a hit caches hard (30 min); a MISS is cached briefly (3 min) - the

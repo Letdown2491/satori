@@ -9,6 +9,9 @@ import {
     isPrivateList, buildPrivateToggle, applyPrivatePublished, resolveTarget, writeRelays, published, type ActionName,
 } from '../actions.ts';
 import { actionButton } from '../render/actions.ts';
+import { titleCount } from '../render/layout.ts';
+import { emptyItem } from '../render/svg.ts';
+import { listCount, listEmpty } from './saved.ts'; // single source of truth for a list's count + empty copy
 import { readSignResult, requireSigned } from '../nip07.ts';
 import { isHex64 } from '../nostr/tags.ts';
 import { requireLogin } from './common.ts';
@@ -42,6 +45,31 @@ function dismissedCard(ctx: Ctx): boolean {
     return ctx.isPartial && emitDismiss(ctx);
 }
 
+/** The dedicated list page for a private-list action - where a toggle-OFF should update the list in
+ * place, not just swap the button. Other actions have no such page. */
+const LIST_PAGE: Partial<Record<ActionName, string>> = { bookmark: '/bookmarks', mute: '/muted' };
+
+/** True when this toggle-OFF fired from the action's own list page. helmjs sends the current location
+ * in H-Current-URL (v0.14+), so a shared button needs no page-specific markup to behave differently here. */
+function fromListPage(ctx: Ctx, action: ActionName, on: boolean): boolean {
+    const cur = ctx.req.headers['h-current-url'];
+    const path = typeof cur === 'string' ? cur.split('?')[0] : '';
+    return !on && LIST_PAGE[action] === path;
+}
+
+/** Response after a toggle-OFF on a list page: swap the now-inactive button back in - which flips its
+ * state class off, so the card/row collapses in place via the page's `:has()` CSS transition - plus an
+ * OOB refresh of the header "· N" chip. When it was the last item, swap the empty state into the list
+ * instead. Bookmarks and mutes share this exact shape (bookmarks collapse via the #list grid-rows rule,
+ * mutes via .mute-row max-height); no per-card ids or DOM removal needed. */
+function afterListToggle(ctx: Ctx, s: Session & { me: string }, action: ActionName, target: string): void {
+    const kind = actionKind(action);
+    const n = listCount(s, kind);
+    const count = titleCount(n, true);
+    if (n === 0) { sendFragment(ctx, html`${emptyItem(listEmpty(kind))}${count}`, { 'H-Reswap': 'inner', 'H-Retarget': `#list-${kind}` }); return; }
+    sendFragment(ctx, html`${actionButton(s, action, target)}${count}`, placeBtn(action, target));
+}
+
 function parse(ctx: Ctx): { action: ActionName; target: string } | null {
     const action = ctx.params.action ?? '';
     const target = ctx.params.target ?? '';
@@ -51,17 +79,18 @@ function parse(ctx: Ctx): { action: ActionName; target: string } | null {
 
 /** The private-chain intent, carried in each continuation URL (STATELESS - no server
  * token store). `on` (the toggle direction) is added once step 1 (decrypt) computes it. */
-function parsePrivate(ctx: Ctx): { action: ActionName; target: string; on?: boolean } | null {
+function parsePrivate(ctx: Ctx): { action: ActionName; target: string; on?: boolean; relist?: boolean } | null {
     const action = ctx.query.get('action') ?? '';
     const target = ctx.query.get('target') ?? '';
     if (!isActionName(action) || !isValidTarget(action, target)) return null;
     const on = ctx.query.get('on');
-    return { action, target, on: on == null ? undefined : on === '1' };
+    return { action, target, on: on == null ? undefined : on === '1', relist: ctx.query.get('relist') === '1' };
 }
-function privQuery(action: ActionName, target: string, on?: boolean, card?: string | null): string {
+function privQuery(action: ActionName, target: string, on?: boolean, card?: string | null, relist?: boolean): string {
     const q = new URLSearchParams({ action, target });
     if (on !== undefined) q.set('on', on ? '1' : '0');
-    if (card) q.set('card', card); // ride the card-dismiss intent through the stateless chain
+    if (card) q.set('card', card);   // ride the card-dismiss intent through the stateless chain
+    if (relist) q.set('relist', '1'); // …and the bookmarks-list removal intent (H-Current-URL isn't on chain fetches)
     return q.toString();
 }
 
@@ -95,6 +124,7 @@ export async function postAction(ctx: Ctx): Promise<void> {
             sendFragment(ctx, html`<div class="notice error">Couldn't ${action}: ${msg}</div>`, {}, 502);
             return;
         }
+        if (fromListPage(ctx, action, on)) { afterListToggle(ctx, s, action, target); return; } // unbookmark/unmute on its list page → drop the item
         if (dismissedCard(ctx)) return; // mute-from-a-row: drop the card instead of swapping the button
         respond(ctx, s, action, target);
         return;
@@ -108,12 +138,13 @@ export async function postAction(ctx: Ctx): Promise<void> {
         const kind = actionKind(action);
         const content = s.lists.get(kind)?.content;
         const card = dismissCard(ctx);
+        const relist = fromListPage(ctx, action, on); // detect the page NOW (chain fetches lack H-Current-URL)
         if (content) {
-            sendSignRequest(ctx, { pubkey: s.me, ciphertext: content }, `/act/private/dec?${privQuery(action, target, undefined, card)}`, 'nip44_decrypt');
+            sendSignRequest(ctx, { pubkey: s.me, ciphertext: content }, `/act/private/dec?${privQuery(action, target, undefined, card, relist)}`, 'nip44_decrypt');
         } else {
             s.privateTags.set(kind, []); // nothing private yet → on is known, encrypt directly
             const { tag, value } = resolveTarget(action, target);
-            sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(on ? [[tag, value]] : []) }, `/act/private/enc?${privQuery(action, target, on, card)}`, 'nip44_encrypt');
+            sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(on ? [[tag, value]] : []) }, `/act/private/enc?${privQuery(action, target, on, card, relist)}`, 'nip44_encrypt');
         }
         return;
     }
@@ -178,7 +209,7 @@ export async function postActPrivateDec(ctx: Ctx): Promise<void> {
     const { tag, value } = resolveTarget(p.action, p.target);
     const next = priv.filter((t) => !(t[0] === tag && t[1] === value));
     if (on) next.push([tag, value]);
-    sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(next) }, `/act/private/enc?${privQuery(p.action, p.target, on, dismissCard(ctx))}`, 'nip44_encrypt');
+    sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(next) }, `/act/private/enc?${privQuery(p.action, p.target, on, dismissCard(ctx), p.relist)}`, 'nip44_encrypt');
 }
 
 /** Step 2 result: the re-encrypted private content. Build the list event (public
@@ -193,7 +224,7 @@ export async function postActPrivateEnc(ctx: Ctx): Promise<void> {
     const kind = actionKind(p.action);
     const { tag, value } = resolveTarget(p.action, p.target);
     const publicTags = (s.lists.get(kind)?.tags ?? []).filter((t) => !(t[0] === tag && t[1] === value));
-    sendSignRequest(ctx, { kind, created_at: Math.floor(Date.now() / 1000), tags: publicTags, content: ciphertext, pubkey: s.me }, `/act/private/sign?${privQuery(p.action, p.target, p.on, dismissCard(ctx))}`, 'sign_event');
+    sendSignRequest(ctx, { kind, created_at: Math.floor(Date.now() / 1000), tags: publicTags, content: ciphertext, pubkey: s.me }, `/act/private/sign?${privQuery(p.action, p.target, p.on, dismissCard(ctx), p.relist)}`, 'sign_event');
 }
 
 /** Step 3 result: the signed list event. Publish it, update caches, swap the button. */
@@ -206,6 +237,7 @@ export async function postActPrivateSign(ctx: Ctx): Promise<void> {
     if (!signed) return;
     await s.pool.publish(writeRelays(s), signed).catch(() => {});
     applyPrivatePublished(s, signed, p.action, p.target, p.on ?? true);
+    if (p.relist) { afterListToggle(ctx, s, p.action, p.target); return; } // unbookmark/unmute on its list page → drop the item + refresh the count
     if (emitDismiss(ctx)) return; // mute-from-a-row (nip07): drop the card instead of swapping the button
     sendFragment(ctx, actionButton(s, p.action, p.target), placeBtn(p.action, p.target));
 }

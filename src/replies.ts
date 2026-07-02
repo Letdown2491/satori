@@ -19,17 +19,14 @@ function followSet(s: Session & { me: string }): Set<string> {
 // The query always kicks off (filling the TTL cache); how long we WAIT is bounded by the WAIT MODE so it
 // can't hang first paint:
 //   'race'  - first-paint default: a short clearnet deadline (faces usually make it); Tor fire-and-forget.
-//   'paint' - first-paint, clearnet block (a slow always-uncached single page, The Commons), so faces are
-//             ready on first load; Tor still fire-and-forget (don't hang ~12s relays on paint).
 //   'lazy'  - POST-paint hydration (the /faces endpoint): wait FULLY, even on Tor - the page already
 //             painted, so a background swap can afford to wait for the relays.
 // Either way the in-flight query populates the TTL cache.
-export type WaitMode = 'race' | 'paint' | 'lazy';
+export type WaitMode = 'race' | 'lazy';
 const PRESENCE_DEADLINE_MS = 800;
 async function bounded(q: Promise<unknown>, mode: WaitMode): Promise<void> {
     if (mode === 'lazy') { await q; return; }   // post-paint: wait fully, even on Tor
     if (relaysViaTor()) return;                 // first-paint on Tor: fire-and-forget (relays ~12s)
-    if (mode === 'paint') { await q; return; }  // first-paint clearnet block (The Commons); pool caps ~4s
     await Promise.race([q, new Promise<void>((r) => { const t = setTimeout(r, PRESENCE_DEADLINE_MS); t.unref?.(); })]);
 }
 

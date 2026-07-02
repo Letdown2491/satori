@@ -8,7 +8,8 @@ import { naddrEncode } from 'nostr-tools/nip19';
 import { signArticle, publishSigned, captureSigner, type ArticleFields } from '../data/publish.ts';
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import { articleReader } from '../render/note.ts';
-import { articleComposePage, draftsView, draftsScreen, draftRow, draftsSyncShell, draftDomId, draftSyncStatus, autoSyncTrigger, type ArticleComposeCtx } from '../render/article-compose.ts';
+import { articleComposePage, draftsView, draftsScreen, draftsSyncShell, type ArticleComposeCtx } from '../render/article-compose.ts';
+import { titleCount } from '../render/layout.ts';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type ArticleDraft, type Draft } from '../drafts.ts';
 import { holdScheduled, SCHEDULE_FULL_MSG, listScheduled } from '../data/scheduled.ts';
 import { syncDraft, unsyncDraft, fetchSyncedDrafts, draftToEvent, publishDraftWrap, fetchDraftWraps, draftFromDecrypted } from '../data/draft-sync.ts';
@@ -121,18 +122,33 @@ export async function postDraft(ctx: Ctx): Promise<void> {
         syncedAt: getDraft(s.me, identifier)?.syncedAt,
     };
     saveDraft(s.me, draft);
-    const syncEl = await composeSyncEl(s, draft); // auto-sync to relays (bunker inline; nip07 trigger)
-    const c: ArticleComposeCtx = { ...draft, status: 'Draft saved ✓', syncEl };
-    sendPage(ctx, articleComposePage(c), chromeFor(ctx, s, { active: 'compose', title: 'Article' }));
+    // bunker syncs inline + renders "saved"; nip07 runs the sync chain in this click's gesture, then OOB-
+    // updates the composer status (the page stays put meanwhile). See saveDraftAndSync / composeSaved.
+    await saveDraftAndSync(ctx, s, draft, (synced) =>
+        sendPage(ctx, articleComposePage({ ...draft, status: savedStatus(synced) }), chromeFor(ctx, s, { active: 'compose', title: 'Article' })));
 }
 
 // --- drafts list + per-draft NIP-37 sync (bunker = inline; nip07 = encrypt/sign/decrypt chains) ---
 type Signed = Session & { me: string; signer: NonNullable<Session['signer']> };
 const canSync = (s: Session & { me: string }): s is Signed => s.mode === 'bunker' && !!s.signer;
-const PLACE_ROW = (id: string) => ({ 'H-Reswap': 'outer', 'H-Retarget': `#${draftDomId(id)}` });
 const PLACE_LIST = { 'H-Reswap': 'outer', 'H-Retarget': '#drafts-view' };
-const PLACE_STATUS = { 'H-Reswap': 'outer', 'H-Retarget': '#draft-sync-status' };
 
+/** #drafts-view re-render + an OOB refresh of the bar's "Drafts · N" count chip (the count lives in the
+ * chrome, not the list). Used by the sync re-renders and the last-draft delete. */
+function draftsListWithCount(me: string): SafeHtml {
+    const drafts = listDrafts(me);
+    return html`${draftsView(drafts, listScheduled(me).length > 0)}${titleCount(drafts.length, true)}`;
+}
+
+/** Post-delete swap. The row already collapsed in place (the delete button's h-optimistic added
+ * `.deleting`; the #drafts-view CSS animates it out and it lingers at 0 height, like the mutes page).
+ * So we DON'T swap the row (that would cut the transition) - just OOB-refresh the count. When it was
+ * the LAST draft, re-render the whole view so the empty state shows instead of a blank list. */
+function sendAfterDelete(ctx: Ctx, me: string): void {
+    const drafts = listDrafts(me);
+    if (!drafts.length) { sendFragment(ctx, draftsListWithCount(me), PLACE_LIST); return; }
+    sendFragment(ctx, titleCount(drafts.length, true), { 'H-Reswap': 'none' });
+}
 /** Merge fetched synced drafts into the local store (newest wins; mark local copies synced). */
 function mergeSynced(me: string, synced: Draft[]): void {
     const local = new Map(listDrafts(me).map((d) => [d.id, d]));
@@ -144,23 +160,37 @@ function mergeSynced(me: string, synced: Draft[]): void {
     }
 }
 
-/** The composer-foot auto-sync element after a save: BUNKER syncs inline (silent) and shows a
- * "synced" status; NIP07 returns a one-shot trigger that runs the encrypt/sign/publish chain on
- * insert (shows "syncing…" then "synced"). Sync is automatic - there are no manual controls. */
-export async function composeSyncEl(s: Session & { me: string }, d: Draft): Promise<SafeHtml> {
-    if (canSync(s)) {
-        let ok = false;
-        try { ok = await syncDraft(s, d); } catch { /* best-effort */ }
-        if (ok) saveDraft(s.me, { ...d, synced: true, syncedAt: d.savedAt });
-        return draftSyncStatus(true);
+/** The composer draft-saved status. Shared by the bunker render path (via renderSaved) and the nip07
+ * chain's terminal OOB (composeSaved), so both signing families land on the SAME honest wording:
+ * "✓" when the relay wrap published, "· not synced" when only the local disk save succeeded. */
+export const savedStatus = (synced: boolean): string => (synced ? 'Draft saved ✓' : 'Draft saved · not synced');
+
+/** Save-then-sync for the composer, driven by the Save-draft click. BUNKER syncs the draft inline
+ * (server-side, silent) then runs `renderSaved(synced)` (the caller's normal saved-composer render, with
+ * the honest synced/not-synced status). NIP07 runs the encrypt/sign/publish chain FROM this request - the
+ * click is a user gesture, so browser signing works (a background trigger can't sign, which was the
+ * "syncing…" hang) - and does NOT render now: the composer stays put (the sign response is H-Reswap:none)
+ * and the chain's final step (composeSaved) OOB-updates the status + draftid. The draft is assumed already
+ * persisted by the caller (saveDraft). */
+export async function saveDraftAndSync(ctx: Ctx, s: Session & { me: string }, d: Draft, renderSaved: (synced: boolean) => void): Promise<void> {
+    if (canSync(s)) { // bunker: inline, silent
+        let synced = false;
+        try { synced = await syncDraft(s, d); } catch { /* best-effort */ }
+        if (synced) saveDraft(s.me, { ...d, synced: true, syncedAt: d.savedAt });
+        renderSaved(synced); // same honest status the nip07 chain lands on (composeSaved)
+        return;
     }
-    return autoSyncTrigger(d.id);
+    const inner = draftToEvent(d, s.me); // nip07: the chain runs in THIS request's gesture
+    sendSignRequest(ctx, { pubkey: s.me, plaintext: serializeDraft(inner) }, `/draft/sync/${encodeURIComponent(d.id)}/wrap?kind=${inner.kind}`, 'nip44_encrypt');
 }
 
-/** Re-render after a sync step: the composer status (nip07 chain, ?widget) or a /drafts row. */
-function syncRerender(ctx: Ctx, d: Draft | null): void {
-    if (ctx.query.get('widget')) { sendFragment(ctx, draftSyncStatus(!!d?.synced), PLACE_STATUS); return; }
-    sendFragment(ctx, d ? draftRow(d) : html``, d ? PLACE_ROW(d.id) : {});
+/** The nip07 chain's terminal step for a compose save+sync: OOB-update the open composer (never re-rendered
+ * during the H-Reswap:none sign flow) - the status ("Draft saved ✓", or "· not synced" if the relay publish
+ * failed) + the id fields (draftid for note/poll, identifier for article), so a re-save updates THIS draft
+ * rather than creating a duplicate. Whichever id field the current composer has gets swapped; the other is a
+ * harmless no-op (no matching element). */
+function composeSaved(ctx: Ctx, id: string, synced: boolean): void {
+    sendFragment(ctx, html`<span id="compose-status" class="compose-status" h-oob="true">${savedStatus(synced)}</span><input type="hidden" id="compose-draftid" name="draftid" value="${id}" h-oob="true"><input type="hidden" id="compose-identifier" name="identifier" value="${id}" h-oob="true">`, { 'H-Reswap': 'none' });
 }
 
 /** GET /drafts - your saved drafts. Bunker merges synced inline; nip07 renders local now + a
@@ -168,39 +198,19 @@ function syncRerender(ctx: Ctx, d: Draft | null): void {
 export async function getDrafts(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    const chrome = chromeFor(ctx, s, { active: 'drafts', title: 'Drafts' });
     if (canSync(s)) {
-        mergeSynced(s.me, await fetchSyncedDrafts(s).catch(() => []));
-        sendPage(ctx, draftsScreen(listScheduled(s.me), listDrafts(s.me)), chrome);
+        mergeSynced(s.me, await fetchSyncedDrafts(s).catch(() => [])); // merge BEFORE the count so it includes synced drafts
+        const drafts = listDrafts(s.me);
+        sendPage(ctx, draftsScreen(listScheduled(s.me), drafts), chromeFor(ctx, s, { active: 'drafts', title: 'Drafts', titleCount: drafts.length }));
         return;
     }
-    sendPage(ctx, html`${draftsScreen(listScheduled(s.me), listDrafts(s.me))}${draftsSyncShell()}`, chrome);
+    // nip07: local count now; the decrypt-load re-render (postDraftsSyncApply) OOB-refreshes it once synced drafts merge.
+    const drafts = listDrafts(s.me);
+    sendPage(ctx, html`${draftsScreen(listScheduled(s.me), drafts)}${draftsSyncShell()}`, chromeFor(ctx, s, { active: 'drafts', title: 'Drafts', titleCount: drafts.length }));
 }
 
-/** POST /draft/sync/:id - auto-sync (publish the encrypted wrap). Triggered automatically (the
- * nip07 composer trigger, or the decrypt-load); never a manual control. Bunker inline; nip07 chains. */
-export async function postDraftSync(ctx: Ctx): Promise<void> {
-    const s = requireLogin(ctx);
-    if (!s) return;
-    const id = ctx.params.id ?? '';
-    const d = getDraft(s.me, id);
-    if (!d) { syncRerender(ctx, null); return; }
-    const next = { ...d, synced: true } as Draft;
-    saveDraft(s.me, next);
-    const inner = draftToEvent(next, s.me);
-    if (canSync(s)) { // bunker: inline (rarely hit - bunker syncs in the save handler)
-        let ok = false;
-        try { ok = await syncDraft(s, next); } catch { /* best-effort */ }
-        if (ok) { next.syncedAt = next.savedAt; saveDraft(s.me, next); }
-        syncRerender(ctx, next);
-        return;
-    }
-    if (!ctx.isPartial) { redirect(ctx, '/drafts'); return; } // nip07 needs JS (the chain)
-    const w = ctx.query.get('widget') ? '&widget=1' : '';
-    sendSignRequest(ctx, { pubkey: s.me, plaintext: serializeDraft(inner) }, `/draft/sync/${encodeURIComponent(id)}/wrap?kind=${inner.kind}${w}`, 'nip44_encrypt');
-}
-
-/** nip07 continuation: encrypted content in -> sign the wrap. */
+/** nip07 sync chain, step 1 continuation (started by saveDraftAndSync): encrypted content in -> sign the
+ * wrap. On a failed encrypt the draft is still saved locally; report that ("· not synced"). */
 export async function postDraftSyncWrap(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
@@ -208,25 +218,25 @@ export async function postDraftSyncWrap(ctx: Ctx): Promise<void> {
     const kind = Number(ctx.query.get('kind')) || 1;
     const ciphertext = await readSignResult(ctx.req);
     const cur = getDraft(s.me, id);
-    if (typeof ciphertext !== 'string' || !cur) { syncRerender(ctx, cur); return; }
-    const w = ctx.query.get('widget') ? '?widget=1' : '';
-    sendSignRequest(ctx, draftWrapTemplate(s.me, id, kind, ciphertext), `/draft/sync/${encodeURIComponent(id)}/publish${w}`, 'sign_event');
+    if (typeof ciphertext !== 'string' || !cur) { composeSaved(ctx, id, false); return; }
+    sendSignRequest(ctx, draftWrapTemplate(s.me, id, kind, ciphertext), `/draft/sync/${encodeURIComponent(id)}/publish`, 'sign_event');
 }
 
-/** nip07 continuation: signed wrap in -> publish it, re-render the status/row. */
+/** nip07 sync chain, final step: signed wrap in -> publish it, mark synced, OOB-update the composer. */
 export async function postDraftSyncPublish(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const id = ctx.params.id ?? '';
     const signed = await readSignedEvent(ctx.req);
     // Assert the draft-wrap kind (KIND_DRAFT/31234), not just the pubkey: without it the signer could
-    // return any kind for us to publish. Best-effort re-render on mismatch (no bespoke error fragment).
+    // return any kind for us to publish.
+    let ok = false;
     if (signed && signed.pubkey === s.me && signed.kind === KIND_DRAFT) {
-        const ok = await publishDraftWrap(s, signed).catch(() => false);
+        ok = await publishDraftWrap(s, signed).catch(() => false);
         const cur = getDraft(s.me, id);
-        if (ok && cur && cur.synced) saveDraft(s.me, { ...cur, syncedAt: cur.savedAt });
+        if (ok && cur) saveDraft(s.me, { ...cur, synced: true, syncedAt: cur.savedAt });
     }
-    syncRerender(ctx, getDraft(s.me, id));
+    composeSaved(ctx, id, ok);
 }
 
 // nip07 decrypt-on-load chain state: chainId -> the wrap identifiers (order-matched to the
@@ -245,9 +255,9 @@ function newChain(ids: string[]): string {
 export async function getDraftsSync(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    if (!signsOnClient(s)) { sendFragment(ctx, draftsView(listDrafts(s.me), listScheduled(s.me).length > 0), PLACE_LIST); return; }
+    if (!signsOnClient(s)) { sendFragment(ctx, draftsListWithCount(s.me), PLACE_LIST); return; }
     const wraps = await fetchDraftWraps(s).catch(() => []);
-    if (!wraps.length) { sendFragment(ctx, draftsView(listDrafts(s.me), listScheduled(s.me).length > 0), PLACE_LIST); return; }
+    if (!wraps.length) { sendFragment(ctx, draftsListWithCount(s.me), PLACE_LIST); return; }
     const chainId = newChain(wraps.map((w) => w.tags.find((t) => t[0] === 'd')?.[1] ?? ''));
     sendSignRequest(ctx, { items: wraps.map((w) => ({ pubkey: s.me, ciphertext: w.content })) }, `/drafts/sync/apply?chain=${chainId}`, 'nip44_decrypt_batch');
 }
@@ -271,10 +281,9 @@ export async function postDraftsSyncApply(ctx: Ctx): Promise<void> {
         });
         mergeSynced(s.me, synced);
     }
-    sendFragment(ctx, draftsView(listDrafts(s.me), listScheduled(s.me).length > 0), PLACE_LIST);
+    sendFragment(ctx, draftsListWithCount(s.me), PLACE_LIST);
 }
 
-/** POST /draft/delete/:id - remove a draft (swap the row out / reload zero-JS). */
 /** Clear a draft after publish (or explicit delete): drop the local copy, and if it was synced,
  * retire its relay wrap. Bunker blanks the wrap inline; nip07 wrap-retirement is deferred (no
  * server-side key to sign the blank), so a nip07 wrap lingers until a manual un-sync. */
@@ -297,7 +306,7 @@ export async function postDraftDelete(ctx: Ctx): Promise<void> {
         return;
     }
     await clearDraftAndWrap(s, id); // bunker (inline blank) / unsynced / no-JS best-effort
-    if (ctx.isPartial) sendFragment(ctx, html``);
+    if (ctx.isPartial) sendAfterDelete(ctx, s.me);
     else redirect(ctx, '/drafts');
 }
 
@@ -310,7 +319,7 @@ export async function postDraftDeleteFinish(ctx: Ctx): Promise<void> {
     // Assert the draft-wrap kind (KIND_DRAFT/31234), not just the pubkey, before publishing the blank.
     if (signed && signed.pubkey === s.me && signed.kind === KIND_DRAFT) await publishDraftWrap(s, signed).catch(() => false);
     deleteDraft(s.me, id);
-    sendFragment(ctx, html``, PLACE_ROW(id)); // swap the row out
+    sendAfterDelete(ctx, s.me); // collapse handled optimistically; refresh count (or re-render empty view if last)
 }
 
 /** nip07 continuation for a SYNCED article: the batch [signed article, signed blank wrap] comes

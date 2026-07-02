@@ -14,7 +14,6 @@ import type { ScheduledPost } from '../data/scheduled.ts';
 
 export interface ArticleComposeCtx {
     identifier?: string; title?: string; summary?: string; image?: string; topics?: string; body?: string; error?: string; status?: string;
-    syncEl?: SafeHtml; // auto-sync indicator (syncing… / synced), set after a save
 }
 
 const BODY = '#ac-body';
@@ -28,7 +27,7 @@ export function articleComposeForm(c: ArticleComposeCtx = {}): SafeHtml {
     return html`
       ${c.error ? html`<div class="notice error">${c.error}</div>` : null}
       <form class="ac-form" action="/article" method="post" h-post>
-        ${c.identifier ? html`<input type="hidden" name="identifier" value="${c.identifier}">` : null}
+        <input type="hidden" id="compose-identifier" name="identifier" value="${c.identifier ?? ''}">
         <input class="ac-title" type="text" name="title" placeholder="Title" value="${c.title ?? ''}" required>
         <input class="ac-input" type="text" name="summary" placeholder="Summary (optional)" value="${c.summary ?? ''}" autocomplete="off">
         <div class="ac-cover-row"><input class="ac-input" type="text" name="image" placeholder="Cover image URL (optional)" value="${c.image ?? ''}" autocomplete="off" spellcheck="false"></div>
@@ -43,8 +42,7 @@ export function articleComposeForm(c: ArticleComposeCtx = {}): SafeHtml {
         ${scheduleRow('/article')}
         <div class="ac-foot">
           <label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>
-          ${c.status ? html`<span class="ac-draft-status show">${c.status}</span>` : null}
-          ${c.syncEl ?? null}
+          <span id="compose-status" class="compose-status">${c.status ?? ''}</span>
           <button type="submit" class="ghost" formaction="/draft" formmethod="post">Save draft</button>
           <button type="submit">Publish article</button>
         </div>
@@ -71,19 +69,6 @@ export function draftsSyncShell(): SafeHtml {
     return html`<div id="drafts-sync" h-get="/drafts/sync" h-trigger="load" h-target="#drafts-view" h-swap="outer" h-push-url="false" aria-hidden="true"></div>`;
 }
 
-/** The composer-foot auto-sync slot. Sync is automatic, so a completed sync says nothing (the
- * "Draft saved ✓" already covers it); only the transient in-progress "syncing…" is surfaced. */
-export function draftSyncStatus(synced: boolean): SafeHtml {
-    return html`<span id="draft-sync-status" class="compose-sync">${synced ? '' : 'syncing…'}</span>`;
-}
-
-/** nip07 one-shot background trigger: on insert (after a save), fires the encrypt -> sign ->
- * publish chain, then re-renders #draft-sync-status to "synced". Shows "syncing…" meanwhile. */
-export function autoSyncTrigger(id: string): SafeHtml {
-    const enc = encodeURIComponent(id);
-    return html`<span id="draft-sync-status" class="compose-sync" h-get="/draft/sync/${enc}?widget=1" h-trigger="load" h-target="#draft-sync-status" h-swap="outer" h-push-url="false">syncing…</span>`;
-}
-
 export function draftRow(d: Draft): SafeHtml {
     const domId = draftDomId(d.id);
     const enc = encodeURIComponent(d.id);
@@ -105,9 +90,12 @@ export function draftRow(d: Draft): SafeHtml {
           <span class="draft-title">${title}</span>
           <span class="draft-meta">${label} saved ${timeAgo(d.savedAt / 1000)}</span>
         </a>
-        <form class="draft-del" action="/draft/delete/${enc}" method="post" h-post h-confirm="Delete this draft? This can't be undone." h-target="#${raw(domId)}" h-swap="outer">
-          <button type="submit" class="ghost" title="Delete draft" aria-label="Delete draft">✕</button>
-        </form>
+        <details class="draft-del" h-dismiss>
+          <summary title="Delete draft" aria-label="Delete draft">✕</summary>
+          <form action="/draft/delete/${enc}" method="post" h-post h-target="#${raw(domId)}" h-swap="outer" h-optimistic="class:deleting" h-optimistic-target="#${raw(domId)}">
+            <button type="submit" class="del-confirm">Delete</button>
+          </form>
+        </details>
       </li>`;
 }
 
@@ -120,7 +108,7 @@ export function draftsView(drafts: Draft[], labeled: boolean): SafeHtml {
     if (!drafts.length) {
         const empty = labeled
             ? html`<p class="draft-empty">No saved drafts.</p>`
-            : html`<div class="view-empty">${enso(48, true)}<p class="search-quote">${quote('empty')}</p></div>`;
+            : html`<div class="view-empty"><p class="search-quote">${quote('empty')}</p>${enso(40, true)}</div>`;
         return html`<div id="drafts-view">${head}${empty}</div>`;
     }
     return html`<div id="drafts-view">${head}<ul class="draft-list">${drafts.map(draftRow)}</ul></div>`;

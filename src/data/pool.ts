@@ -7,6 +7,7 @@ import type { Filter } from 'nostr-tools';
 import { toPoolUrls, fromPoolUrl } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
 import { recordSeen } from './seen-relays.ts';
+import { recordLatency } from './relay-latency.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 
 /** True if at least one relay accepted a publish (a settled fan-out succeeds on any acceptance). Lives
@@ -94,8 +95,11 @@ export class Pool {
         const quiet = tor ? 1800 : 700;
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
         return new Promise<NostrEvent[]>((resolve) => {
+            const started = Date.now();
             const events = new Map<string, NostrEvent>();
             let settled = false;
+            let lastEventAt = 0;   // when the most recent event arrived (for the latency profile)
+            let truncated = false; // did we cut off at the hard cap while the relay was still delivering?
             let quietTimer: ReturnType<typeof setTimeout> | undefined;
             let hardTimer: ReturnType<typeof setTimeout>;
             let sub: { close: (reason?: string) => void } | undefined;
@@ -107,14 +111,23 @@ export class Pool {
                 try { sub?.close(); } catch { /* already closed */ }
                 const list = [...events.values()];
                 this.recordSeenOn(list);
+                // Per-relay latency profiling (observation only - see relay-latency.ts). Only attributable
+                // for a single-relay query (the feed fan-out path); measure to the LAST event, not to finish,
+                // so the quiet-collapse tail isn't counted as relay time.
+                if (relays.length === 1) {
+                    const ms = lastEventAt ? lastEventAt - started : Date.now() - started;
+                    recordLatency(relays[0]!, ms, truncated);
+                    if (process.env.SATORI_REQ_LOG) console.log(`[relay-latency] ${relays[0]} lastEvent=${ms}ms events=${list.length} truncated=${truncated}`);
+                }
                 resolve(list);
             };
-            hardTimer = setTimeout(finish, maxWait);
+            hardTimer = setTimeout(() => { truncated = true; finish(); }, maxWait);
             try {
                 sub = this.raw.subscribeMany(toPoolUrls(relays), filter as never, {
                     onevent: (e: NostrEvent) => {
                         if (events.has(e.id)) return;
                         events.set(e.id, e);
+                        lastEventAt = Date.now();
                         if (opts.fast) { clearTimeout(quietTimer); quietTimer = setTimeout(finish, quiet); }
                     },
                     oneose: () => finish(), // every relay EOSE'd → nothing more is coming

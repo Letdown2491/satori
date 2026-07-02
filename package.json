@@ -1,7 +1,7 @@
 {
   "name": "satori",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "description": "Satori, re-imagined as a server-rendered hypermedia (HATEOAS) NIP-46 nostr client. Zero-JS baseline, helmjs progressive enhancement, NIP-65 outbox model.",
   "engines": {

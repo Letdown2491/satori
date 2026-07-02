@@ -8,11 +8,6 @@ const POOLS = {
         'Like a deep lake, clear and still.',                // Dhammapada 82
         'The ten thousand things arise; watch them return.', // Tao Te Ching 16
     ],
-    commons: [
-        'Free and easy wandering.',                          // Zhuangzi 1 (逍遙遊)
-        'The great flows ever onward.',                      // Tao Te Ching 25
-        'Wander beyond the dust of the world.',              // Zhuangzi 2
-    ],
     caughtUp: [
         'Sitting quietly, doing nothing. Spring comes, and the grass grows by itself.', // Zenrin
         'Know when to stop, and you meet no danger.',        // Tao Te Ching 44

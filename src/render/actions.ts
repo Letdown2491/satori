@@ -40,7 +40,7 @@ export function pinButton(s: Session, noteId: string): SafeHtml {
     return iconAction('pin', noteId, isOn(s, 'pin', noteId), 'pin', 'Pin to profile');
 }
 
-/** Mute-this-person glyph for stranger-facing rows (notifications, Commons). Unlike the
+/** Mute-this-person glyph for stranger-facing rows (notifications, relay timelines). Unlike the
  * note-keyed toggles it targets the AUTHOR; on success it removes the whole card (the route
  * returns an empty body retargeted at `#card-<eventId>`), so muting dismisses the item. The
  * glyph flips optimistically the instant you click, then the card drops once mute persists. */
