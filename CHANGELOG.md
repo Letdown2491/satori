@@ -46,6 +46,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Reply cards ("in reply to an earlier note") now resolve the parent more often. NIP-10 replies weren't
+  passing the parent's author to the embed resolver, so a reply whose `e` tag had no relay hint could only be
+  searched on your own relays and often failed to fill in. It now includes the parent author (so the resolver
+  can use their outbox/write relays), matching how NIP-22 comment parents already resolved.
 - The relay-favorite star and the Undo buttons work again. The helmjs 0.14.2 bump (in 0.4.2) had regressed
   `h-post` on bare buttons - it only bound the mutating verbs on `<form>` elements - which silently disabled
   every form-less mutation. Fixed in helmjs 0.14.3 (mutating verbs now bind on any element, like `h-get`

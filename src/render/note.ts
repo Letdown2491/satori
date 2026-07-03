@@ -184,9 +184,15 @@ export function replyContext(ev: NostrEvent): SafeHtml | null {
     const nip10 = replyParent(ev);
     if (nip10) {
         key = nip10.id;
+        // Include the parent AUTHOR (best guess: the last p-tag, the usual direct-reply target) so /embed can
+        // resolve the parent via its OUTBOX (write relays), matching the NIP-22 branch below. Without it, a
+        // reply whose `e` tag carries no relay hint is only searched on the viewer's own relays and often
+        // can't be found, so "in reply to an earlier note" never fills in. A wrong guess is harmless:
+        // resolveEvent uses `author` only to pick relays and always queries by id.
+        const parentAuthor = ev.tags.filter((t) => t[0] === 'p' && t[1]).at(-1)?.[1];
         // A malformed parent ref (a bech in the id slot, an `a`-coord, junk) can't encode to a resolvable
         // nevent - drop the card rather than emit a dead /t/ link + an undecodable /embed/ ("↗ link").
-        const nev = neventFromRef(nip10.id, { relays: nip10.relays.slice(0, 1) });
+        const nev = neventFromRef(nip10.id, { author: parentAuthor, relays: nip10.relays.slice(0, 1) });
         if (!nev) return null;
         bech = nev;
     } else {
