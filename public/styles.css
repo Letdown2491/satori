@@ -1871,7 +1871,8 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
    write relays start checked - uncheck to post to a subset, or add a one-off. Resets every open. */
 .relays-check { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
 .compose-box .relays-row,
-.ac-form .relays-row { margin-top: 10px; display: none; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.ac-form .relays-row { display: none; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.compose-box .relays-row { margin-top: 10px; } /* block layout needs the gap; .ac-form's flex gap already spaces it */
 #relays-toggle:checked ~ .relays-row { display: flex; }
 #relays-toggle:checked ~ .compose-foot .relays-btn,
 #relays-toggle:checked ~ .ac-foot .relays-btn { color: var(--accent); }
