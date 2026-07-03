@@ -494,6 +494,9 @@
         /* Compose type selector - Note · Poll · Article (segmented, in the modal head). */
         .compose-types { display: inline-flex; gap: 6px; }
         .compose-types[hidden] { display: none; }
+        /* On the full /compose page the pills are a direct child of .view-pad and would sit flush against the
+           first input; give them the same breathing room the modal has (its .modal-head has margin-bottom). */
+        .view-pad > .compose-types { margin-bottom: 10px; }
         .compose-type {
             padding: 4px 13px; border-radius: 14px; border: 1px solid var(--border);
             background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer;
