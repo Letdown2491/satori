@@ -31,7 +31,7 @@ import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
 import { myRelayUrls } from '../nostr/nip65.ts';
 import { signsOnClient } from '../session.ts';
-import { feedKinds, profileKinds, timelineKinds, timelineTypes, isTimelineType, CONTENT_TYPES } from '../data/content-prefs.ts';
+import { feedKinds, profileKinds, timelineKinds, timelineEntries, isTimelineType, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { prepareEvents } from '../manifest/registry.ts';
 import type { FeedTab } from '../render/layout.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -41,7 +41,7 @@ const LONGFORM_PAGE = 20;
 // The new-notes indicators (both the off-feed dot and the on-feed mark) stay quiet
 // until the user's newNotesThreshold (readAppearance) new notes have gathered - a
 // calm nudge, not a live counter.
-// Feed fetch-kinds now live in the local manifest's IA config (manifest/feed-config.ts).
+// Feed fetch-kinds come from the user's content-type prefs (data/content-prefs.ts: feedKinds / timelineKinds).
 
 const TABS: FeedTab[] = ['following', 'followers'];
 
@@ -471,7 +471,7 @@ export async function getRelayPick(ctx: Ctx): Promise<void> {
         // Rebuild the switcher CLOSED (OOB) for whichever header opened the picker: a non-timeline page
         // carries ?title (+ ?tc); a timeline carries ?tab (+ ?rl). Reconstruct the matching one, keeping the
         // promoted-timeline entries so canceling the picker doesn't strip them from the menu.
-        const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
+        const timelines = timelineEntries(s.me);
         const title = ctx.query.get('title');
         const sw = title !== null
             ? feedSwitch({ title, titleCount: Number(ctx.query.get('tc')) || undefined, timelines, oob: true })

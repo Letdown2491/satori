@@ -1,6 +1,6 @@
 // Per-user CONTENT-TYPE visibility: which event kinds appear in the Feed vs on Profiles. The CATALOG
 // (CONTENT_TYPES) is the curated list of renderable content types this client offers - colocated config
-// like FEED_KINDS, NOT auto-derived from the registry (the registry has no labels, no grouping like
+// NOT auto-derived from the registry (the registry has no labels, no grouping like
 // calendar's two kinds under one row, no per-surface defaults). Adding a richly-rendered kind = one
 // entry here, same as adding a handler. The per-user choices are stored server-side (mirrors filters.ts),
 // so they never leave the daemon. The resolved kind sets drive the relay QUERY (fetch-time, not display).
@@ -98,6 +98,11 @@ export function timelineTypes(me: string): ContentType[] {
     const p = getContentPrefs(me).timeline;
     // Alphabetical by label - the header switcher lists Following, Followers, then these below in order.
     return CONTENT_TYPES.filter((c) => p[c.id]).sort((a, b) => a.label.localeCompare(b.label));
+}
+/** The promoted timelines projected to the `{id,label}` shape the header switcher consumes - the one place
+ * chromeFor, the content-save OOB rebuild, and the relay-picker rebuild all derive it. */
+export function timelineEntries(me: string): { id: string; label: string }[] {
+    return timelineTypes(me).map((c) => ({ id: c.id, label: c.label }));
 }
 /** The kinds a single promoted timeline queries (its content type's own kinds). */
 export function timelineKinds(id: string): number[] {

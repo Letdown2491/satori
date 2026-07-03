@@ -9,7 +9,7 @@ import { redirect, type Ctx } from '../http.ts';
 import { npub, displayName } from '../render/util.ts';
 import { mentionPubkeys } from '../render/content.ts';
 import { readAppearance } from '../theme.ts';
-import { timelineTypes } from '../data/content-prefs.ts';
+import { timelineEntries } from '../data/content-prefs.ts';
 import type { ChromeOpts, Me, ActiveView, FeedTab } from '../render/layout.ts';
 
 /** Build the chrome (Sumi-e bar + theme) for a logged-in view. */
@@ -25,7 +25,7 @@ export function chromeFor(
 ): ChromeOpts {
     const a = readAppearance(ctx);
     // Every page's switcher lists the user's promoted timelines (so you can jump to one from anywhere).
-    const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
+    const timelines = timelineEntries(s.me);
     return { loggedIn: true, me: meFor(s), theme: a.theme, timelines, ...opts };
 }
 

@@ -1,5 +1,5 @@
 // The NIP-68 "picture" kind (20), added entirely in the manifest layer - a new SIMPLE kind is this file +
-// its registration in satori.ts + one FEED_KINDS entry, no core surgery. Pictures put their image(s) in
+// its registration in satori.ts + one CONTENT_TYPES entry, no core surgery. Pictures put their image(s) in
 // NIP-92 `imeta` tags (not the content), so the note fallback would show only the caption; this handler
 // renders the images. The shared `.note` shell (avatar + head + action row) now comes from `cardShell`
 // (render/note.ts), so this file is just picture-specific extraction + the body that goes inside it - the

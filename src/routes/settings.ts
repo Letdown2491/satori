@@ -7,7 +7,7 @@
 
 import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, SETTINGS_TABS, type SettingsView, type SettingsTab } from '../render/settings.ts';
 import { getFilters, saveFilters } from '../data/filters.ts';
-import { getContentPrefs, saveContentPrefs, timelineTypes, CONTENT_TYPES } from '../data/content-prefs.ts';
+import { getContentPrefs, saveContentPrefs, timelineEntries, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { privacyMode, setPrivacyMode, isPrivacyMode } from '../privacy.ts';
 import { accountMenu, feedSwitch } from '../render/layout.ts';
 import { html } from '../html.ts';
@@ -83,12 +83,15 @@ function normalizeMediaInput(rawUrl: string): string | null {
 /** Build the whole settings view, fetching whatever a draft override doesn't
  * supply (the media-server list needs a relay query). Used for zero-JS full-page
  * re-renders; the helmjs path swaps just one section and skips the other fetch. */
-async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView> = {}): Promise<SettingsView> {
+async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView> = {}, active: SettingsTab = 'general'): Promise<SettingsView> {
     const a = readAppearance(ctx);
     const relayDraft = ov.relayDraft ?? draftFromList(s.myRelays);
+    // Only fetch what the ACTIVE tab renders: media servers live on General, DM relays on Relays; the other
+    // tabs render neither, so skip both uncached relay round-trips (a tab GET, and helmjs hover-prefetch across
+    // the tab bar, would otherwise re-pay them for panels that never use the result).
     const [mediaDraft, dmRelayDraft] = await Promise.all([
-        ov.mediaDraft !== undefined ? Promise.resolve(ov.mediaDraft) : fetchBlossomServers(s.pool, s.me, s.myRelays).catch(() => []),
-        ov.dmRelayDraft !== undefined ? Promise.resolve(ov.dmRelayDraft) : fetchMyDmRelays(s.pool, s.me, s.myRelays?.read ?? []).catch(() => []),
+        ov.mediaDraft !== undefined ? Promise.resolve(ov.mediaDraft) : active === 'general' ? fetchBlossomServers(s.pool, s.me, s.myRelays).catch(() => []) : Promise.resolve([] as string[]),
+        ov.dmRelayDraft !== undefined ? Promise.resolve(ov.dmRelayDraft) : active === 'relays' ? fetchMyDmRelays(s.pool, s.me, s.myRelays?.read ?? []).catch(() => []) : Promise.resolve([] as string[]),
     ]);
     const searchNoteDraft = ov.searchNoteDraft ?? a.searchNoteRelays;
     const searchProfileDraft = ov.searchProfileDraft ?? a.searchProfileRelays;
@@ -111,7 +114,7 @@ export async function postContentPrefs(ctx: Ctx): Promise<void> {
         // Promoting/demoting a type changes the header switcher's timeline list, so OOB-rebuild the switcher
         // (the settings page's onPage variant, summary "Settings") - otherwise the new timeline only appears
         // after a full page reload.
-        const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
+        const timelines = timelineEntries(s.me);
         sendFragment(ctx, html`${savedTick(true)}${feedSwitch({ title: 'Settings', timelines, oob: true })}`);
     } else redirect(ctx, '/settings/content');
 }
@@ -137,7 +140,7 @@ export async function postContentFilters(ctx: Ctx): Promise<void> {
 /** A zero-JS full-page re-render, landing on `active` so a no-JS save (or nav) stays on its
  * own tab instead of snapping back to General. `active` defaults to General (the bare /settings). */
 async function sendFullPage(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView>, active: SettingsTab = 'general'): Promise<void> {
-    sendPage(ctx, settingsPage(await buildView(ctx, s, ov), active), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
+    sendPage(ctx, settingsPage(await buildView(ctx, s, ov, active), active), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
 }
 
 /** GET /settings - the settings page, General tab (the bare entry point). */
@@ -157,7 +160,7 @@ export async function getSettingsTab(ctx: Ctx): Promise<void> {
     const slug = ctx.params.tab;
     const tab = SETTINGS_TABS.find((t) => t.slug === slug)?.slug;
     if (!tab) { redirect(ctx, '/settings'); return; }
-    const view = await buildView(ctx, s, {});
+    const view = await buildView(ctx, s, {}, tab);
     if (ctx.isPartial) sendFragment(ctx, settingsPage(view, tab));
     else sendPage(ctx, settingsPage(view, tab), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
 }

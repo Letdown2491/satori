@@ -1,5 +1,5 @@
 // NIP-F4 podcast EPISODE (kind 54) - rendered when ENCOUNTERED (a quote/embed or a thread anchor), not
-// pulled into any feed (no FEED_KINDS entry). A second SIMPLE kind after picture: same B-pattern (a body
+// pulled into any feed (feed-off in CONTENT_TYPES). A second SIMPLE kind after picture: same B-pattern (a body
 // dropped into the shared cardShell). The new piece vs picture is AUDIO, which is privacy-sensitive like
 // video - so it gets the same treatment: preload="none" (no fetch until the user hits play) off/balanced,
 // suppressed to an "opens outside Tor" link under strict Privacy Mode. The privacy logic lives here in the

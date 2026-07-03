@@ -151,7 +151,11 @@ async function syncEngagement(pool: Pool, me: string, myRelays: RelayList | null
                 for (const t of ev.tags) if (t[0] === 'A' && t[1]) u.replied.add(t[1]);
             }
         }
+        let zi = 0;
         for (const ev of zaps) {
+            // parseZapReceipt runs a synchronous schnorr verify; a cold backfill (up to LIMIT receipts) would
+            // stall the single-threaded event loop in one tick, so yield periodically (this sync is background).
+            if ((zi++ & 127) === 0) await new Promise<void>((r) => setImmediate(r));
             if (parseZapReceipt(ev).sender !== me) continue; // verify the embedded request is yours (defends a forged #P)
             const e = [...ev.tags].reverse().find((t) => t[0] === 'e' && t[1]); // zapped note
             const a = e ? null : [...ev.tags].reverse().find((t) => t[0] === 'a' && t[1]); // or zapped article
