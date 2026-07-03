@@ -18,9 +18,13 @@ const FILE = process.env.SATORI_RELAY_LATENCY_FILE || join(process.cwd(), '.data
 const norm = (u: string): string => u.replace(/\/+$/, '').toLowerCase();
 
 /** Rolling per-relay stats. `ms` = EWMA of time-to-last-event (pure relay responsiveness, excluding the
- * quiet-collapse tail); `n` = samples; `trunc` = how often the query was cut off at the hard cap while the
- * relay was still delivering (= it needs a bigger budget); `at` = last-updated (ms epoch). */
-interface RelayStat { ms: number; n: number; trunc: number; at: number }
+ * quiet-collapse tail); `ev` = EWMA of events delivered per query; `n` = samples; `trunc` = how often the
+ * query was cut off at the hard cap while the relay was still delivering; `at` = last-updated (ms epoch).
+ * `ev` disambiguates the two truncation modes that `ms` alone conflates (both pin near the cap): a truncation
+ * with ~0 `ev` is a CONNECT/DELIVERY problem (waiting longer is HIGH value - the relay barely responded), a
+ * truncation with high `ev` is a PROLIFIC relay/aggregator (waiting longer just fetches more older tail that
+ * scroll-pagination recovers anyway - so ceiling it). The adaptive budget keys on both. */
+interface RelayStat { ms: number; ev: number; n: number; trunc: number; at: number }
 
 const { readAll, writeAll } = jsonStore<Record<string, RelayStat>>(FILE, 'relay-latency');
 
@@ -33,15 +37,18 @@ const flusher = debouncedFlush(() => {
     writeAll(out);
 }, 15000);
 
-/** Record one relay's observed time-to-last-event (ms) + whether it was truncated at the hard cap. Cheap
- * (a map update + a debounced write); side-effect only - it never changes what the query returns. */
-export function recordLatency(relay: string, ms: number, truncated: boolean): void {
+/** Record one relay's observed time-to-last-event (ms), events delivered, and whether it was truncated at the
+ * hard cap. Cheap (a map update + a debounced write); side-effect only - it never changes what the query
+ * returns. */
+export function recordLatency(relay: string, ms: number, truncated: boolean, events: number): void {
     const url = norm(relay);
     if (!url) return;
     const prev = stats.get(url);
-    const ewma = prev ? prev.ms * (1 - ALPHA) + ms * ALPHA : ms;
+    const ms2 = prev ? prev.ms * (1 - ALPHA) + ms * ALPHA : ms;
+    // Seed ev from the current sample when absent (a pre-ev record, or a first sample) so the EWMA can't NaN.
+    const ev2 = prev?.ev != null ? prev.ev * (1 - ALPHA) + events * ALPHA : events;
     stats.delete(url); // reinsert below → most-recently-used (LRU order)
-    stats.set(url, { ms: Math.round(ewma), n: (prev?.n ?? 0) + 1, trunc: (prev?.trunc ?? 0) + (truncated ? 1 : 0), at: Date.now() });
+    stats.set(url, { ms: Math.round(ms2), ev: Math.round(ev2), n: (prev?.n ?? 0) + 1, trunc: (prev?.trunc ?? 0) + (truncated ? 1 : 0), at: Date.now() });
     while (stats.size > MAX_RELAYS) stats.delete(stats.keys().next().value as string);
     flusher.schedule();
 }

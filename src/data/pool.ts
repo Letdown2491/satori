@@ -118,7 +118,7 @@ export class Pool {
                 // measure to the LAST event, not to finish, so the quiet-collapse tail isn't counted as relay time.
                 if (opts.profile && relays.length === 1) {
                     const ms = lastEventAt ? lastEventAt - started : Date.now() - started;
-                    recordLatency(relays[0]!, ms, truncated);
+                    recordLatency(relays[0]!, ms, truncated, list.length);
                     if (process.env.SATORI_REQ_LOG) console.log(`[relay-latency] ${relays[0]} lastEvent=${ms}ms events=${list.length} truncated=${truncated}`);
                 }
                 resolve(list);
