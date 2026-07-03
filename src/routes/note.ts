@@ -137,7 +137,7 @@ function pollFormPart(d: PollDraft | null = null, inModal = false, status = '', 
 
 /** The picture (NIP-68 kind:20) compose form: a title + caption + the shared media strip (≥1 image required
  * to publish). Reuses the note's upload/attach + live-preview + @mention wiring; posts to /picture. Top-level
- * only, and lean (no reply/quote/relay-picker; scheduling supported). A local draft is deferred too - unlike a note/
+ * only, and lean (no reply/quote; scheduling + relay-picker supported). A local draft is deferred too - unlike a note/
  * poll draft, it would have to carry already-uploaded Blossom blobs, which is more machinery than v1 needs. */
 function pictureFormPart(c: ComposeCtx, inModal = false): SafeHtml {
     return html`
@@ -161,10 +161,12 @@ function pictureFormPart(c: ComposeCtx, inModal = false): SafeHtml {
              like the note composer). The "Schedule" button sends do=schedule to /picture. -->
         <input type="checkbox" id="schedule-toggle" class="sched-check">
         ${scheduleRow('/picture', raw(' h-target="body" h-swap="inner"'))}
+        ${c.isNew ? relayPickerRow(c.relays ?? []) : null}
         <div class="compose-foot">
           <label class="attach-btn" id="compose-attach" title="Add a photo" aria-label="Add a photo">${icon('image')}${composeFileInput()}</label>
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
           <label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>
+          ${c.isNew && c.relays?.length ? relaysToggleBtn() : null}
           <noscript><button type="submit" class="attach-go">Attach</button></noscript>
           <span class="compose-status">${c.status ?? ''}</span>
           <button type="submit" class="publish-btn" formaction="/picture" formmethod="post" h-target="body" h-swap="inner">Post picture</button>
@@ -329,8 +331,8 @@ export async function getCompose(ctx: Ctx): Promise<void> {
 
     // Picture (NIP-68 kind:20) - a lean top-level composer (title + caption + images), like poll.
     if (isNew && ctx.query.get('type') === 'picture') {
-        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('picture', true), pictureFormPart({ isNew: true }, true))); return; }
-        sendPage(ctx, html`<div class="view-pad">${composeTypes('picture')}${pictureFormPart({ isNew: true })}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Picture' }));
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('picture', true), pictureFormPart({ isNew: true, relays: writeRelaysFor(s.myRelays) }, true))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('picture')}${pictureFormPart({ isNew: true, relays: writeRelaysFor(s.myRelays) })}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Picture' }));
         return;
     }
 
@@ -447,11 +449,14 @@ export async function postPicture(ctx: Ctx): Promise<void> {
         const q = new URLSearchParams();
         if (fromModal) q.set('inmodal', '1');
         if (scheduledAt) q.set('schedule', String(scheduledAt)); // store, don't publish
+        for (const u of form.getAll('relay')) q.append('relay', u); // carry the relay-picker selection
+        const cr = (form.get('customrelay') ?? '').trim(); if (cr) q.set('customrelay', cr);
         sendSignRequest(ctx, prepared.signed, q.toString() ? `/picture/publish?${q}` : '/picture/publish');
         return;
     }
     try {
         const prepared = await signPicture(s.signer!, s.me, s.myRelays!, opts);
+        prepared.writeTargets = chosenTargets(form, s); // relay-picker selection
         if (scheduledAt) { // hold the signed picture for the sweep instead of publishing
             if (!holdScheduled(s.me, prepared.signed, scheduledAt, prepared.writeTargets)) { sendFragment(ctx, html`<div class="notice error">${SCHEDULE_FULL_MSG}</div>`, {}, 400); return; }
             redirect(ctx, '/drafts');
@@ -478,7 +483,7 @@ export async function postPicturePublish(ctx: Ctx): Promise<void> {
     // the client time server-side - a past/0/NaN value just falls through to publish-now.
     const schedule = Number(ctx.query.get('schedule')) || 0;
     if (schedule > Math.floor(Date.now() / 1000)) {
-        if (!holdScheduled(s.me, signed as NostrEvent, schedule, writeRelaysFor(s.myRelays))) {
+        if (!holdScheduled(s.me, signed as NostrEvent, schedule, chosenTargets(ctx.query, s as Session & { me: string }))) {
             sendFragment(ctx, html`<div class="notice error">${SCHEDULE_FULL_MSG}</div>`, {}, 400);
             return;
         }
@@ -486,7 +491,7 @@ export async function postPicturePublish(ctx: Ctx): Promise<void> {
             { 'H-Push-Url': '/drafts', 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' });
         return;
     }
-    const prepared: Prepared = { signed, isReply: false, writeTargets: writeRelaysFor(s.myRelays), inboxTargets: [] };
+    const prepared: Prepared = { signed, isReply: false, writeTargets: chosenTargets(ctx.query, s as Session & { me: string }), inboxTargets: [] };
     if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, fromModal })) return; // nip07 = always JS
     try { await publishSigned(s.pool, prepared); } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
