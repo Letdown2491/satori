@@ -56,6 +56,27 @@ export function tokenize(text: string, normalizeWhitespace = true): ContentToken
     return tokens;
 }
 
+// A URL match (`[^\s<]+`) greedily includes any trailing sentence punctuation - "see https://x.com, and…"
+// or "(https://x.com)" - none of which belongs to the link. Trim a trailing run of punctuation/quotes, plus
+// an UNBALANCED closing bracket (so a Wikipedia-style .../Foo_(bar) keeps its own parens). The trimmed chars
+// fall back to literal text via the caller shortening `consumed`.
+const TRAIL_PUNCT = new Set([...'.,;:!?\'"‘’“”']);
+function urlEnd(url: string): number {
+    let end = url.length;
+    while (end > 0) {
+        const c = url[end - 1]!;
+        if (TRAIL_PUNCT.has(c)) { end--; continue; }
+        if (c === ')' || c === ']' || c === '}') {
+            const open = c === ')' ? '(' : c === ']' ? '[' : '{';
+            let opens = 0, closes = 0;
+            for (let k = 0; k < end; k++) { if (url[k] === open) opens++; else if (url[k] === c) closes++; }
+            if (closes > opens) { end--; continue; } // unbalanced closer → not part of the url
+        }
+        break;
+    }
+    return end;
+}
+
 function tokenizeImpl(text: string, normalizeWhitespace: boolean): ContentToken[] {
     const src = normalizeWhitespace ? normalize(text) : text;
     const tokens: ContentToken[] = [];
@@ -64,8 +85,10 @@ function tokenizeImpl(text: string, normalizeWhitespace: boolean): ContentToken[
         const i = m.index ?? 0;
         if (i > last) tokens.push({ t: 'text', value: src.slice(last, i) });
 
+        let consumed = m[0].length;
         if (m[1]) {
-            const url = m[1];
+            const url = m[1].slice(0, urlEnd(m[1]));
+            consumed = url.length; // trailing punctuation stays as text, not part of the link
             if (IMG_RE.test(url)) tokens.push({ t: 'image', url });
             else if (VIDEO_RE.test(url)) tokens.push({ t: 'video', url });
             else tokens.push({ t: 'url', url });
@@ -74,7 +97,7 @@ function tokenizeImpl(text: string, normalizeWhitespace: boolean): ContentToken[
         } else if (m[3]) {
             tokens.push(decodeToken(m[3], m[3]));
         }
-        last = i + m[0].length;
+        last = i + consumed;
     }
     if (last < src.length) tokens.push({ t: 'text', value: src.slice(last) });
     return tokens;

@@ -55,6 +55,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Trailing punctuation after a link no longer becomes part of the link. A URL written with normal
+  punctuation, e.g. `https://nostr21.com,` or `(https://nostr21.com)`, was linked including the comma or
+  paren, so clicking it went to the wrong address; the trailing characters now stay as text. Balanced parens
+  inside a URL (e.g. a Wikipedia `..._(disambiguation)` link) are preserved. Applies to notes and article
+  bodies (markdown + asciidoc).
 - A `nostr:nsec…` (or other non-standard `nostr:` entity) pasted or quoted in a note's content is no longer
   turned into a clickable link. Previously the raw bech went into an `href` to njump.me, so an nsec (a private
   key) could be leaked to a third party on click; it now renders inert, and secret types are redacted rather
