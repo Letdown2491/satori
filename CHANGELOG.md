@@ -35,8 +35,10 @@ All notable changes to this project are documented here. The format is based on
   the "N new notes" indicator counts and the feed then renders. So a followed author whose
   notes live on a slow or laggy relay surfaces within seconds instead of being dropped, and
   the indicator can no longer promise notes the feed then fails to load. Observation-only
-  groundwork for this shipped in 0.4.2; this turns it on. (The per-relay timeout constants
-  are still being tuned against real usage data.)
+  groundwork for this shipped in 0.4.2; this turns it on. The per-relay timeouts self-calibrate
+  to how each relay actually behaves - notably, they now bail out fast on relays that
+  consistently deliver nothing for your feed instead of waiting on them - and keep adapting as
+  your follows move relays around.
 - Compose UI consistency across all four composers: the action bars are now a matching
   rounded card; the schedule and relay-picker sections carry their own panel background so
   they look the same in the in-feed modal and on the full `/compose` page; the type pills
