@@ -115,9 +115,9 @@ const srcKinds = (src: FeedSource, me: string): number[] => (isRelay(src) ? prof
 function srcSentinel(src: FeedSource, until: number): SafeHtml {
     return isRelay(src) ? pagerSentinel(`/relay?r=${encodeURIComponent(src.relay)}&until=${until}`) : sentinel(src.tab, until);
 }
-async function srcFetch(s: Session & { me: string }, src: FeedSource, until?: number, limit?: number): Promise<NostrEvent[]> {
+async function srcFetch(s: Session & { me: string }, src: FeedSource, until?: number, limit?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     if (isRelay(src)) return fetchRelayPage(s.pool, src.relay, limit ?? PAGE, until, srcKinds(src, s.me)).catch(() => [] as NostrEvent[]);
-    return fetchPage(s, src.tab, until, limit);
+    return fetchPage(s, src.tab, until, limit, budget);
 }
 
 /** The outbox route for a tab (cached on the session). */
@@ -131,9 +131,9 @@ async function routeFor(s: Session & { me: string }, tab: FeedTab): Promise<Map<
     return s.followsRoute.route;
 }
 
-async function fetchPage(s: Session & { me: string }, tab: FeedTab, until?: number, limit?: number): Promise<NostrEvent[]> {
+async function fetchPage(s: Session & { me: string }, tab: FeedTab, until?: number, limit?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     const route = await routeFor(s, tab);
-    return fetchRoutedPage(s.pool, route, limit ?? pageSize(tab), until, kindsFor(tab, s.me)).catch(() => [] as NostrEvent[]);
+    return fetchRoutedPage(s.pool, route, limit ?? pageSize(tab), until, kindsFor(tab, s.me), undefined, budget).catch(() => [] as NostrEvent[]);
 }
 
 /** Infinite-scroll sentinel for a tab (delegates to the shared pager sentinel). */
@@ -155,7 +155,7 @@ const OVERFETCH = 3;  // when filtering, the first window pulls this many × tar
  * (the un-consumed tail is simply re-read by the next window). Returns the visible notes, the raw
  * events consumed (for the list-primer's private-list check), a `more` sentinel, and the newest
  * raw timestamp (the notes-dot high-water). */
-async function fillPage(s: Session & { me: string }, src: FeedSource, until?: number, extra?: NostrEvent[]): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number }> {
+async function fillPage(s: Session & { me: string }, src: FeedSource, until?: number, extra?: NostrEvent[], budget?: 'page' | 'adaptive'): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number }> {
     // Load the lists CONCURRENTLY with the first page fetch, not serially before it: mute is only
     // needed once the page returns (filtering), bookmark/pin only at render. Awaited inside the loop
     // after the fetch (so it overlaps it) - saves ~1 round-trip on a cold paint (a full ~12s on Tor).
@@ -180,9 +180,9 @@ async function fillPage(s: Session & { me: string }, src: FeedSource, until?: nu
             // Cache only a NON-EMPTY result: a transient empty (e.g. a relay returning nothing on a cold
             // pooled connection) must not get cached, or it'd blank the tab for the whole TTL. An empty
             // page just falls through to a fresh fetch on the next visit.
-            else { page = await srcFetch(s, src, cursor, lim); if (page.length) putCachedFeed(s.me, srcKey(src), page); }
+            else { page = await srcFetch(s, src, cursor, lim, budget); if (page.length) putCachedFeed(s.me, srcKey(src), page); }
         } else {
-            page = await srcFetch(s, src, cursor, lim);
+            page = await srcFetch(s, src, cursor, lim, budget);
         }
         if (i === 0) { await listsReady; muted = mutedPubkeys(s); } // lists overlapped the fetch above; ready before any keep()
         if (!page.length) { exhausted = true; break; }
@@ -282,7 +282,7 @@ function followingBoundary(ctx: Ctx, me: string): number {
 async function followingFirstView(s: Session & { me: string }, boundary: number): Promise<{ inner: SafeHtml; newestTs: number; events: NostrEvent[] }> {
     // Fold in the background-backfill buffer (slow-relay events the dot found since the fast paint) so the
     // landing SHOWS exactly what the dot COUNTED - fillPage's keep() applies mute/content filters to them.
-    const { visible, allRaw, more, newestRaw } = await fillPage(s, { tab: 'following' }, undefined, pendingNew(s.me, 'following', boundary));
+    const { visible, allRaw, more, newestRaw } = await fillPage(s, { tab: 'following' }, undefined, pendingNew(s.me, 'following', boundary), 'page');
     const newVisible = visible.filter((e) => e.created_at > boundary);
     // Mark everything we're showing as `shown` so the next dot poll (which re-fetches with the adaptive budget)
     // doesn't recount on-screen notes as "new".

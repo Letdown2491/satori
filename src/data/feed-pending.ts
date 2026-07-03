@@ -1,9 +1,9 @@
 // Per-(pubkey, tab) buffer of feed events the BACKGROUND backfill fetched, so the new-notes dot and the
-// click-to-load path read the SAME events. The landing paints on the normal budget and can miss events on
-// slow relays; the off-feed dot poll re-fetches those on the GENEROUS adaptive budget (latency is invisible
-// there) and folds the late arrivals here. Because the dot COUNTS this buffer and the load RENDERS this
-// buffer, the dot can never promise a note the load then misses - the "indicator fires but loads empty" bug
-// is structurally impossible.
+// click-to-load path read the SAME events. The following landing paints fast on the tight PAGE_MAX_WAIT
+// budget and so can miss events on slow relays; the off-feed dot poll re-fetches those on the GENEROUS
+// adaptive budget (latency is invisible there) and folds the late arrivals here. Because the dot COUNTS this
+// buffer and the load RENDERS this buffer, the dot can never promise a note the load then misses - the
+// "indicator fires but loads empty" bug is structurally impossible.
 //
 // Like the feed cache: RAW events (mutes/filters apply at count/render time, so a stale buffer stays
 // correct), keyed by pubkey (no cross-account bleed), in-memory + per-process. NOT persisted - it's
