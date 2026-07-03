@@ -332,6 +332,9 @@
         .page-bar-action { margin-left: auto; display: inline-flex; align-items: center; }
         .settings-page section { padding: 16px 0; border-top: 1px solid var(--border); }
         .settings-page section:first-child { border-top: none; }
+        /* The save/action buttons across the settings tabs match the composer's compact Publish button
+           (base buttons are 10px 16px; the Backup Export/Restore + the busy-btn Saves take the smaller 6px 10px). */
+        .settings-page .busy-btn, .settings-page .backup-form button { padding: 6px 10px; }
         .settings-page h3 { font-size: 14px; margin: 0 0 10px; font-weight: 700; }
         .settings-page h3 .hint { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
         /* The network editors (relays / media servers) stack vertically - overriding
