@@ -70,12 +70,12 @@ async function routeFor(pool: Pool, authors: string[]): Promise<FeedRoute> {
 
 /** One page of a routed feed (Following / Followers). `until` bounds it to older
  * events; `kinds` defaults to notes + polls (pass [30023] for the long-form feed). */
-export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>>, limit: number, until?: number, kinds: number[] = [1, 1068], since?: number): Promise<NostrEvent[]> {
+export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>>, limit: number, until?: number, kinds: number[] = [1, 1068], since?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     const queries: Promise<NostrEvent[]>[] = [];
     for (const [relay, authorSet] of route) {
         for (const authorChunk of chunk([...authorSet], MAX_AUTHORS_PER_FILTER)) {
             const filter = { kinds, authors: authorChunk, limit: limit * 2, ...(until ? { until } : {}), ...(since ? { since } : {}) };
-            queries.push(pool.query([relay], filter, { fast: true, profile: true }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
+            queries.push(pool.query([relay], filter, { fast: true, profile: true, budget }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
         }
     }
     return mergeNewest(await Promise.all(queries), limit);
