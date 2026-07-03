@@ -14,7 +14,7 @@ export interface Appearance {
     zapPresets: number[]; // sats amounts offered in the zap dialog
     newNotesThreshold: number; // new feed posts before the Notes button lights up
     autoLoadMedia: boolean;    // auto-load images & videos (Phase 8 media)
-    inlineVideo: boolean;      // load nostr-uploaded videos inline (browser fetches a frame on sight + plays); OFF by default - on, the timeline shows real video frames at the cost of an on-load fetch to each video host (no different from any media fetch); off keeps the no-fetch play facade. YouTube is unaffected (always its own facade).
+    inlineVideo: boolean;      // load nostr-uploaded videos inline (browser fetches a frame on sight + plays); ON by default - the timeline shows real video frames at the cost of an on-load fetch to each video host (no different from any media fetch); off keeps the no-fetch play facade. YouTube is unaffected (always its own facade).
     reactions: boolean;        // show the like (kind:7 reaction) button on notes/articles; OFF by default (Satori favors zaps + replies)
     reactionNotifs: boolean;   // surface received reactions in notifications; OFF by default
     undoEnabled: boolean;      // hold-before-publish undo window
@@ -28,7 +28,7 @@ const COOKIE = 'satori-appearance';
 
 const DEFAULT_APPEARANCE: Appearance = {
     theme: 'sumi-e', zapPresets: DEFAULT_ZAP_PRESETS,
-    newNotesThreshold: 5, autoLoadMedia: true, inlineVideo: false,
+    newNotesThreshold: 5, autoLoadMedia: true, inlineVideo: true,
     reactions: false, reactionNotifs: false,
     undoEnabled: true, undoSeconds: 5,
     searchNoteRelays: SEARCH_NOTE_RELAYS, searchProfileRelays: SEARCH_PROFILE_RELAYS,

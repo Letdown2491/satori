@@ -19,6 +19,13 @@ All notable changes to this project are documented here. The format is based on
   baked in when it's signed, so a scheduled poll would arrive already counting down.)
 - A page `<meta name="description">`.
 
+### Changed (defaults)
+
+- "Load nostr videos inline" now defaults ON, so the timeline shows real video frames out of
+  the box (a first-frame fetch to the video host, no different from any media load). Turn it
+  off in Settings to keep the no-fetch play facade. YouTube is unaffected (always its own
+  facade), and Strict privacy mode still suppresses video regardless.
+
 ### Changed
 
 - The following feed is faster to first paint and more complete on slow connections. The
