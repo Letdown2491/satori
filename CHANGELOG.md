@@ -48,6 +48,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A `nostr:nsec…` (or other non-standard `nostr:` entity) pasted or quoted in a note's content is no longer
+  turned into a clickable link. Previously the raw bech went into an `href` to njump.me, so an nsec (a private
+  key) could be leaked to a third party on click; it now renders inert, and secret types are redacted rather
+  than echoed. (Found in a NIP-21 read-side audit.)
+- Edited articles (and other addressable events) no longer show twice in the longform feed or on profiles. The
+  outbox fan-out merges events from multiple relays, so a stale copy and the edited copy - different event ids,
+  same `d` coordinate - were both kept; addressable kinds now collapse by their (kind, author, d) coordinate,
+  keeping only the newest, per NIP-01. (Found in a NIP-01 read-side audit.)
 - Reply cards ("in reply to an earlier note") now resolve the parent more often. NIP-10 replies weren't
   passing the parent's author to the embed resolver, so a reply whose `e` tag had no relay hint could only be
   searched on your own relays and often failed to fill in. It now includes the parent author (so the resolver

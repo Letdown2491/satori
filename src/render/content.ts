@@ -449,7 +449,12 @@ export function renderContent(text: string, profiles?: ProfileMap, embeds = true
                 : mentionChip(r.path(tok.bech), r.label));
             else parts.push(html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ event</a>`);
         } else {
-            parts.push(html`<a class="mention" href="https://njump.me/${tok.bech}" target="_blank" rel="noopener noreferrer">↗ ${tok.type}</a>`);
+            // NIP-21 only defines npub/nprofile/note/nevent/naddr as linkable references. Anything else - an
+            // nsec/ncryptsec (SECRET key material) or an unknown future type - must NOT become a njump link:
+            // that would put the raw bech (a PRIVATE KEY, for nsec) into an href and leak it to a third party
+            // on click. Render inert, and never echo the bech for secret types.
+            const secret = tok.type === 'nsec' || tok.type === 'ncryptsec';
+            parts.push(html`<span class="mention-inert">${secret ? `[${tok.type} redacted]` : tok.bech}</span>`);
         }
         i++;
     }

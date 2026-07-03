@@ -1406,6 +1406,8 @@
         .comment-children { margin-left: 16px; padding-left: 12px; border-left: 1px solid var(--border); }
         .mention { color: var(--accent); text-decoration: none; cursor: pointer; }
         .mention:hover { text-decoration: underline; }
+        /* An unsupported/secret nostr: entity (nsec, unknown type) rendered inert - muted, no link, no key leak. */
+        .mention-inert { color: var(--muted); word-break: break-all; }
         .quote {
             display: block; margin: 10px 0; padding: 9px 12px;
             border: 1px solid var(--border); border-left: 3px solid var(--accent);
