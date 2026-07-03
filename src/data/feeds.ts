@@ -6,6 +6,7 @@ import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, routeAuthorsToRelays } from '../nostr/nip65.ts';
 import { HEX64, isAddressable, tag1 } from '../nostr/tags.ts';
+import { notFakePodcast } from '../nostr/nipf4.ts';
 import { coalesceOne } from './coalesce.ts';
 import { fetchRelayLists } from './relays.ts';
 import { seenRelaysFor } from './seen-relays.ts';
@@ -87,7 +88,8 @@ export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>
             queries.push(pool.query([relay], filter, { fast: true, profile: true, budget }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
         }
     }
-    return mergeNewest(await Promise.all(queries), limit);
+    // Drop kind:54 events with no audio - not podcasts (kind 54 is contested; see nipf4.notFakePodcast).
+    return mergeNewest((await Promise.all(queries)).map((list) => list.filter(notFakePodcast)), limit);
 }
 
 /** One page of a SINGLE relay's timeline (the "browse a relay" feed): newest-first events of the user's
@@ -95,7 +97,7 @@ export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>
 export async function fetchRelayPage(pool: Pool, url: string, limit: number, until: number | undefined, kinds: number[]): Promise<NostrEvent[]> {
     const filter = { kinds, limit, ...(until ? { until } : {}) };
     const raw = await pool.query([url], filter, { fast: true }).catch((err) => { console.warn(`[relay-feed] query failed for ${url}:`, err?.message ?? err); return [] as NostrEvent[]; });
-    return mergeNewest([raw], limit);
+    return mergeNewest([raw.filter(notFakePodcast)], limit);
 }
 
 // A resolved event is immutable, so a hit caches hard (30 min); a MISS is cached briefly (3 min) - the
@@ -177,5 +179,5 @@ export async function fetchAuthorNotes(pool: Pool, pubkey: string, kinds: number
     // `kinds` is the VIEWER's profile content-type prefs (notes/polls + whichever rich kinds they enabled).
     // The manifest renders each kind's card, so no per-kind branch here - just the viewer-chosen query.
     const raw = await pool.query(relays, { kinds, authors: [pubkey], limit, ...(until ? { until } : {}) }, { fast: true }).catch(() => []);
-    return dedupeNewest(raw, limit);
+    return dedupeNewest(raw.filter(notFakePodcast), limit);
 }

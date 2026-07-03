@@ -18,6 +18,14 @@ All notable changes to this project are documented here. The format is based on
 
 - Renamed the "Appearance & Behavior" settings tab to "General".
 
+### Fixed
+
+- Recipes and other gated posts no longer show up as podcasts. Kind 54 is used both for podcast episodes
+  and, in the wild, for lightning-gated content with no audio (zap.cooking recipes and the like), so a
+  Podcasts timeline or feed could surface a recipe rendered as a playerless podcast. A kind:54 event is now
+  treated as a podcast only if it actually has an audio track; the rest are dropped from feeds, timelines,
+  profiles, and relay browsing.
+
 ## [0.5.0] - 2026-07-04
 
 ### Added
