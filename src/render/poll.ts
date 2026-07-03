@@ -73,12 +73,14 @@ export function pollComposeFields(c: { options?: string[]; multiple?: boolean; d
     return html`
       <div class="poll-fields">
         <ul class="poll-opts" id="poll-opts">${join(rows.map((v) => opt(v)))}</ul>
-        <button type="button" class="ghost add-opt" h-get="/compose/poll-option" h-target="#poll-opts" h-swap="append" h-trigger="click" h-push-url="false">+ Add option</button>
-        <div class="poll-settings">
-          <label class="toggle"><input type="checkbox" name="multiple" value="1"${c.multiple ? raw(' checked') : raw('')}> Allow multiple choices</label>
-          <select class="theme-select" name="duration">
-            ${join(DURATIONS.map((d, i) => html`<option value="${i}"${i === c.duration ? raw(' selected') : raw('')}>${d}</option>`))}
-          </select>
+        <div class="poll-controls">
+          <button type="button" class="ghost add-opt" h-get="/compose/poll-option" h-target="#poll-opts" h-swap="append" h-trigger="click" h-push-url="false">+ Add option</button>
+          <div class="poll-settings">
+            <label class="toggle"><input type="checkbox" name="multiple" value="1"${c.multiple ? raw(' checked') : raw('')}> Allow multiple choices</label>
+            <select class="theme-select" name="duration">
+              ${join(DURATIONS.map((d, i) => html`<option value="${i}"${i === c.duration ? raw(' selected') : raw('')}>${d}</option>`))}
+            </select>
+          </div>
         </div>
       </div>`;
 }

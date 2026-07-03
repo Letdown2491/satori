@@ -600,6 +600,10 @@
         .poll-opt:focus { outline: none; border-color: var(--accent); }
         .rm-opt { padding: 6px 10px; }
         .add-opt { align-self: flex-start; }
+        /* The poll's "+ Add option" + settings grouped in a panel card, matching the schedule/relay sections
+           (and the same in the modal + on the page). */
+        .poll-controls { display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+        .poll-controls .add-opt { align-self: flex-start; }
         .poll-settings { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
         .poll-settings .toggle { margin: 0; }
         .modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
@@ -1344,7 +1348,7 @@
         .ac-preview { flex: 1; min-height: 320px; padding: 4px 2px; }
         /* Carded action bar, matching the note/picture/poll .compose-foot (panel + border). Standalone here
            (not contiguous with the textarea like the note foot), so it's a fully-bordered rounded bar. */
-        .ac-foot { display: flex; align-items: center; gap: 12px; margin-top: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+        .ac-foot { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
         /* Publish article matches Save draft's size (the default button's 10px/16px made it chunkier); the
            accent fill already marks it as primary, so it doesn't also need to be bigger. */
         .ac-foot button { padding: 6px 10px; }
@@ -1833,7 +1837,11 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
    .quote rule only adds margin above the card, so the text would butt right up). */
 .reply-context { margin-bottom: 10px; }
 
-.ac-form { display: flex; flex-direction: column; gap: 12px; }
+.ac-form { display: flex; flex-direction: column; gap: 10px; }
+/* The schedule/relay rows carry a margin-top for the block-layout .compose-box; inside .ac-form's flex-gap
+   that would DOUBLE the spacing, so zero it here (the gap already spaces them) - keeps the article's section
+   spacing the same as the other tabs. */
+.ac-form .schedule-row, .ac-form .relays-row { margin-top: 0; }
 
 /* Phase 6c - drafts list */
 .draft-list { list-style: none; padding: 0; margin: 0; }
