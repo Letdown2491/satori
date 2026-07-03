@@ -137,7 +137,7 @@ function pollFormPart(d: PollDraft | null = null, inModal = false, status = '', 
 
 /** The picture (NIP-68 kind:20) compose form: a title + caption + the shared media strip (≥1 image required
  * to publish). Reuses the note's upload/attach + live-preview + @mention wiring; posts to /picture. Top-level
- * only, and lean in v1 (no reply/quote/schedule/relay-picker). A local draft is deferred too - unlike a note/
+ * only, and lean (no reply/quote/relay-picker; scheduling supported). A local draft is deferred too - unlike a note/
  * poll draft, it would have to carry already-uploaded Blossom blobs, which is more machinery than v1 needs. */
 function pictureFormPart(c: ComposeCtx, inModal = false): SafeHtml {
     return html`
@@ -157,9 +157,14 @@ function pictureFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         <div id="compose-preview" class="compose-preview" h-get="/compose/preview?type=picture"
           h-trigger="input from:#compose-text debounce:180, input from:#picture-title debounce:180, compose-media from:body" h-include="#picture-title, #compose-text, #media input[name=imeta]"
           h-target="#compose-preview" h-swap="inner" h-busy="false" h-push-url="false"></div>
+        <!-- Schedule: the .schedule-btn clock toggles this checkbox; the row reveals on :checked (pure CSS,
+             like the note composer). The "Schedule" button sends do=schedule to /picture. -->
+        <input type="checkbox" id="schedule-toggle" class="sched-check">
+        ${scheduleRow('/picture', raw(' h-target="body" h-swap="inner"'))}
         <div class="compose-foot">
           <label class="attach-btn" id="compose-attach" title="Add a photo" aria-label="Add a photo">${icon('image')}${composeFileInput()}</label>
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
+          <label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>
           <noscript><button type="submit" class="attach-go">Attach</button></noscript>
           <span class="compose-status">${c.status ?? ''}</span>
           <button type="submit" class="publish-btn" formaction="/picture" formmethod="post" h-target="body" h-swap="inner">Post picture</button>
@@ -429,14 +434,29 @@ export async function postPicture(ctx: Ctx): Promise<void> {
     const cwReason = (form.get('cw_reason') ?? '').trim();
     const fromModal = form.get('inmodal') === '1';
     if (imeta.length === 0) { redirect(ctx, '/compose?type=picture'); return; } // a picture needs at least one image
-    const opts = { title, content, imeta, contentWarning: cw ? (cwReason || '') : null };
+    // Schedule: sign now with created_at = the chosen time, hold on disk, the sweep broadcasts it then.
+    let scheduledAt = 0;
+    if (form.get('do') === 'schedule') {
+        const t = new Date((form.get('schedule') ?? '').trim()).getTime();
+        scheduledAt = isNaN(t) ? 0 : Math.floor(t / 1000);
+        if (scheduledAt <= Math.floor(Date.now() / 1000)) { sendFragment(ctx, html`<div class="notice error">Pick a time in the future to schedule.</div>`, {}, 400); return; }
+    }
+    const opts = { title, content, imeta, contentWarning: cw ? (cwReason || '') : null, ...(scheduledAt ? { createdAt: scheduledAt } : {}) };
     if (signsOnClient(s)) {
         const prepared = await signPicture(captureSigner, s.me, s.myRelays!, opts);
-        sendSignRequest(ctx, prepared.signed, fromModal ? '/picture/publish?inmodal=1' : '/picture/publish');
+        const q = new URLSearchParams();
+        if (fromModal) q.set('inmodal', '1');
+        if (scheduledAt) q.set('schedule', String(scheduledAt)); // store, don't publish
+        sendSignRequest(ctx, prepared.signed, q.toString() ? `/picture/publish?${q}` : '/picture/publish');
         return;
     }
     try {
         const prepared = await signPicture(s.signer!, s.me, s.myRelays!, opts);
+        if (scheduledAt) { // hold the signed picture for the sweep instead of publishing
+            if (!holdScheduled(s.me, prepared.signed, scheduledAt, prepared.writeTargets)) { sendFragment(ctx, html`<div class="notice error">${SCHEDULE_FULL_MSG}</div>`, {}, 400); return; }
+            redirect(ctx, '/drafts');
+            return;
+        }
         if (await tryUndoWindow(ctx, s, prepared, { fromModal })) return; // hold + countdown toast (helmjs)
         await publishSigned(s.pool, prepared);
     } catch (err) {
@@ -454,6 +474,18 @@ export async function postPicturePublish(ctx: Ctx): Promise<void> {
     const signed = await requireSigned(ctx, s.me, KIND_PICTURE, 'the picture');
     if (!signed) return;
     const fromModal = ctx.query.get('inmodal') === '1';
+    // Scheduled (nip07): the extension signed our future-dated picture; hold it for the sweep. Re-validate
+    // the client time server-side - a past/0/NaN value just falls through to publish-now.
+    const schedule = Number(ctx.query.get('schedule')) || 0;
+    if (schedule > Math.floor(Date.now() / 1000)) {
+        if (!holdScheduled(s.me, signed as NostrEvent, schedule, writeRelaysFor(s.myRelays))) {
+            sendFragment(ctx, html`<div class="notice error">${SCHEDULE_FULL_MSG}</div>`, {}, 400);
+            return;
+        }
+        sendFragment(ctx, page(draftsScreen(listScheduled(s.me), listDrafts(s.me)), chromeFor(ctx, s as Session & { me: string }, { active: 'drafts', title: 'Drafts' })),
+            { 'H-Push-Url': '/drafts', 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' });
+        return;
+    }
     const prepared: Prepared = { signed, isReply: false, writeTargets: writeRelaysFor(s.myRelays), inboxTargets: [] };
     if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, fromModal })) return; // nip07 = always JS
     try { await publishSigned(s.pool, prepared); } catch (err) {
