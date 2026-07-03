@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-07-04
 
 ### Added
 
@@ -13,31 +13,6 @@ All notable changes to this project are documented here. The format is based on
   your main feed but still have a Pictures timeline, or add a Custom NIPs timeline. It's the third
   checkbox ("Own timeline") next to Feeds and Profile. Articles is on by default, which is the old
   Longform tab, now just one of these timelines.
-
-### Changed
-
-- Renamed the "Appearance & Behavior" settings tab to "General".
-- Each Settings tab now has its own URL (`/settings/relays`, and so on), so a reload keeps you on the tab
-  you were on and you can bookmark or link straight to one. Before, every tab lived at `/settings` and a
-  reload snapped back to General.
-- Settings > Content is easier to use. The content-type toggles now save the moment you flip them (with a
-  quiet "Saved ✓"), so there's no Save button to hunt for; the keyword/regex filter keeps its own Save, since
-  you don't want that saved mid-typing. The type list shows the common types (Notes, Polls, Articles,
-  Pictures, Videos) with the niche kinds behind a "Show more" toggle, so it stays compact as more are added.
-- Minor visual polish across the settings tabs (tidier button sizing, a clearer "Show more" toggle).
-
-### Fixed
-
-- Recipes and other gated posts no longer show up as podcasts. Kind 54 is used both for podcast episodes
-  and, in the wild, for lightning-gated content with no audio (zap.cooking recipes and the like), so a
-  Podcasts timeline or feed could surface a recipe rendered as a playerless podcast. A kind:54 event is now
-  treated as a podcast only if it actually has an audio track; the rest are dropped from feeds, timelines,
-  profiles, and relay browsing.
-
-## [0.5.0] - 2026-07-04
-
-### Added
-
 - Per-post relay targeting on the Poll, Article, and Picture composers, matching Notes. A
   globe toggle reveals your write relays as chips (all checked by default) plus a one-off
   "wss://…" field, so you can send a post to a chosen subset of relays instead of all of
@@ -61,6 +36,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- Renamed the "Appearance & Behavior" settings tab to "General".
+- Each Settings tab now has its own URL (`/settings/relays`, and so on), so a reload keeps you on the tab
+  you were on and you can bookmark or link straight to one. Before, every tab lived at `/settings` and a
+  reload snapped back to General.
+- Settings > Content is easier to use. The content-type toggles now save the moment you flip them (with a
+  quiet "Saved ✓"), so there's no Save button to hunt for; the keyword/regex filter keeps its own Save, since
+  you don't want that saved mid-typing. The type list shows the common types (Notes, Polls, Articles,
+  Pictures, Videos) with the niche kinds behind a "Show more" toggle, so it stays compact as more are added.
+- Minor visual polish across the settings tabs (tidier button sizing, a clearer "Show more" toggle).
 - The following feed is faster to first paint and more complete on slow connections. The
   landing now paints on a tight deadline (whatever the fast relays return), while the
   off-feed new-notes poll searches harder, on an adaptive per-relay timeout learned from how
@@ -88,6 +72,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Recipes and other gated posts no longer show up as podcasts. Kind 54 is used both for podcast episodes
+  and, in the wild, for lightning-gated content with no audio (zap.cooking recipes and the like), so a
+  Podcasts timeline or feed could surface a recipe rendered as a playerless podcast. A kind:54 event is now
+  treated as a podcast only if it actually has an audio track; the rest are dropped from feeds, timelines,
+  profiles, and relay browsing.
 - Zap notifications are now validated instead of trusted. A kind:9735 receipt's zapper name and sats
   come from an embedded zap request that anyone can forge in a receipt addressed to you, so a fake
   "Jack zapped you 1,000,000 sats" was possible. The embedded request's signature is now verified and
