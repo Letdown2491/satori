@@ -15,14 +15,14 @@ import { commentRoot, KIND_COMMENT } from '../nostr/nip22.ts';
 import { isAddressable, tag1 } from '../nostr/tags.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
-import { normalizeRelayUrl, relayLabel } from '../data/relay-favorites.ts';
+import { normalizeRelayUrl } from '../data/relay-favorites.ts';
 import { decode } from 'nostr-tools/nip19';
 import { decodeNaddr } from '../nostr/nip19.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, raw, type SafeHtml } from '../html.ts';
 import { displayName } from '../render/util.ts';
 import { icon } from '../render/svg.ts';
-import { mediaItem, composeFileInput, undoToast, scheduleRow, composeTypes } from '../render/compose.ts';
+import { mediaItem, composeFileInput, undoToast, scheduleRow, composeTypes, relayPickerRow, relaysToggleBtn } from '../render/compose.ts';
 import { noteCard, composePreview } from '../render/note.ts';
 import { remainingSeconds, cancelPublish, commitIfDue, getHeld, getCommitted } from '../undo.ts';
 import { tryUndoWindow, sendReplyToThread, stayPutCloseModal, landOnFeed, CLOSE_MODAL_OOB } from './undo-window.ts';
@@ -90,12 +90,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         <!-- Relays (new notes only): the .relays-btn globe toggles this checkbox; the row reveals on :checked
              (pure CSS, like Schedule). All your write relays start checked; uncheck to post to a subset, or add
              a one-off relay. Resets every open (the form is re-rendered fresh). -->
-        ${c.isNew && c.relays?.length ? html`<input type="checkbox" id="relays-toggle" class="relays-check">
-        <div class="relays-row">
-          <div class="relays-row-head">Post to relays</div>
-          <div class="relay-chips">${c.relays.map((url) => html`<label class="relay-chip"><input type="checkbox" name="relay" value="${url}" checked>${relayLabel(url)}</label>`)}</div>
-          <input class="relay-custom-input" type="text" name="customrelay" placeholder="wss://… (one-off relay)" autocomplete="off" spellcheck="false">
-        </div>` : null}
+        ${c.isNew ? relayPickerRow(c.relays ?? []) : null}
         <div class="compose-media" id="media">${(c.media ?? []).map((m) => mediaItem(m))}</div>
         <!-- Live preview (above the foot): listens to the textarea (debounced) + attached
              media, rendered through the real note pipeline. h-busy="false" so typing never
@@ -108,7 +103,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
           ${c.reply ? html`<label class="attach-btn private-btn" for="private-toggle" title="Reply privately - only the author can read it" aria-label="Reply privately">${icon('lock')}</label>` : null}
           ${canSchedule ? html`<label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>` : null}
-          ${c.isNew && c.relays?.length ? html`<label class="attach-btn relays-btn" for="relays-toggle" title="Choose relays to post to" aria-label="Choose relays to post to">${icon('globe')}</label>` : null}
+          ${c.isNew && c.relays?.length ? relaysToggleBtn() : null}
           <!-- Zero-JS only: with JS the file auto-uploads on select, so this fallback
                button is hidden (noscript). It submits the form to its /upload action. -->
           <noscript><button type="submit" class="attach-go">Attach</button></noscript>
@@ -421,7 +416,7 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
  * `relay` fields) plus an optional validated one-off (`customrelay`). Anti-tamper: checked relays must be in
  * your write set. Empty selection → ALL write relays (never publish to nowhere). Replies/quotes send no relay
  * fields, so they fall through to the full write set here. `p` is the form (bunker) or the query (nip07). */
-function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string | null }, s: Session & { me: string }): string[] {
+export function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string | null }, s: Session & { me: string }): string[] {
     const all = writeRelaysFor(s.myRelays);
     const allowed = new Set(all);
     const picked = p.getAll('relay').filter((u) => allowed.has(u));
