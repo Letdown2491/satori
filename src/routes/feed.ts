@@ -368,7 +368,11 @@ export async function getNotesDot(ctx: Ctx): Promise<void> {
     // actually render (fillPage folds the same buffer), so the count can't promise notes the load then misses.
     const events = await fetchRoutedPage(s.pool, route, threshold + 5, undefined, kindsFor('following', s.me), seen, 'adaptive').catch(() => [] as NostrEvent[]);
     foldPending(s.me, 'following', events, false);
-    const count = pendingNew(s.me, 'following', seen).filter((e) => !muted.has(e.pubkey) && !filt.hide(e)).length;
+    // Count against the SAME boundary the landing uses (not raw `seen`), so the dot counts exactly the set the
+    // landing will surface as "new" - after a >7d absence `boundary` floors to 7d, and events older than that
+    // are history below the clearing, not "new". Keeps the dot honest against the load in the edge case too.
+    const boundary = followingBoundary(ctx, s.me);
+    const count = pendingNew(s.me, 'following', boundary).filter((e) => !muted.has(e.pubkey) && !filt.hide(e)).length;
     sendFragment(ctx, notesHome(count >= threshold));
 }
 

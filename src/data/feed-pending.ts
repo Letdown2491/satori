@@ -1,8 +1,9 @@
 // Per-(pubkey, tab) buffer of feed events the BACKGROUND backfill fetched, so the new-notes dot and the
-// click-to-load path read the SAME events. The landing paints fast on a tight budget (PAGE_MAX_WAIT); the
-// slow relays it couldn't wait for keep running on the adaptive budget and fold their late arrivals here.
-// Because the dot COUNTS this buffer and the load RENDERS this buffer, the dot can never promise a note the
-// load then misses - the "indicator fires but loads empty" bug is structurally impossible.
+// click-to-load path read the SAME events. The landing paints on the normal budget and can miss events on
+// slow relays; the off-feed dot poll re-fetches those on the GENEROUS adaptive budget (latency is invisible
+// there) and folds the late arrivals here. Because the dot COUNTS this buffer and the load RENDERS this
+// buffer, the dot can never promise a note the load then misses - the "indicator fires but loads empty" bug
+// is structurally impossible.
 //
 // Like the feed cache: RAW events (mutes/filters apply at count/render time, so a stale buffer stays
 // correct), keyed by pubkey (no cross-account bleed), in-memory + per-process. NOT persisted - it's
@@ -52,7 +53,8 @@ export function foldPending(me: string, tab: string, events: NostrEvent[], shown
 export function pendingNew(me: string, tab: string, seen: number): NostrEvent[] {
     const m = buf.get(key(me, tab));
     if (!m) return [];
+    const cutoff = Date.now() - TTL_MS; // a reader (the landing) may hit a key with no recent fold to prune it
     const out: NostrEvent[] = [];
-    for (const e of m.values()) if (!e.shown && e.ev.created_at > seen) out.push(e.ev);
+    for (const e of m.values()) if (!e.shown && e.at >= cutoff && e.ev.created_at > seen) out.push(e.ev);
     return out.sort((a, b) => b.created_at - a.created_at);
 }
