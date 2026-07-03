@@ -85,11 +85,18 @@ const flusher = debouncedFlush(() => {
 }, 5000);
 const scheduleFlush = (): void => flusher.schedule();
 
-/** Wipe the plaintext DM cache - called on logout so a different account never reads it. */
-export function clearDmCache(): void {
-    cache.clear();
-    listCache.clear();
-    try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, '{}', { mode: 0o600 }); } catch { /* ignore */ }
+/** Wipe the plaintext DM cache - called on logout so a different account never reads it. With `me`, wipes
+ * ONLY that account's entries (other signed-in users keep their cache); without, wipes everything. The disk
+ * file is rewritten synchronously so the departing account's plaintext doesn't linger at rest. */
+export function clearDmCache(me?: string): void {
+    if (me) {
+        for (const [id, e] of cache) if ('owner' in e && e.owner === me) cache.delete(id);
+        listCache.delete(me);
+    } else {
+        cache.clear();
+        listCache.clear();
+    }
+    try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, me ? JSON.stringify(Object.fromEntries(cache)) : '{}', { mode: 0o600 }); } catch { /* ignore */ }
 }
 
 // --- decrypt layers (through the bunker) ----------------------------------

@@ -711,13 +711,13 @@ export async function getNoteTick(ctx: Ctx): Promise<void> {
     if (!s) return;
     if (!ctx.isPartial) { redirect(ctx, '/'); return; } // a full nav → just go to the feed
     const token = ctx.query.get('token') ?? '';
-    const held = getHeld(token);
+    const held = getHeld(token, s.me);
     const remaining = remainingSeconds(token);
     if (remaining === null || !held) {
         // Gone. If it COMMITTED (published) - not undone - the poll raced the deadline publish (or
         // the backstop committed first), so re-render the confirmed reply card instead of wiping
         // the optimistic note. Undone tokens (and feed posts, no reply) just clear.
-        const c = getCommitted(token);
+        const c = getCommitted(token, s.me);
         if (c?.reply) { sendFragment(ctx, noteCard(c.signed, s.profiles, s, { hideParent: true, depth: 0, inThread: c.reply.inThread })); return; }
         sendFragment(ctx, html``);
         return;
@@ -742,6 +742,6 @@ export async function getNoteTick(ctx: Ctx): Promise<void> {
 export function postNoteUndo(ctx: Ctx): void {
     const s = requireLogin(ctx);
     if (!s) return;
-    cancelPublish(ctx.query.get('token') ?? '');
+    cancelPublish(ctx.query.get('token') ?? '', s.me);
     sendFragment(ctx, html``); // the undo button targets #undo-toast (outer) → removed
 }

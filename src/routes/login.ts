@@ -178,10 +178,13 @@ export async function postLoginNip07Verify(ctx: Ctx): Promise<void> {
 
 /** POST /logout - best-effort signer logout, drop the session + cookie. */
 export function postLogout(ctx: Ctx): void {
+    const me = ctx.session?.me; // scope the cache wipes to the departing account - never evict another signed-in user's
     if (ctx.session) destroySession(ctx.session.id);
-    clearDmCache(); // the decrypted-DM cache is plaintext at rest - never let the next account read it
-    clearNip07DmCache(); // and the nip07 in-memory decrypt/chain state
-    clearUserEmoji(); // the next account must not inherit this account's custom-emoji set
+    if (me) {
+        clearDmCache(me);      // this account's plaintext DMs at rest (never let the next account read them)
+        clearNip07DmCache(me); // and its nip07 in-memory decrypt state
+        clearUserEmoji(me);    // the next account must not inherit this account's custom-emoji set
+    }
     setCookie(ctx, SID, '', { maxAge: 0 });
     redirect(ctx, '/login');
 }

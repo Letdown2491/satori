@@ -9,6 +9,7 @@ import { engagementStats } from '../data/engagement-cache.ts';
 import { dmScanStats } from '../data/dm-metrics.ts';
 import { feedRecoveryStats } from '../data/feed-metrics.ts';
 import { requireLogin, chromeFor } from './common.ts';
+import { isOwner } from '../access.ts';
 import { readAppearance, writeAppearance, parseZapPresets, THEMES, type Theme } from '../theme.ts';
 import { prefToggle, PREF_FIELDS } from '../render/settings.ts';
 import { readForm, redirect, sendPage, sendFragment, type Ctx } from '../http.ts';
@@ -59,6 +60,9 @@ export async function postAppearance(ctx: Ctx): Promise<void> {
 export function getMetrics(ctx: Ctx): void {
     const s = requireLogin(ctx);
     if (!s) return;
+    // Owner-only: several counters below (dmScans/profileCache/avatarCache/feedRecovery) are process-wide
+    // volume metadata, so a trusted-group member must not read instance-wide activity. engagement is per-caller.
+    if (!isOwner(s.me)) { ctx.res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); ctx.res.end('Forbidden'); return; }
     ctx.res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     ctx.res.end(JSON.stringify({ profileCache: profileCacheStats(), avatarCache: avatarCacheStats(), engagement: engagementStats(s.me), dmScans: dmScanStats(), feedRecovery: feedRecoveryStats() }, null, 2));
 }

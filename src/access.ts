@@ -24,7 +24,8 @@ const toHex = (s: string): string | null => pubkeyFromBech(s.trim());
 const parseList = (env: string | undefined): string[] => (env ?? '').split(/[\s,]+/).map(toHex).filter((x): x is string => !!x);
 
 const OPEN = /^(1|true|yes|on)$/i.test(process.env.SATORI_OPEN ?? '');
-const envAllowed = new Set<string>([...parseList(process.env.SATORI_OWNER), ...parseList(process.env.SATORI_ALLOWED_PUBKEYS)]);
+const envOwners = new Set<string>(parseList(process.env.SATORI_OWNER)); // the OWNER(s), narrower than the allowed set
+const envAllowed = new Set<string>([...envOwners, ...parseList(process.env.SATORI_ALLOWED_PUBKEYS)]);
 
 let claimed: string | null = (() => {
     try { const j = JSON.parse(readFileSync(OWNER_FILE, 'utf8')) as { owner?: string }; return typeof j.owner === 'string' ? j.owner : null; }
@@ -68,6 +69,15 @@ export function adoptOwnerIfUnclaimed(existingPubkeys: string[]): void {
     if (OPEN || envAllowed.size > 0 || claimed || existingPubkeys.length === 0) return;
     claim(existingPubkeys[0]!);
     console.log(`[access] adopted existing session ${existingPubkeys[0]!.slice(0, 12)}… as owner`);
+}
+
+/** Is this pubkey the instance OWNER (SATORI_OWNER env, or the trust-on-first-login claimant)? NARROWER than
+ * the ALLOWED_PUBKEYS trusted group - gates owner-only surfaces like GET /metrics (process-wide volume
+ * counters that a group member shouldn't read). On a pure ALLOWED_PUBKEYS group with no SATORI_OWNER and no
+ * claim there is no owner, so those surfaces close to everyone until SATORI_OWNER is set. Default self-host
+ * (trust-on-first-login) has a claimant, so the single owner passes. */
+export function isOwner(pubkey: string): boolean {
+    return envOwners.has(pubkey) || claimed === pubkey;
 }
 
 /** One-line description for boot logging. */

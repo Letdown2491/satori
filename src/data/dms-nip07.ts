@@ -99,7 +99,17 @@ export function cachedThreadNip07(me: string, peer: string): DmMessage[] | null 
 }
 
 /** Wipe the in-memory nip07 DM state (logout, or account switch). */
-export function clearNip07DmCache(): void { mem.clear(); chains.clear(); listMem.clear(); }
+/** With `me`, drop only that account's decrypted entries (other signed-in users keep theirs); without, wipe
+ * all. `chains` are ephemeral per-send correlation keyed by a random id and TTL-pruned, so the scoped path
+ * leaves them (untagged by owner, harmless, self-expiring). */
+export function clearNip07DmCache(me?: string): void {
+    if (me) {
+        for (const [id, e] of mem) if ('owner' in e && e.owner === me) mem.delete(id);
+        listMem.delete(me);
+        return;
+    }
+    mem.clear(); chains.clear(); listMem.clear();
+}
 
 // --- ephemeral chain state (the wrap<->result correlation across round-trips) ---
 const CHAIN_TTL_MS = 2 * 60_000;

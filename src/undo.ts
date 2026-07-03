@@ -34,10 +34,11 @@ const COMMITTED_TTL = 60_000;
 
 /** A recently-committed token's confirmed event (+ reply context), or undefined if not committed
  * (or expired/undone). Lets the poll re-render the confirmed card instead of clearing it. */
-export function getCommitted(token: string): { signed: NostrEvent; reply?: { inThread: string } } | undefined {
+export function getCommitted(token: string, me?: string): { signed: NostrEvent; reply?: { inThread: string } } | undefined {
     const c = committed.get(token);
     if (!c) return undefined;
     if (Date.now() - c.at > COMMITTED_TTL) { committed.delete(token); return undefined; }
+    if (me && c.signed.pubkey !== me) return undefined; // only the author's session may read its own hold
     return c;
 }
 
@@ -89,8 +90,15 @@ export function resumeHolds(pool: Pool): void {
     if (resumed || dropped) console.log(`[undo] resumed ${resumed} held publish(es)${dropped ? `, dropped ${dropped} stale` : ''}`);
 }
 
-/** The held record (for the tick to re-render the pending/confirmed card). */
-export function getHeld(token: string): Held | undefined { return held.get(token); }
+/** The held record (for the tick to re-render the pending/confirmed card). Pass `me` (the session pubkey)
+ * to enforce ownership - the held event's own author is the owner, so another signed-in user holding a
+ * (secret) token still can't read/act on it. */
+export function getHeld(token: string, me?: string): Held | undefined {
+    const h = held.get(token);
+    if (!h) return undefined;
+    if (me && h.prepared.signed.pubkey !== me) return undefined;
+    return h;
+}
 
 /** Seconds remaining (ceil) for a held publish, or null if it's gone (committed/undone). */
 export function remainingSeconds(token: string): number | null {
@@ -100,7 +108,10 @@ export function remainingSeconds(token: string): number | null {
 
 /** Cancel a held publish (undo) - the event is discarded, never sent to a relay. Also clears any
  * committed memory (defensive: an undone token must never render as a confirmed card). */
-export function cancelPublish(token: string): void { held.delete(token); removeHold(token); committed.delete(token); }
+export function cancelPublish(token: string, me?: string): void {
+    if (me && held.get(token)?.prepared.signed.pubkey !== me) return; // only the author's session may undo its own hold
+    held.delete(token); removeHold(token); committed.delete(token);
+}
 
 /** If the window has elapsed, publish + drop the held event. Deletes BEFORE awaiting
  * the publish so a second concurrent tick can't double-publish. No-op if not due/gone. */

@@ -103,6 +103,19 @@ All notable changes to this project are documented here. The format is based on
   the existing guard on bare `npub1...`/`note1...` references; and a NIP-22 comment that quotes an event no
   longer risks mistaking that `q`-quoted event for its parent. (Found in NIP-27 / NIP-22 read-side audits.)
 
+### Security
+
+Isolation fixes that matter when more than one account uses the same instance, and groundwork for
+multi-tenancy:
+
+- Undo-window tokens are now tied to the session. A pending (about-to-publish) note can only be read
+  or cancelled by the account that created it, not by anyone else who holds its token.
+- Logging out clears only your own cached data. It used to wipe every signed-in account's decrypted-DM
+  and emoji caches; it now leaves other accounts' caches alone and rewrites the on-disk DM cache without
+  your messages.
+- `GET /metrics` is restricted to the instance owner. Its instance-wide counters were readable by any
+  logged-in user; now only the owner (`SATORI_OWNER`, or whoever first claimed the instance) can see them.
+
 ## [0.4.2] - 2026-07-02
 
 ### Added
