@@ -330,29 +330,33 @@ export function privacySection(): SafeHtml {
       </section>`;
 }
 
-/** The settings page, organised into CSS-only tabs (shared .tabset-* pattern):
- * General (display + feed/posting + media servers) · Filters · Privacy · Relays
- * (NIP-65 relays + NIP-17 DM relays) · Search. The Relays panel keeps the id
- * `panel-relays`/`set-relays` internally (the tab was renamed from "Network"). All panels
- * render (forms' partial swaps + radio tab-state persist). */
-export function settingsPage(v: SettingsView): SafeHtml {
-    return html`
-      <div class="settings-page view-pad tabset">
-        <input type="radio" name="settab" id="set-appearance" class="tabset-radio" checked>
-        <input type="radio" name="settab" id="set-backup" class="tabset-radio">
-        <input type="radio" name="settab" id="set-filters" class="tabset-radio">
-        <input type="radio" name="settab" id="set-privacy" class="tabset-radio">
-        <input type="radio" name="settab" id="set-relays" class="tabset-radio">
-        <input type="radio" name="settab" id="set-search" class="tabset-radio">
-        <div class="tabset-list" role="tablist">
-          <label for="set-appearance" class="tabset-tab" role="tab">General</label>
-          <label for="set-backup" class="tabset-tab" role="tab">Backup</label>
-          <label for="set-filters" class="tabset-tab" role="tab">Content</label>
-          <label for="set-privacy" class="tabset-tab" role="tab">Privacy</label>
-          <label for="set-relays" class="tabset-tab" role="tab">Relays</label>
-          <label for="set-search" class="tabset-tab" role="tab">Search</label>
-        </div>
-        <div class="tabset-panel panel-appearance" role="tabpanel" aria-label="General">
+/** The six settings tabs, one URL per tab (`/settings/<slug>`). The active tab is in the
+ * URL, not client-side radio state, so tabs are deep-linkable and reload-stable. */
+export type SettingsTab = 'general' | 'backup' | 'content' | 'privacy' | 'relays' | 'search';
+export const SETTINGS_TABS: { slug: SettingsTab; label: string }[] = [
+    { slug: 'general', label: 'General' },
+    { slug: 'backup', label: 'Backup' },
+    { slug: 'content', label: 'Content' },
+    { slug: 'privacy', label: 'Privacy' },
+    { slug: 'relays', label: 'Relays' },
+    { slug: 'search', label: 'Search' },
+];
+
+/** Only the active tab's sections. The Relays tab pairs NIP-65 + NIP-17 DM relays; the
+ * General tab folds appearance + media + feed/posting behaviour together. */
+function settingsPanel(v: SettingsView, active: SettingsTab): SafeHtml {
+    switch (active) {
+        case 'backup': return backupSection(v.backupStatus, v.backupErr);
+        case 'content': return contentTabPanel(v.contentPrefs, v.filters);
+        case 'privacy': return privacySection();
+        case 'relays': return html`
+          ${relaySection(v.relayDraft, v.relayStatus, v.relayErr)}
+          ${dmRelaySection(v.dmRelayDraft, v.dmRelayStatus, v.dmRelayErr)}`;
+        case 'search': return html`
+          ${searchRelayEditor('note', v.searchNoteDraft)}
+          ${searchRelayEditor('profile', v.searchProfileDraft)}`;
+        case 'general':
+        default: return html`
           ${appearanceSection(v.a)}
           <section>
             <h3>Media</h3>
@@ -360,21 +364,21 @@ export function settingsPage(v: SettingsView): SafeHtml {
             ${prefToggle('inlineVideo', v.a.inlineVideo)}
           </section>
           ${mediaSection(v.mediaDraft, v.a, v.mediaStatus, v.mediaErr)}
-          ${behaviorPanel(v.a)}
-        </div>
-        <div class="tabset-panel panel-backup" role="tabpanel" aria-label="Backup">${backupSection(v.backupStatus, v.backupErr)}</div>
-        <div class="tabset-panel panel-filters" role="tabpanel" aria-label="Content">${contentTabPanel(v.contentPrefs, v.filters)}</div>
-        <div class="tabset-panel panel-privacy" role="tabpanel" aria-label="Privacy">
-          ${privacySection()}
-        </div>
-        <div class="tabset-panel panel-relays" role="tabpanel" aria-label="Relays">
-          ${relaySection(v.relayDraft, v.relayStatus, v.relayErr)}
-          ${dmRelaySection(v.dmRelayDraft, v.dmRelayStatus, v.dmRelayErr)}
-        </div>
-        <div class="tabset-panel panel-search" role="tabpanel" aria-label="Search">
-          ${searchRelayEditor('note', v.searchNoteDraft)}
-          ${searchRelayEditor('profile', v.searchProfileDraft)}
-        </div>
+          ${behaviorPanel(v.a)}`;
+    }
+}
+
+/** The settings page: one URL per tab. The tab labels are `<a>` links - helmjs partial-swaps
+ * `#settings-page` (outer) and pushes the tab URL (with hover-prefetch); no-JS does a full-page
+ * nav to that tab. Only the ACTIVE tab's panel is rendered, so a reload / deep-link lands on it.
+ * Within-tab forms keep their own section-id partial swaps (each form is only present on its tab). */
+export function settingsPage(v: SettingsView, active: SettingsTab): SafeHtml {
+    const label = SETTINGS_TABS.find((t) => t.slug === active)?.label ?? 'General';
+    const tabs = SETTINGS_TABS.map((t) => html`<a href="/settings/${t.slug}" class="tabset-tab${t.slug === active ? ' active' : ''}"${t.slug === active ? raw(' aria-current="page"') : raw('')} role="tab" h-get h-target="#settings-page" h-swap="outer" h-push-url="true" h-prefetch="hover">${t.label}</a>`);
+    return html`
+      <div class="settings-page view-pad" id="settings-page">
+        <div class="tabset-list" role="tablist">${join(tabs)}</div>
+        <div class="tabset-panel" role="tabpanel" aria-label="${label}">${settingsPanel(v, active)}</div>
       </div>`;
 }
 

@@ -27,7 +27,7 @@ import { getYtCard, getYtThumb, getYtPlay, getYtPlaylistCard, getYtPlaylistPlay 
 import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postPicture, postPicturePublish, postPrivateReplySeal, postPrivateReplyWrap, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
 import { postAppearance, getWallet, postWallet, getMetrics } from './routes/pages.ts';
 import { getBookmarks, getMuted, getListDecrypt, postListDecrypted } from './routes/saved.ts';
-import { getSettings, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContentPrefs, postContentFilters } from './routes/settings.ts';
+import { getSettings, getSettingsTab, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContentPrefs, postContentFilters } from './routes/settings.ts';
 import { getProfileEdit, postProfile, postProfilePublish } from './routes/profile.ts';
 import { getNotifications, getNotifUnread } from './routes/notifications.ts';
 import { getMessages, getRequests, getMessagesDot, getNewMessage, getThread as getDmThread, getThreadOlder, postSend, postReadAll, getDmSync, getThreadSync, postDmSeals, postDmRumors, postDmLegacy, postSendSeal, postSendWrap } from './routes/dms.ts';
@@ -142,6 +142,11 @@ const ROUTES: Route[] = [
     route('POST', '/settings/media/edit', postMediaEdit),
     route('POST', '/settings/media', postMedia),
     route('POST', '/settings/media/publish', postMediaPublish),
+    // One URL per settings tab. Registered AFTER the specific 2-segment GET (/settings/relay-score)
+    // so that literal path wins the first-match scan; the 3-segment GETs (/settings/backup/export,
+    // /settings/privacy/status) never collide since match() requires an equal segment count. Unknown
+    // slugs redirect to /settings inside the handler, so a stray 2-segment GET is harmless.
+    route('GET', '/settings/:tab', getSettingsTab),
     route('GET', '/followers', getFollowers),
     route('GET', '/longform', getLongform),
     route('GET', '/timeline/:id', getTimeline),

@@ -5,7 +5,7 @@
 // here; nip07 sign-and-continues. A relay save also updates s.myRelays + invalidates
 // the routed-feed caches and persists, so the whole app uses the new list.
 
-import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, type SettingsView } from '../render/settings.ts';
+import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, SETTINGS_TABS, type SettingsView, type SettingsTab } from '../render/settings.ts';
 import { getFilters, saveFilters } from '../data/filters.ts';
 import { getContentPrefs, saveContentPrefs, timelineTypes, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { privacyMode, setPrivacyMode, isPrivacyMode } from '../privacy.ts';
@@ -113,7 +113,7 @@ export async function postContentPrefs(ctx: Ctx): Promise<void> {
         // after a full page reload.
         const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
         sendFragment(ctx, html`${savedTick(true)}${feedSwitch({ title: 'Settings', timelines, oob: true })}`);
-    } else redirect(ctx, '/settings');
+    } else redirect(ctx, '/settings/content');
 }
 
 /** POST /settings/content-filters - the EXPLICIT-Save content-filtering form: keyword/regex patterns + the
@@ -131,18 +131,35 @@ export async function postContentFilters(ctx: Ctx): Promise<void> {
     });
     saveFilters(s.me, { patterns, feed: flags('feed'), profile: flags('profile') });
     if (ctx.isPartial) sendFragment(ctx, contentFiltersForm(getFilters(s.me), 'Saved ✓'));
-    else redirect(ctx, '/settings');
+    else redirect(ctx, '/settings/content');
 }
 
-async function sendFullPage(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView>): Promise<void> {
-    sendPage(ctx, settingsPage(await buildView(ctx, s, ov)), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
+/** A zero-JS full-page re-render, landing on `active` so a no-JS save (or nav) stays on its
+ * own tab instead of snapping back to General. `active` defaults to General (the bare /settings). */
+async function sendFullPage(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView>, active: SettingsTab = 'general'): Promise<void> {
+    sendPage(ctx, settingsPage(await buildView(ctx, s, ov), active), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
 }
 
-/** GET /settings - the settings page (Appearance + Relays + Media servers). */
+/** GET /settings - the settings page, General tab (the bare entry point). */
 export async function getSettings(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    await sendFullPage(ctx, s, {});
+    await sendFullPage(ctx, s, {}, 'general');
+}
+
+/** GET /settings/:tab - one URL per tab (deep-linkable, reload-stable). Unknown slugs redirect to
+ * /settings. On the helmjs path (a tab-link partial) it swaps just #settings-page; no-JS renders the
+ * full page on that tab. The deeper GETs (/settings/backup/export, /settings/privacy/status) are
+ * 3-segment routes registered before this 2-segment `:tab`, so they never fall through to here. */
+export async function getSettingsTab(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const slug = ctx.params.tab;
+    const tab = SETTINGS_TABS.find((t) => t.slug === slug)?.slug;
+    if (!tab) { redirect(ctx, '/settings'); return; }
+    const view = await buildView(ctx, s, {});
+    if (ctx.isPartial) sendFragment(ctx, settingsPage(view, tab));
+    else sendPage(ctx, settingsPage(view, tab), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
 }
 
 /** GET /settings/relay-score?url= - lazily resolve a relay's trust assertion (kind 30385, read off
@@ -187,7 +204,7 @@ export async function postPrivacy(ctx: Ctx): Promise<void> {
         sendFragment(ctx, html`${privacySection()}${changed ? accountMenu(meFor(s), true) : html``}`);
         return;
     }
-    await sendFullPage(ctx, s, {});
+    await sendFullPage(ctx, s, {}, 'privacy');
 }
 
 /** GET /settings/privacy/status - the warming indicator's poller. Drives the relay
@@ -196,7 +213,7 @@ export async function postPrivacy(ctx: Ctx): Promise<void> {
 export async function getPrivacyStatus(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
-    if (!ctx.isPartial) { redirect(ctx, '/settings'); return; }
+    if (!ctx.isPartial) { redirect(ctx, '/settings/privacy'); return; }
     const read = s.myRelays?.read ?? [];
     if (ctx.query.get('dismiss') || privacyMode() === 'off' || !read.length) { sendFragment(ctx, html``); return; } // remove the widget
     s.pool.warm(read);              // drive the warm-up (idempotent)
@@ -212,7 +229,7 @@ export async function getPrivacyStatus(ctx: Ctx): Promise<void> {
 
 async function respondRelays(ctx: Ctx, s: Session & { me: string }, draft: RelayEntry[], status?: string, err = false): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, relaySection(draft, status, err));
-    else await sendFullPage(ctx, s, { relayDraft: draft, relayStatus: status, relayErr: err });
+    else await sendFullPage(ctx, s, { relayDraft: draft, relayStatus: status, relayErr: err }, 'relays');
 }
 
 /** After a relay list changes: invalidate routed feeds (their outbox routing is
@@ -288,7 +305,7 @@ function applyNewDmRelays(s: Session & { me: string }): void {
 
 async function respondDmRelays(ctx: Ctx, s: Session & { me: string }, draft: string[], status?: string, err = false): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, dmRelaySection(draft, status, err));
-    else await sendFullPage(ctx, s, { dmRelayDraft: draft, dmRelayStatus: status, dmRelayErr: err });
+    else await sendFullPage(ctx, s, { dmRelayDraft: draft, dmRelayStatus: status, dmRelayErr: err }, 'relays');
 }
 
 /** POST /settings/dm-relays/edit - add (newurl) / remove (op="remove:<url>") a row. */
@@ -349,7 +366,7 @@ export async function postDmRelaysPublish(ctx: Ctx): Promise<void> {
 
 async function respondBackup(ctx: Ctx, s: Session & { me: string }, status?: string, err = false): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, backupSection(status, err), err ? PLACE_BACKUP : undefined);
-    else await sendFullPage(ctx, s, { backupStatus: status, backupErr: err });
+    else await sendFullPage(ctx, s, { backupStatus: status, backupErr: err }, 'backup');
 }
 
 /** Publish each re-signed list to its relays (write + indexers, + listed DM relays). */
@@ -459,7 +476,7 @@ const searchKind = (form: URLSearchParams): 'note' | 'profile' => (form.get('kin
 
 async function respondSearch(ctx: Ctx, s: Session & { me: string }, kind: 'note' | 'profile', urls: string[], status?: string): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, searchRelayEditor(kind, urls, status));
-    else await sendFullPage(ctx, s, kind === 'note' ? { searchNoteDraft: urls } : { searchProfileDraft: urls });
+    else await sendFullPage(ctx, s, kind === 'note' ? { searchNoteDraft: urls } : { searchProfileDraft: urls }, 'search');
 }
 
 /** POST /settings/search/edit - add (newurl) / remove (op="remove:<url>") a row. */
@@ -497,7 +514,7 @@ export async function postSearchSave(ctx: Ctx): Promise<void> {
 
 async function respondMedia(ctx: Ctx, s: Session & { me: string }, draft: string[], status?: string, err = false): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, mediaSection(draft, readAppearance(ctx), status, err));
-    else await sendFullPage(ctx, s, { mediaDraft: draft, mediaStatus: status, mediaErr: err });
+    else await sendFullPage(ctx, s, { mediaDraft: draft, mediaStatus: status, mediaErr: err }, 'general');
 }
 
 /** POST /settings/media/edit - add / remove a Blossom server row. */

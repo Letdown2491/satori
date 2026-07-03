@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format is based on
 ### Changed
 
 - Renamed the "Appearance & Behavior" settings tab to "General".
+- Each Settings tab now has its own URL (`/settings/relays`, and so on), so a reload keeps you on the tab
+  you were on and you can bookmark or link straight to one. Before, every tab lived at `/settings` and a
+  reload snapped back to General.
 - Settings > Content is easier to use. The content-type toggles now save the moment you flip them (with a
   quiet "Saved ✓"), so there's no Save button to hunt for; the keyword/regex filter keeps its own Save, since
   you don't want that saved mid-typing. The type list shows the common types (Notes, Polls, Articles,

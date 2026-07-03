@@ -1124,7 +1124,7 @@
         .tabset { position: relative; }
         .tabset-radio { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
         .tabset-list { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; flex-wrap: wrap; }
-        .tabset-tab { padding: 9px 14px; margin-bottom: -1px; cursor: pointer; color: var(--muted); font-weight: 600; font-size: 14px; border-bottom: 2px solid transparent; display: inline-flex; align-items: center; gap: 6px; }
+        .tabset-tab { padding: 9px 14px; margin-bottom: -1px; cursor: pointer; color: var(--muted); font-weight: 600; font-size: 14px; text-decoration: none; border-bottom: 2px solid transparent; display: inline-flex; align-items: center; gap: 6px; }
         .tabset-count { font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--text) 8%, transparent); border-radius: 9px; padding: 1px 7px; }
         .tabset-panel { display: none; }
         /* Search tabs instance */
@@ -1134,25 +1134,12 @@
         #stab-notes:checked ~ .tabset-list label[for="stab-notes"] { color: var(--text); border-bottom-color: var(--accent); }
         #stab-people:focus-visible ~ .tabset-list label[for="stab-people"],
         #stab-notes:focus-visible ~ .tabset-list label[for="stab-notes"] { outline: 2px solid var(--accent); outline-offset: 2px; }
-        /* Settings tabs instance */
-        #set-appearance:checked ~ .panel-appearance,
-        #set-filters:checked ~ .panel-filters,
-        #set-backup:checked ~ .panel-backup,
-        #set-relays:checked ~ .panel-relays,
-        #set-privacy:checked ~ .panel-privacy,
-        #set-search:checked ~ .panel-search { display: block; }
-        #set-appearance:checked ~ .tabset-list label[for="set-appearance"],
-        #set-backup:checked ~ .tabset-list label[for="set-backup"],
-        #set-filters:checked ~ .tabset-list label[for="set-filters"],
-        #set-relays:checked ~ .tabset-list label[for="set-relays"],
-        #set-privacy:checked ~ .tabset-list label[for="set-privacy"],
-        #set-search:checked ~ .tabset-list label[for="set-search"] { color: var(--text); border-bottom-color: var(--accent); }
-        #set-appearance:focus-visible ~ .tabset-list label[for="set-appearance"],
-        #set-backup:focus-visible ~ .tabset-list label[for="set-backup"],
-        #set-filters:focus-visible ~ .tabset-list label[for="set-filters"],
-        #set-relays:focus-visible ~ .tabset-list label[for="set-relays"],
-        #set-privacy:focus-visible ~ .tabset-list label[for="set-privacy"],
-        #set-search:focus-visible ~ .tabset-list label[for="set-search"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+        /* Settings tabs instance: one URL per tab (link-driven, not radio-driven). Only the active
+           tab's panel is rendered server-side, so it just needs to show; the active tab is the
+           <a class="tabset-tab active">, the tab links are real anchors so :focus-visible is theirs. */
+        .settings-page .tabset-panel { display: block; }
+        .settings-page .tabset-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+        .settings-page .tabset-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .search-people { list-style: none; padding: 0; margin: 0; }
         .search-person { border-bottom: 1px solid var(--border); }
         .search-person-link { display: flex; gap: 12px; align-items: flex-start; padding: 12px 2px; text-decoration: none; color: inherit; }
