@@ -332,6 +332,9 @@
         .page-bar-action { margin-left: auto; display: inline-flex; align-items: center; }
         .settings-page section { padding: 16px 0; border-top: 1px solid var(--border); }
         .settings-page section:first-child { border-top: none; }
+        /* Content tab's Save is far below a long grid + the filtering section, so pin it to the bottom of the
+           viewport while you scroll - always visible, so it's clear changes need saving. Opaque bg over content. */
+        .content-save { position: sticky; bottom: 0; z-index: 5; margin-top: 12px; padding: 12px 0; background: var(--bg); border-top: 1px solid var(--border); }
         .settings-page h3 { font-size: 14px; margin: 0 0 10px; font-weight: 700; }
         .settings-page h3 .hint { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
         /* The network editors (relays / media servers) stack vertically - overriding

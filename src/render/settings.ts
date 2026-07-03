@@ -186,7 +186,7 @@ export function contentTabPanel(prefs: ContentPrefs, f: FeedFilters, status?: st
         <form action="/settings/content" method="post" h-post h-target="#content-tab" h-swap="outer">
           ${showKindsFields(prefs)}
           ${filterFields(f)}
-          <div class="row-controls">
+          <div class="row-controls content-save">
             <button type="submit" class="busy-btn${status ? ' saved' : ''}"><span class="btn-label">Save</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
           </div>
         </form>
