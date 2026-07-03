@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Per-post relay targeting on the Poll, Article, and Picture composers, matching Notes. A
+  globe toggle reveals your write relays as chips (all checked by default) plus a one-off
+  "wss://…" field, so you can send a post to a chosen subset of relays instead of all of
+  them. Empty selection still means all your write relays (never nowhere). Works on both
+  signing families (extension and bunker).
+- Scheduling on the Picture composer: pick a future time and the daemon broadcasts the
+  picture then, even with your browser closed, via the same sweep that already handles
+  scheduled notes and articles. (Polls stay non-schedulable by design: a poll's end time is
+  baked in when it's signed, so a scheduled poll would arrive already counting down.)
+- A page `<meta name="description">`.
+
+### Changed
+
+- The following feed is faster to first paint and more complete on slow connections. The
+  landing now paints on a tight deadline (whatever the fast relays return), while the
+  off-feed new-notes poll searches harder, on an adaptive per-relay timeout learned from how
+  each relay actually responds, and folds any slow-relay notes it catches into a buffer that
+  the "N new notes" indicator counts and the feed then renders. So a followed author whose
+  notes live on a slow or laggy relay surfaces within seconds instead of being dropped, and
+  the indicator can no longer promise notes the feed then fails to load. Observation-only
+  groundwork for this shipped in 0.4.2; this turns it on. (The per-relay timeout constants
+  are still being tuned against real usage data.)
+- Compose UI consistency across all four composers: the action bars are now a matching
+  rounded card; the schedule and relay-picker sections carry their own panel background so
+  they look the same in the in-feed modal and on the full `/compose` page; the type pills
+  (Note · Picture · Poll · Article) get consistent spacing off the first field; and the
+  Article composer's section spacing, button order, and foot now match the other tabs. The
+  Article schedule (clock) icon also picks up the same muted color as the others.
+
 ## [0.4.2] - 2026-07-02
 
 ### Added
