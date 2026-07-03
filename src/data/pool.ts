@@ -7,7 +7,7 @@ import type { Filter } from 'nostr-tools';
 import { toPoolUrls, fromPoolUrl } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
 import { recordSeen } from './seen-relays.ts';
-import { recordLatency } from './relay-latency.ts';
+import { recordLatency, relayBudget } from './relay-latency.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 
 /** True if at least one relay accepted a publish (a settled fan-out succeeds on any acceptance). Lives
@@ -25,9 +25,17 @@ const normUrl = (u: string) => u.replace(/\/+$/, '').toLowerCase();
 // whatever arrived by the deadline instead of waiting for EVERY relay to EOSE.
 // Healthy relays answer well under these, so a complete result is the norm - the
 // cap only bites when a relay is actually sick (exactly when you want to cut it).
-const LIST_MAX_WAIT = 4000;     // multi-event queries (feed/thread/profile/lists)
+const LIST_MAX_WAIT = 4000;     // multi-event queries (feed/thread/profile/lists); also the DEFAULT/cold-start budget
 const GET_MAX_WAIT = 6000;      // single-event get: null = a broken page, so more rope (resolves instantly when found)
 const CONNECT_MAX_WAIT = 4000;  // don't chase an unreachable relay's socket longer than this
+// Adaptive per-relay budgets (feed reliability). `budget:'page'` = a TIGHT cap for the latency-critical first
+// paint (the new-notes dot + scroll backfill what a fast paint misses). `budget:'adaptive'` scales a single
+// relay's cap from LIST_MAX_WAIT up to *_CEILING by how budget-starved its latency profile says it is - used
+// where latency is free/tolerable (the background dot poll, older-page scroll). Tunable against real data.
+const PAGE_MAX_WAIT = 2000;     // first-paint hard cap (fast); slow relays fold in via the dot, not the paint
+const LIST_CEILING = 8000;      // adaptive max (aggregator/runaway guard) for a single starved relay
+const TOR_PAGE_MAX_WAIT = 6000;
+const TOR_LIST_CEILING = 15000;
 // Privacy Mode (Tor): building a Tor circuit cold takes seconds, well past the direct
 // caps - so a COLD query (e.g. right after toggling on / recycling) would time out and
 // return empty (a blank feed) before the relays even connect. Give Tor queries much
@@ -89,9 +97,14 @@ export class Pool {
     // straggler relay adds nothing a fast one didn't. NEVER use it for non-redundant fetches (gift-wrapped
     // DMs/drafts live on one relay set; a read-modify-write of your own lists must see every version) -
     // there an early resolve silently DROPS events. That asymmetry is why complete is the default.
-    query(relays: string[], filter: Filter, opts: { fast?: boolean; profile?: boolean } = {}): Promise<NostrEvent[]> {
+    query(relays: string[], filter: Filter, opts: { fast?: boolean; profile?: boolean; budget?: 'page' | 'adaptive' } = {}): Promise<NostrEvent[]> {
         const tor = relaysViaTor();
-        const maxWait = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
+        const base = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
+        // maxWait = the hard cap. Default (no budget) keeps today's fixed cap. 'page' = a tight first-paint cap;
+        // 'adaptive' (single relay only - the outbox fan-out) scales per-relay from the profile toward the ceiling.
+        const maxWait = opts.budget === 'page' ? (tor ? TOR_PAGE_MAX_WAIT : PAGE_MAX_WAIT)
+            : opts.budget === 'adaptive' && relays.length === 1 ? relayBudget(relays[0]!, base, tor ? TOR_LIST_CEILING : LIST_CEILING)
+            : base;
         const quiet = tor ? 1800 : 700;
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
         return new Promise<NostrEvent[]>((resolve) => {

@@ -13,6 +13,11 @@ import { jsonStore, debouncedFlush } from './json-store.ts';
 
 const MAX_RELAYS = 500; // LRU cap so the file can't grow without bound
 const ALPHA = 0.3;      // EWMA weight for a new sample (moderate smoothing over the day's queries)
+// Adaptive-budget knobs (Step 4 tunes these against real data). DEFAULT is the caller's `base` (today's fixed
+// cap = also cold-start/low-confidence). We only spend MORE than base on a relay we've LEARNED is starved.
+const N_MIN = 5;         // min samples before the profile is trusted enough to adapt off the default
+const TRUNC_LO = 0.2;    // truncation rate below which the base cap already finishes it (quiet/EOSE)
+const PROLIFIC_EV = 100; // avg events/query above which a truncating relay is a prolific TAIL (scroll recovers it), not starved
 const FILE = process.env.SATORI_RELAY_LATENCY_FILE || join(process.cwd(), '.data', 'relay-latency.json');
 
 const norm = (u: string): string => u.replace(/\/+$/, '').toLowerCase();
@@ -51,4 +56,17 @@ export function recordLatency(relay: string, ms: number, truncated: boolean, eve
     stats.set(url, { ms: Math.round(ms2), ev: Math.round(ev2), n: (prev?.n ?? 0) + 1, trunc: (prev?.trunc ?? 0) + (truncated ? 1 : 0), at: Date.now() });
     while (stats.size > MAX_RELAYS) stats.delete(stats.keys().next().value as string);
     flusher.schedule();
+}
+
+/** Adaptive hard-cap (ms) for a single relay, scaling from `base` toward `ceiling` by how budget-starved its
+ * profile says it is. Returns `base` (today's behavior) when there's not enough evidence, when it rarely
+ * truncates (finishes on its own), or when it's a PROLIFIC tail (high `ev` - waiting only fetches older events
+ * that scroll-pagination recovers). Only a relay that truncates a lot while delivering LITTLE (connect/slow
+ * delivery) earns extra rope, proportional to its truncation rate. Pure profile read; cheap per query. */
+export function relayBudget(relay: string, base: number, ceiling: number): number {
+    const s = stats.get(norm(relay));
+    if (!s || s.n < N_MIN) return base;                          // not enough evidence yet → default
+    const truncRate = s.trunc / s.n;
+    if (truncRate < TRUNC_LO || s.ev >= PROLIFIC_EV) return base; // finishes on its own, or prolific tail
+    return Math.min(ceiling, Math.round(base + truncRate * (ceiling - base)));
 }
