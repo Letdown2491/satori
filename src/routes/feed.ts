@@ -20,6 +20,7 @@ import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.t
 import { ensureLists, mutedPubkeys, PRIVATE_KINDS, actionKind } from '../actions.ts';
 import { getFilters, compileFilters } from '../data/filters.ts';
 import { cachedFeed, putCachedFeed } from '../data/feed-cache.ts';
+import { foldPending, pendingNew } from '../data/feed-pending.ts';
 import { ensureLikes } from '../likes.ts';
 import { ensureEngaged, engageTarget } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
@@ -114,9 +115,9 @@ const srcKinds = (src: FeedSource, me: string): number[] => (isRelay(src) ? prof
 function srcSentinel(src: FeedSource, until: number): SafeHtml {
     return isRelay(src) ? pagerSentinel(`/relay?r=${encodeURIComponent(src.relay)}&until=${until}`) : sentinel(src.tab, until);
 }
-async function srcFetch(s: Session & { me: string }, src: FeedSource, until?: number, limit?: number): Promise<NostrEvent[]> {
+async function srcFetch(s: Session & { me: string }, src: FeedSource, until?: number, limit?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     if (isRelay(src)) return fetchRelayPage(s.pool, src.relay, limit ?? PAGE, until, srcKinds(src, s.me)).catch(() => [] as NostrEvent[]);
-    return fetchPage(s, src.tab, until, limit);
+    return fetchPage(s, src.tab, until, limit, budget);
 }
 
 /** The outbox route for a tab (cached on the session). */
@@ -130,9 +131,9 @@ async function routeFor(s: Session & { me: string }, tab: FeedTab): Promise<Map<
     return s.followsRoute.route;
 }
 
-async function fetchPage(s: Session & { me: string }, tab: FeedTab, until?: number, limit?: number): Promise<NostrEvent[]> {
+async function fetchPage(s: Session & { me: string }, tab: FeedTab, until?: number, limit?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     const route = await routeFor(s, tab);
-    return fetchRoutedPage(s.pool, route, limit ?? pageSize(tab), until, kindsFor(tab, s.me)).catch(() => [] as NostrEvent[]);
+    return fetchRoutedPage(s.pool, route, limit ?? pageSize(tab), until, kindsFor(tab, s.me), undefined, budget).catch(() => [] as NostrEvent[]);
 }
 
 /** Infinite-scroll sentinel for a tab (delegates to the shared pager sentinel). */
@@ -154,7 +155,7 @@ const OVERFETCH = 3;  // when filtering, the first window pulls this many × tar
  * (the un-consumed tail is simply re-read by the next window). Returns the visible notes, the raw
  * events consumed (for the list-primer's private-list check), a `more` sentinel, and the newest
  * raw timestamp (the notes-dot high-water). */
-async function fillPage(s: Session & { me: string }, src: FeedSource, until?: number): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number }> {
+async function fillPage(s: Session & { me: string }, src: FeedSource, until?: number, extra?: NostrEvent[], budget?: 'page' | 'adaptive'): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number }> {
     // Load the lists CONCURRENTLY with the first page fetch, not serially before it: mute is only
     // needed once the page returns (filtering), bookmark/pin only at render. Awaited inside the loop
     // after the fetch (so it overlaps it) - saves ~1 round-trip on a cold paint (a full ~12s on Tor).
@@ -179,9 +180,9 @@ async function fillPage(s: Session & { me: string }, src: FeedSource, until?: nu
             // Cache only a NON-EMPTY result: a transient empty (e.g. a relay returning nothing on a cold
             // pooled connection) must not get cached, or it'd blank the tab for the whole TTL. An empty
             // page just falls through to a fresh fetch on the next visit.
-            else { page = await srcFetch(s, src, cursor, lim); if (page.length) putCachedFeed(s.me, srcKey(src), page); }
+            else { page = await srcFetch(s, src, cursor, lim, budget); if (page.length) putCachedFeed(s.me, srcKey(src), page); }
         } else {
-            page = await srcFetch(s, src, cursor, lim);
+            page = await srcFetch(s, src, cursor, lim, budget);
         }
         if (i === 0) { await listsReady; muted = mutedPubkeys(s); } // lists overlapped the fetch above; ready before any keep()
         if (!page.length) { exhausted = true; break; }
@@ -192,6 +193,19 @@ async function fillPage(s: Session & { me: string }, src: FeedSource, until?: nu
             if (keep(e)) { visible.push(e); if (visible.length >= target) break; }
         }
         if (page.length < lim) { exhausted = true; break; } // short window → end of the feed
+    }
+    // Fold in `extra` (the background backfill buffer for the following landing): late-arriving events the
+    // fast paint's relays didn't deliver in time. Merge post-loop so they ride the SAME keep()/enrich path -
+    // dedup against what we already have, filter (mute/content), then re-sort newest-first. This is what makes
+    // the new-notes dot and the load consistent: the dot counted these, and here they actually render.
+    if (extra?.length) {
+        const have = new Set(allRaw.map((e) => e.id));
+        for (const e of extra) {
+            if (have.has(e.id) || !keep(e)) continue;
+            allRaw.push(e); visible.push(e);
+        }
+        visible.sort((a, b) => b.created_at - a.created_at);
+        if (visible.length) newestRaw = Math.max(newestRaw, visible[0]!.created_at); // high-water covers folded events
     }
     // Enrich only what we render (not the filtered-out raw). prepareEvents fans the reply-presence
     // prefetch out per kind (notes warm by id, articles by naddr) and hydrates the replier avatars,
@@ -266,8 +280,13 @@ function followingBoundary(ctx: Ctx, me: string): number {
  * past it), then a clearing. Reaching the clearing marks you caught up (its intersect); "View older posts"
  * loads the next batch on a deliberate tap. Shared by the route and the nip07 list-primer re-render. */
 async function followingFirstView(s: Session & { me: string }, boundary: number): Promise<{ inner: SafeHtml; newestTs: number; events: NostrEvent[] }> {
-    const { visible, allRaw, more, newestRaw } = await fillPage(s, { tab: 'following' }, undefined);
+    // Fold in the background-backfill buffer (slow-relay events the dot found since the fast paint) so the
+    // landing SHOWS exactly what the dot COUNTED - fillPage's keep() applies mute/content filters to them.
+    const { visible, allRaw, more, newestRaw } = await fillPage(s, { tab: 'following' }, undefined, pendingNew(s.me, 'following', boundary), 'page');
     const newVisible = visible.filter((e) => e.created_at > boundary);
+    // Mark everything we're showing as `shown` so the next dot poll (which re-fetches with the adaptive budget)
+    // doesn't recount on-screen notes as "new".
+    foldPending(s.me, 'following', newVisible, true);
     const reached = visible.some((e) => e.created_at <= boundary) || more === null; // saw all the new in one window
     const moreExists = more !== null || visible.length > newVisible.length; // more pages, or older notes held in this window
     const contFrom = (newVisible.length ? newVisible[newVisible.length - 1]!.created_at : newestRaw) - 1;
@@ -343,8 +362,17 @@ export async function getNotesDot(ctx: Ctx): Promise<void> {
     // near the threshold (+slack for muted) - instead of pulling a full timeline page every 60s.
     // Content-filtered notes don't count toward the dot (they won't show in the feed anyway).
     const route = await routeFor(s, 'following');
-    const events = await fetchRoutedPage(s.pool, route, threshold + 5, undefined, kindsFor('following', s.me), seen).catch(() => [] as NostrEvent[]);
-    const count = events.filter((e) => e.created_at > seen && !muted.has(e.pubkey) && !filt.hide(e)).length;
+    // Background poll: latency is invisible off-feed, so fetch on the GENEROUS adaptive budget - it catches
+    // the slow / connect-laggard relays the fast landing paint can't wait for - and fold the result into the
+    // pending buffer. Counting the BUFFER (not just this fetch) means the dot reflects what the landing will
+    // actually render (fillPage folds the same buffer), so the count can't promise notes the load then misses.
+    const events = await fetchRoutedPage(s.pool, route, threshold + 5, undefined, kindsFor('following', s.me), seen, 'adaptive').catch(() => [] as NostrEvent[]);
+    foldPending(s.me, 'following', events, false);
+    // Count against the SAME boundary the landing uses (not raw `seen`), so the dot counts exactly the set the
+    // landing will surface as "new" - after a >7d absence `boundary` floors to 7d, and events older than that
+    // are history below the clearing, not "new". Keeps the dot honest against the load in the edge case too.
+    const boundary = followingBoundary(ctx, s.me);
+    const count = pendingNew(s.me, 'following', boundary).filter((e) => !muted.has(e.pubkey) && !filt.hide(e)).length;
     sendFragment(ctx, notesHome(count >= threshold));
 }
 

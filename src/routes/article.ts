@@ -9,6 +9,7 @@ import { signArticle, publishSigned, captureSigner, type ArticleFields } from '.
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import { articleReader } from '../render/note.ts';
 import { articleComposePage, draftsView, draftsScreen, draftsSyncShell, type ArticleComposeCtx } from '../render/article-compose.ts';
+import { chosenTargets, appendRelayTargets, parseScheduleAt } from '../actions.ts';
 import { titleCount } from '../render/layout.ts';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type ArticleDraft, type Draft } from '../drafts.ts';
 import { holdScheduled, SCHEDULE_FULL_MSG, listScheduled } from '../data/scheduled.ts';
@@ -60,27 +61,33 @@ export async function postArticle(ctx: Ctx): Promise<void> {
     // to the draft), so we skip the draft-wrap retire dance here.
     let scheduledAt = 0;
     if (form.get('do') === 'schedule') {
-        const t = new Date((form.get('schedule') ?? '').trim()).getTime();
-        scheduledAt = isNaN(t) ? 0 : Math.floor(t / 1000);
-        if (!scheduledAt || scheduledAt <= Math.floor(Date.now() / 1000)) { back('Pick a time in the future to schedule.'); return; }
+        const r = parseScheduleAt(form.get('schedule') ?? '');
+        if ('error' in r) { back('Pick a time in the future to schedule.'); return; }
+        scheduledAt = r.at;
     }
     const fields: ArticleFields = scheduledAt ? { ...f, createdAt: scheduledAt } : f;
 
     // nip07: build the exact 30023 template; the extension signs it. If this draft was synced,
     // batch-sign the article + a BLANK wrap (one prompt) so publishing also retires the draft wrap
     // (else it would resurrect on the next /drafts load). Scheduling keeps the draft, so it skips that.
+    // nip07 forwards the relay-picker selection on the publish-continuation URL (bunker reads the form
+    // directly below); the continuation re-validates it centrally via chosenTargets.
     if (signsOnClient(s)) {
         const prepared = await signArticle(captureSigner, s.me, s.myRelays!, fields);
+        const q = new URLSearchParams({ d: f.identifier });
+        appendRelayTargets(q, form);
         if (scheduledAt) {
-            sendSignRequest(ctx, prepared.signed, `/article/publish?d=${encodeURIComponent(f.identifier)}&schedule=${scheduledAt}`);
+            q.set('schedule', String(scheduledAt));
+            sendSignRequest(ctx, prepared.signed, `/article/publish?${q}`);
             return;
         }
         const draft = getDraft(s.me, f.identifier);
         if (draft?.synced) {
             const blank = draftWrapTemplate(s.me, f.identifier, draftToEvent(draft, s.me).kind, '');
-            sendSignRequest(ctx, { templates: [prepared.signed, blank] }, `/article/publish?d=${encodeURIComponent(f.identifier)}&retire=1`, 'sign_event_batch');
+            q.set('retire', '1');
+            sendSignRequest(ctx, { templates: [prepared.signed, blank] }, `/article/publish?${q}`, 'sign_event_batch');
         } else {
-            sendSignRequest(ctx, prepared.signed, `/article/publish?d=${encodeURIComponent(f.identifier)}`);
+            sendSignRequest(ctx, prepared.signed, `/article/publish?${q}`);
         }
         return;
     }
@@ -88,6 +95,7 @@ export async function postArticle(ctx: Ctx): Promise<void> {
     // bunker: sign + publish (or hold for the sweep) here, then land on the reader (or /drafts).
     try {
         const prepared = await signArticle(s.signer!, s.me, s.myRelays!, fields);
+        prepared.writeTargets = chosenTargets(form, s); // relay-picker selection
         if (scheduledAt) {
             if (!holdScheduled(s.me, prepared.signed, scheduledAt, prepared.writeTargets)) { back(SCHEDULE_FULL_MSG); return; }
             redirect(ctx, '/drafts');
@@ -334,7 +342,7 @@ async function articlePublishRetire(ctx: Ctx, s: Session & { me: string }): Prom
     };
     if (!article || article.pubkey !== s.me || article.kind !== KIND_ARTICLE) { landError("Couldn't verify the signed article.", 400); return; }
     try {
-        await publishSigned(s.pool, { signed: article, isReply: false, writeTargets: s.myRelays?.write ?? [], inboxTargets: [] });
+        await publishSigned(s.pool, { signed: article, isReply: false, writeTargets: chosenTargets(ctx.query, s), inboxTargets: [] });
     } catch (err) { landError(`Couldn't publish: ${err instanceof Error ? err.message : String(err)}`, 502); return; }
     const wrap = results && results[1]?.ok ? verifySigned(results[1].value) : null; // the blank wrap (retire the draft)
     if (wrap && wrap.pubkey === s.me) await publishDraftWrap(s, wrap).catch(() => false);
@@ -369,7 +377,7 @@ async function articleSchedule(ctx: Ctx, s: Session & { me: string }, schedule: 
         sendFragment(ctx, page(articleComposePage({ ...fieldsFromSigned(signed as NostrEvent | null), error }), chromeFor(ctx, s, { active: 'compose', title: 'Article' })),
             { 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' }, status);
     if (!signed || signed.pubkey !== s.me || signed.kind !== KIND_ARTICLE) { fail("Couldn't verify the signed article.", 400); return; }
-    if (!holdScheduled(s.me, signed as NostrEvent, schedule, s.myRelays?.write ?? [])) { fail(SCHEDULE_FULL_MSG, 400); return; }
+    if (!holdScheduled(s.me, signed as NostrEvent, schedule, chosenTargets(ctx.query, s))) { fail(SCHEDULE_FULL_MSG, 400); return; }
     sendFragment(ctx, page(draftsScreen(listScheduled(s.me), listDrafts(s.me)), chromeFor(ctx, s, { active: 'drafts', title: 'Drafts' })),
         { 'H-Push-Url': '/drafts', 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' });
 }
@@ -394,9 +402,9 @@ export async function postArticlePublish(ctx: Ctx): Promise<void> {
         composerError("Couldn't verify the signed article.", 400);
         return;
     }
-    const writeTargets = s.myRelays?.write?.length ? s.myRelays.write : undefined;
+    const writeTargets = chosenTargets(ctx.query, s); // relay-picker selection (forwarded on the URL)
     try {
-        await publishSigned(s.pool, { signed: signed as NostrEvent, isReply: false, writeTargets: writeTargets ?? [], inboxTargets: [] });
+        await publishSigned(s.pool, { signed: signed as NostrEvent, isReply: false, writeTargets, inboxTargets: [] });
     } catch (err) {
         composerError(`Couldn't publish: ${err instanceof Error ? err.message : String(err)}`, 502);
         return;

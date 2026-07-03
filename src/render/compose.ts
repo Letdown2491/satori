@@ -7,6 +7,7 @@ import { html, raw, type SafeHtml } from '../html.ts';
 import { imgSrc } from './content.ts';
 import { icon } from './svg.ts';
 import { minScheduleValue } from './util.ts';
+import { relayLabel } from '../data/relay-favorites.ts';
 import { torStrict } from '../privacy.ts';
 
 /** The revealed "Publish on <datetime> [Schedule]" row, shared by the note (POST /note) and article
@@ -19,6 +20,26 @@ export function scheduleRow(action: string, btnAttrs: SafeHtml = raw('')): SafeH
           <input class="schedule-input" type="datetime-local" name="schedule" min="${minScheduleValue()}" aria-label="Schedule for later">
           <button type="submit" class="ghost schedule-go" name="do" value="schedule" formaction="${action}" formmethod="post"${btnAttrs} title="Publish at this time (the daemon sends it even if your browser is closed)">Schedule</button>
         </div>`;
+}
+
+/** The compose relay-picker, shared by every top-level composer (note/picture/poll/article) so the markup
+ * can't drift. The globe toggle + reveal are pure CSS (the caller supplies the #relays-toggle checkbox via
+ * this row, and the .relays-btn label via relaysToggleBtn). All your write relays start checked; uncheck for
+ * a subset, or add a one-off relay. Server side reads the `relay`/`customrelay` fields via chosenTargets.
+ * Renders nothing when there are no write relays to offer. */
+export function relayPickerRow(relays: string[]): SafeHtml {
+    if (!relays.length) return raw('');
+    return html`<input type="checkbox" id="relays-toggle" class="relays-check">
+        <div class="relays-row">
+          <div class="relays-row-head">Post to relays</div>
+          <div class="relay-chips">${relays.map((url) => html`<label class="relay-chip"><input type="checkbox" name="relay" value="${url}" checked>${relayLabel(url)}</label>`)}</div>
+          <input class="relay-custom-input" type="text" name="customrelay" placeholder="wss://… (one-off relay)" autocomplete="off" spellcheck="false">
+        </div>`;
+}
+
+/** The relay-picker's foot toggle (the globe). Pairs with relayPickerRow's #relays-toggle checkbox. */
+export function relaysToggleBtn(): SafeHtml {
+    return html`<label class="attach-btn relays-btn" for="relays-toggle" title="Choose relays to post to" aria-label="Choose relays to post to">${icon('globe')}</label>`;
 }
 
 /** The Note · Picture · Poll · Article segmented selector (only on new top-level

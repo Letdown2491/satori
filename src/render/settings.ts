@@ -73,7 +73,7 @@ function appearanceSection(a: Appearance): SafeHtml {
 /** Persisted on/off prefs (over the appearance cookie), keyed by field name. */
 const PREF_LABELS = {
     autoLoadMedia: 'Auto-load images & videos',
-    inlineVideo: 'Load nostr videos inline (fetches a frame on load)',
+    inlineVideo: 'Load nostr videos inline (fetches from the video host on load)',
     reactions: 'Show reactions button on notes & articles',
     reactionNotifs: 'Show reactions in notifications',
     undoEnabled: 'Undo window before publishing',

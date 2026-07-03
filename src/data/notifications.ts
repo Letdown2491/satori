@@ -55,7 +55,10 @@ export async function fetchNotifications(
     };
     for (const ev of tagged) {
         if (ev.kind === 9735) add('zap', ev);
-        else if (ev.kind === 7) add('reaction', ev); // before the e-tag check (a reaction carries an e tag)
+        // kind:7 reaction (before the e-tag check - a reaction carries an e tag). A `-` DISLIKE is omitted
+        // entirely: a stranger's thumbs-down is pure agitation with no reply/zap/conversation value, so we
+        // never surface it (consistent with hiding the like button + reaction counts). +/emoji still show.
+        else if (ev.kind === 7) { if (ev.content !== '-') add('reaction', ev); }
         else if (ev.kind === KIND_COMMENT) add('reply', ev); // NIP-22: always a reply (article comments carry a/A, no e)
         else add(ev.tags.some((t) => t[0] === 'e') ? 'reply' : 'mention', ev);
     }

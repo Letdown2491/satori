@@ -4,6 +4,91 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-04
+
+### Added
+
+- Per-post relay targeting on the Poll, Article, and Picture composers, matching Notes. A
+  globe toggle reveals your write relays as chips (all checked by default) plus a one-off
+  "wss://…" field, so you can send a post to a chosen subset of relays instead of all of
+  them. Empty selection still means all your write relays (never nowhere). Works on both
+  signing families (extension and bunker).
+- Scheduling on the Picture composer: pick a future time and the daemon broadcasts the
+  picture then, even with your browser closed, via the same sweep that already handles
+  scheduled notes and articles. (Polls stay non-schedulable by design: a poll's end time is
+  baked in when it's signed, so a scheduled poll would arrive already counting down.)
+- A page `<meta name="description">`.
+
+### Changed (defaults)
+
+- "Load nostr videos inline" now defaults ON, so the timeline shows real video frames out of
+  the box (a first-frame fetch to the video host, no different from any media load). Turn it
+  off in Settings to keep the no-fetch play facade. YouTube is unaffected (always its own
+  facade), and Strict privacy mode still suppresses video regardless.
+
+### Changed
+
+- The following feed is faster to first paint and more complete on slow connections. The
+  landing now paints on a tight deadline (whatever the fast relays return), while the
+  off-feed new-notes poll searches harder, on an adaptive per-relay timeout learned from how
+  each relay actually responds, and folds any slow-relay notes it catches into a buffer that
+  the "N new notes" indicator counts and the feed then renders. So a followed author whose
+  notes live on a slow or laggy relay surfaces within seconds instead of being dropped, and
+  the indicator can no longer promise notes the feed then fails to load. Observation-only
+  groundwork for this shipped in 0.4.2; this turns it on. The per-relay timeouts self-calibrate
+  to how each relay actually behaves - notably, they now bail out fast on relays that
+  consistently deliver nothing for your feed instead of waiting on them - and keep adapting as
+  your follows move relays around.
+- Compose UI consistency across all four composers: the action bars are now a matching
+  rounded card; the schedule and relay-picker sections carry their own panel background so
+  they look the same in the in-feed modal and on the full `/compose` page; the type pills
+  (Note · Picture · Poll · Article) get consistent spacing off the first field; and the
+  Article composer's section spacing, button order, and foot now match the other tabs. The
+  Article schedule (clock) icon also picks up the same muted color as the others.
+- Bumped the bundled helmjs to v0.14.4. No API changes, all passive hardening we benefit from:
+  a fix for `h-sync="abort"` letting two concurrent requests slip through (helps search-as-you-type
+  and the feed poll), an `IntersectionObserver` leak fix for non-`once` intersect triggers, and a
+  bound (cap 50) on the `h-prefetch` speculative cache. Its new security note (untrusted HTML in a
+  swap can smuggle live `h-*` directives) does not affect us: all rendered content goes through the
+  `SafeHtml` escaping helper and the markdown/asciidoc parsers honor no raw-HTML passthrough, so
+  user content can never become a live element.
+
+### Fixed
+
+- A `nostr:nsec…` (or other non-standard `nostr:` entity) pasted or quoted in a note's content is no longer
+  turned into a clickable link. Previously the raw bech went into an `href` to njump.me, so an nsec (a private
+  key) could be leaked to a third party on click; it now renders inert, and secret types are redacted rather
+  than echoed. (Found in a NIP-21 read-side audit.)
+- Edited articles (and other addressable events) no longer show twice in the longform feed or on profiles. The
+  outbox fan-out merges events from multiple relays, so a stale copy and the edited copy - different event ids,
+  same `d` coordinate - were both kept; addressable kinds now collapse by their (kind, author, d) coordinate,
+  keeping only the newest, per NIP-01. (Found in a NIP-01 read-side audit.)
+- Reply cards ("in reply to an earlier note") now resolve the parent more often. NIP-10 replies weren't
+  passing the parent's author to the embed resolver, so a reply whose `e` tag had no relay hint could only be
+  searched on your own relays and often failed to fill in. It now includes the parent author (so the resolver
+  can use their outbox/write relays), matching how NIP-22 comment parents already resolved.
+- The relay-favorite star and the Undo buttons work again. The helmjs 0.14.2 bump (in 0.4.2) had regressed
+  `h-post` on bare buttons - it only bound the mutating verbs on `<form>` elements - which silently disabled
+  every form-less mutation. Fixed in helmjs 0.14.3 (mutating verbs now bind on any element, like `h-get`
+  already did) and re-bundled.
+- Extensionless media (a Blossom hash URL) in a note now renders as the image/video it is instead of a plain
+  text link. The content tokenizer classifies media by file extension, so a URL with no extension was missed;
+  it now also honors the NIP-92 `imeta` `m` (mime) type, so such media groups into galleries and gets a
+  lightbox like any other. (Found in a NIP-92 read-side audit.)
+- Vertical short videos (NIP-71 kind 22 / 34236) with no `dim` in their `imeta` now render in portrait
+  instead of defaulting to landscape - the video kind is used as the orientation fallback.
+- Article topics (NIP-23 `t` tags) are now shown on the article reader as a row of hashtag chips, each
+  linking to a search for that tag. They were parsed but never displayed.
+- Dislike reactions (NIP-25 `-`) are no longer surfaced in notifications at all. A stranger's thumbs-down
+  carries no reply/zap/conversation value and is pure agitation, so omitting it is consistent with hiding the
+  like button and reaction counts. Positive and custom-emoji reactions still show (when reaction notifications
+  are enabled, which is off by default).
+- The thread "root" link for old, unmarked (deprecated positional NIP-10) replies now points at the true
+  thread root (the first `e` tag) rather than the immediate parent.
+- A `nostr:`-prefixed reference is no longer tokenized when it sits mid-word (e.g. `foonostr:...`), matching
+  the existing guard on bare `npub1...`/`note1...` references; and a NIP-22 comment that quotes an event no
+  longer risks mistaking that `q`-quoted event for its parent. (Found in NIP-27 / NIP-22 read-side audits.)
+
 ## [0.4.2] - 2026-07-02
 
 ### Added

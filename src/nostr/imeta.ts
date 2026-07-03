@@ -6,7 +6,11 @@
 
 import type { NostrEvent } from './types.ts';
 
-export interface MediaMeta { alt?: string; dim?: string; thumb?: string }
+// `mime` is the imeta `m` field (e.g. "image/jpeg", "video/mp4"); it lets an extensionless media URL (a
+// Blossom hash url) still be classified as media on render, since the content tokenizer keys off the file
+// extension alone. `orient` is NOT an imeta field - it's a caller-supplied orientation fallback (NIP-71
+// derives it from the video KIND when the imeta carries no `dim`), used only for the aspect bucket.
+export interface MediaMeta { alt?: string; dim?: string; thumb?: string; mime?: string; orient?: 'portrait' | 'landscape' | 'square' }
 export type ImetaMap = Map<string, MediaMeta>;
 
 /** Map each media URL in the event's imeta tags to its metadata. */
@@ -26,6 +30,7 @@ export function parseImeta(ev: NostrEvent): ImetaMap {
             if (key === 'url') url = val;
             else if (key === 'alt') meta.alt = val;
             else if (key === 'dim') meta.dim = val;
+            else if (key === 'm') meta.mime = val;
             // `thumb` is the dedicated video thumbnail; `image` is a preview - either works as a
             // poster. Prefer thumb; don't let a later `image` clobber a thumb.
             else if (key === 'thumb') meta.thumb = val;

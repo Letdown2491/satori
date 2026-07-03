@@ -15,14 +15,14 @@ import { commentRoot, KIND_COMMENT } from '../nostr/nip22.ts';
 import { isAddressable, tag1 } from '../nostr/tags.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
-import { normalizeRelayUrl, relayLabel } from '../data/relay-favorites.ts';
+import { chosenTargets, appendRelayTargets, parseScheduleAt } from '../actions.ts';
 import { decode } from 'nostr-tools/nip19';
 import { decodeNaddr } from '../nostr/nip19.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, raw, type SafeHtml } from '../html.ts';
 import { displayName } from '../render/util.ts';
 import { icon } from '../render/svg.ts';
-import { mediaItem, composeFileInput, undoToast, scheduleRow, composeTypes } from '../render/compose.ts';
+import { mediaItem, composeFileInput, undoToast, scheduleRow, composeTypes, relayPickerRow, relaysToggleBtn } from '../render/compose.ts';
 import { noteCard, composePreview } from '../render/note.ts';
 import { remainingSeconds, cancelPublish, commitIfDue, getHeld, getCommitted } from '../undo.ts';
 import { tryUndoWindow, sendReplyToThread, stayPutCloseModal, landOnFeed, CLOSE_MODAL_OOB } from './undo-window.ts';
@@ -90,12 +90,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         <!-- Relays (new notes only): the .relays-btn globe toggles this checkbox; the row reveals on :checked
              (pure CSS, like Schedule). All your write relays start checked; uncheck to post to a subset, or add
              a one-off relay. Resets every open (the form is re-rendered fresh). -->
-        ${c.isNew && c.relays?.length ? html`<input type="checkbox" id="relays-toggle" class="relays-check">
-        <div class="relays-row">
-          <div class="relays-row-head">Post to relays</div>
-          <div class="relay-chips">${c.relays.map((url) => html`<label class="relay-chip"><input type="checkbox" name="relay" value="${url}" checked>${relayLabel(url)}</label>`)}</div>
-          <input class="relay-custom-input" type="text" name="customrelay" placeholder="wss://… (one-off relay)" autocomplete="off" spellcheck="false">
-        </div>` : null}
+        ${c.isNew ? relayPickerRow(c.relays ?? []) : null}
         <div class="compose-media" id="media">${(c.media ?? []).map((m) => mediaItem(m))}</div>
         <!-- Live preview (above the foot): listens to the textarea (debounced) + attached
              media, rendered through the real note pipeline. h-busy="false" so typing never
@@ -108,7 +103,7 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
           ${c.reply ? html`<label class="attach-btn private-btn" for="private-toggle" title="Reply privately - only the author can read it" aria-label="Reply privately">${icon('lock')}</label>` : null}
           ${canSchedule ? html`<label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>` : null}
-          ${c.isNew && c.relays?.length ? html`<label class="attach-btn relays-btn" for="relays-toggle" title="Choose relays to post to" aria-label="Choose relays to post to">${icon('globe')}</label>` : null}
+          ${c.isNew && c.relays?.length ? relaysToggleBtn() : null}
           <!-- Zero-JS only: with JS the file auto-uploads on select, so this fallback
                button is hidden (noscript). It submits the form to its /upload action. -->
           <noscript><button type="submit" class="attach-go">Attach</button></noscript>
@@ -123,14 +118,16 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
 }
 
 /** The poll compose form body (question + poll fields → POST /poll). */
-function pollFormPart(d: PollDraft | null = null, inModal = false, status = ''): SafeHtml {
+function pollFormPart(d: PollDraft | null = null, inModal = false, status = '', relays: string[] = []): SafeHtml {
     return html`
       <form class="compose-box" action="/poll" method="post" h-post>
         ${inModal ? html`<input type="hidden" name="inmodal" value="1">` : null}
         <input type="hidden" id="compose-draftid" name="draftid" value="${d?.id ?? ''}">
         <textarea name="content" id="poll-question" required placeholder="Ask a question…">${d?.question ?? ''}</textarea>
         ${pollComposeFields({ options: d?.options, multiple: d?.multi, duration: d?.duration })}
+        ${relayPickerRow(relays)}
         <div class="compose-foot">
+          ${relays.length ? relaysToggleBtn() : null}
           <span id="compose-status" class="compose-status">${status}</span>
           <button type="submit" class="ghost" formaction="/poll/draft" formmethod="post" h-target="${inModal ? '#modal' : 'body'}" h-swap="inner">Save draft</button>
           <button type="submit" class="publish-btn" formaction="/poll" formmethod="post" h-target="body" h-swap="inner">Post poll</button>
@@ -140,7 +137,7 @@ function pollFormPart(d: PollDraft | null = null, inModal = false, status = ''):
 
 /** The picture (NIP-68 kind:20) compose form: a title + caption + the shared media strip (≥1 image required
  * to publish). Reuses the note's upload/attach + live-preview + @mention wiring; posts to /picture. Top-level
- * only, and lean in v1 (no reply/quote/schedule/relay-picker). A local draft is deferred too - unlike a note/
+ * only, and lean (no reply/quote; scheduling + relay-picker supported). A local draft is deferred too - unlike a note/
  * poll draft, it would have to carry already-uploaded Blossom blobs, which is more machinery than v1 needs. */
 function pictureFormPart(c: ComposeCtx, inModal = false): SafeHtml {
     return html`
@@ -160,9 +157,16 @@ function pictureFormPart(c: ComposeCtx, inModal = false): SafeHtml {
         <div id="compose-preview" class="compose-preview" h-get="/compose/preview?type=picture"
           h-trigger="input from:#compose-text debounce:180, input from:#picture-title debounce:180, compose-media from:body" h-include="#picture-title, #compose-text, #media input[name=imeta]"
           h-target="#compose-preview" h-swap="inner" h-busy="false" h-push-url="false"></div>
+        <!-- Schedule: the .schedule-btn clock toggles this checkbox; the row reveals on :checked (pure CSS,
+             like the note composer). The "Schedule" button sends do=schedule to /picture. -->
+        <input type="checkbox" id="schedule-toggle" class="sched-check">
+        ${scheduleRow('/picture', raw(' h-target="body" h-swap="inner"'))}
+        ${c.isNew ? relayPickerRow(c.relays ?? []) : null}
         <div class="compose-foot">
           <label class="attach-btn" id="compose-attach" title="Add a photo" aria-label="Add a photo">${icon('image')}${composeFileInput()}</label>
           <label class="attach-btn cw-btn" for="cw-toggle" title="Content warning" aria-label="Content warning">${icon('alert')}</label>
+          <label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>
+          ${c.isNew && c.relays?.length ? relaysToggleBtn() : null}
           <noscript><button type="submit" class="attach-go">Attach</button></noscript>
           <span class="compose-status">${c.status ?? ''}</span>
           <button type="submit" class="publish-btn" formaction="/picture" formmethod="post" h-target="body" h-swap="inner">Post picture</button>
@@ -320,15 +324,15 @@ export async function getCompose(ctx: Ctx): Promise<void> {
 
     if (isNew && (ctx.query.get('type') === 'poll' || draft?.type === 'poll')) {
         const pd = draft?.type === 'poll' ? draft : null;
-        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(pd, true))); return; }
-        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(pd)}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(pd, true, '', writeRelaysFor(s.myRelays)))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(pd, false, '', writeRelaysFor(s.myRelays))}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
         return;
     }
 
     // Picture (NIP-68 kind:20) - a lean top-level composer (title + caption + images), like poll.
     if (isNew && ctx.query.get('type') === 'picture') {
-        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('picture', true), pictureFormPart({ isNew: true }, true))); return; }
-        sendPage(ctx, html`<div class="view-pad">${composeTypes('picture')}${pictureFormPart({ isNew: true })}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Picture' }));
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('picture', true), pictureFormPart({ isNew: true, relays: writeRelaysFor(s.myRelays) }, true))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('picture')}${pictureFormPart({ isNew: true, relays: writeRelaysFor(s.myRelays) })}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Picture' }));
         return;
     }
 
@@ -336,6 +340,7 @@ export async function getCompose(ctx: Ctx): Promise<void> {
     if (isNew && (ctx.query.get('type') === 'article' || draft?.type === 'article')) {
         const d = draft?.type === 'article' ? draft : null;
         const c: ArticleComposeCtx = d ? { identifier: d.identifier, title: d.title, summary: d.summary, image: d.image, topics: d.topics, body: d.body } : {};
+        c.relays = writeRelaysFor(s.myRelays); // the relay-picker list
         sendPage(ctx, articleComposePage(c), chromeFor(ctx, s, { active: 'compose', title: 'Article' }));
         return;
     }
@@ -408,8 +413,8 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
     const draft: PollDraft = { type: 'poll', id, question, options, multi, duration, savedAt: Date.now(), synced: prev?.synced, syncedAt: prev?.syncedAt };
     const inModal = ctx.isPartial && ctx.hTarget === '#modal';
     const render = (status: string): void => {
-        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(draft, true, status))); return; }
-        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(draft, false, status)}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(draft, true, status, writeRelaysFor(s.myRelays)))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(draft, false, status, writeRelaysFor(s.myRelays))}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
     };
     if (!question && options.length === 0) { render('Nothing to save yet.'); return; } // don't persist empty
     saveDraft(s.me, draft);
@@ -417,18 +422,6 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
     await saveDraftAndSync(ctx, s, draft, (synced) => render(savedStatus(synced)));
 }
 
-/** The relays to publish a top-level note to, from the compose relay-picker: the checked write relays (the
- * `relay` fields) plus an optional validated one-off (`customrelay`). Anti-tamper: checked relays must be in
- * your write set. Empty selection → ALL write relays (never publish to nowhere). Replies/quotes send no relay
- * fields, so they fall through to the full write set here. `p` is the form (bunker) or the query (nip07). */
-function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string | null }, s: Session & { me: string }): string[] {
-    const all = writeRelaysFor(s.myRelays);
-    const allowed = new Set(all);
-    const picked = p.getAll('relay').filter((u) => allowed.has(u));
-    const custom = normalizeRelayUrl(p.get('customrelay') ?? '');
-    const targets = [...new Set([...picked, ...(custom ? [custom] : [])])];
-    return targets.length ? targets : all;
-}
 
 /** POST /picture - compose a NIP-68 picture (kind:20). Both signing families like notes/polls: bunker signs
  * server-side (with an undo window); nip07 returns a sign request continued at /picture/publish. */
@@ -443,14 +436,31 @@ export async function postPicture(ctx: Ctx): Promise<void> {
     const cwReason = (form.get('cw_reason') ?? '').trim();
     const fromModal = form.get('inmodal') === '1';
     if (imeta.length === 0) { redirect(ctx, '/compose?type=picture'); return; } // a picture needs at least one image
-    const opts = { title, content, imeta, contentWarning: cw ? (cwReason || '') : null };
+    // Schedule: sign now with created_at = the chosen time, hold on disk, the sweep broadcasts it then.
+    let scheduledAt = 0;
+    if (form.get('do') === 'schedule') {
+        const r = parseScheduleAt(form.get('schedule') ?? '');
+        if ('error' in r) { sendFragment(ctx, html`<div class="notice error">Pick a time in the future to schedule.</div>`, {}, 400); return; }
+        scheduledAt = r.at;
+    }
+    const opts = { title, content, imeta, contentWarning: cw ? (cwReason || '') : null, ...(scheduledAt ? { createdAt: scheduledAt } : {}) };
     if (signsOnClient(s)) {
         const prepared = await signPicture(captureSigner, s.me, s.myRelays!, opts);
-        sendSignRequest(ctx, prepared.signed, fromModal ? '/picture/publish?inmodal=1' : '/picture/publish');
+        const q = new URLSearchParams();
+        if (fromModal) q.set('inmodal', '1');
+        if (scheduledAt) q.set('schedule', String(scheduledAt)); // store, don't publish
+        appendRelayTargets(q, form); // carry the relay-picker selection
+        sendSignRequest(ctx, prepared.signed, q.toString() ? `/picture/publish?${q}` : '/picture/publish');
         return;
     }
     try {
         const prepared = await signPicture(s.signer!, s.me, s.myRelays!, opts);
+        prepared.writeTargets = chosenTargets(form, s); // relay-picker selection
+        if (scheduledAt) { // hold the signed picture for the sweep instead of publishing
+            if (!holdScheduled(s.me, prepared.signed, scheduledAt, prepared.writeTargets)) { sendFragment(ctx, html`<div class="notice error">${SCHEDULE_FULL_MSG}</div>`, {}, 400); return; }
+            redirect(ctx, '/drafts');
+            return;
+        }
         if (await tryUndoWindow(ctx, s, prepared, { fromModal })) return; // hold + countdown toast (helmjs)
         await publishSigned(s.pool, prepared);
     } catch (err) {
@@ -468,7 +478,19 @@ export async function postPicturePublish(ctx: Ctx): Promise<void> {
     const signed = await requireSigned(ctx, s.me, KIND_PICTURE, 'the picture');
     if (!signed) return;
     const fromModal = ctx.query.get('inmodal') === '1';
-    const prepared: Prepared = { signed, isReply: false, writeTargets: writeRelaysFor(s.myRelays), inboxTargets: [] };
+    // Scheduled (nip07): the extension signed our future-dated picture; hold it for the sweep. Re-validate
+    // the client time server-side - a past/0/NaN value just falls through to publish-now.
+    const schedule = Number(ctx.query.get('schedule')) || 0;
+    if (schedule > Math.floor(Date.now() / 1000)) {
+        if (!holdScheduled(s.me, signed as NostrEvent, schedule, chosenTargets(ctx.query, s as Session & { me: string }))) {
+            sendFragment(ctx, html`<div class="notice error">${SCHEDULE_FULL_MSG}</div>`, {}, 400);
+            return;
+        }
+        sendFragment(ctx, page(draftsScreen(listScheduled(s.me), listDrafts(s.me)), chromeFor(ctx, s as Session & { me: string }, { active: 'drafts', title: 'Drafts' })),
+            { 'H-Push-Url': '/drafts', 'H-Retarget': 'body', 'H-Reselect': 'body', 'H-Reswap': 'inner' });
+        return;
+    }
+    const prepared: Prepared = { signed, isReply: false, writeTargets: chosenTargets(ctx.query, s as Session & { me: string }), inboxTargets: [] };
     if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, fromModal })) return; // nip07 = always JS
     try { await publishSigned(s.pool, prepared); } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);
@@ -510,10 +532,9 @@ export async function postNote(ctx: Ctx): Promise<void> {
     // hold it on disk, and the daemon's sweep broadcasts it then. The "Schedule" button sends do=schedule.
     let scheduledAt = 0;
     if (!replyNevent && form.get('do') === 'schedule') {
-        const t = new Date((form.get('schedule') ?? '').trim()).getTime();
-        if (isNaN(t)) { back('Pick a time to schedule this for.'); return; }
-        scheduledAt = Math.floor(t / 1000);
-        if (scheduledAt <= Math.floor(Date.now() / 1000)) { back('Pick a time in the future to schedule.'); return; }
+        const r = parseScheduleAt(form.get('schedule') ?? '');
+        if ('error' in r) { back(r.error === 'empty' ? 'Pick a time to schedule this for.' : 'Pick a time in the future to schedule.'); return; }
+        scheduledAt = r.at;
     }
 
     const opts = {
@@ -561,10 +582,7 @@ export async function postNote(ctx: Ctx): Promise<void> {
         if (commentTarget) q.set('k', String(KIND_COMMENT)); // the continuation must verify a 1111, not a kind:1
         if (inthread) q.set('inthread', inthread);
         if (fromModal) q.set('inmodal', '1');
-        if (!replyNevent && !quoteNevent) { // top-level: carry the relay-picker selection to the publish step
-            for (const u of form.getAll('relay')) q.append('relay', u);
-            const cr = (form.get('customrelay') ?? '').trim(); if (cr) q.set('customrelay', cr);
-        }
+        if (!replyNevent && !quoteNevent) appendRelayTargets(q, form); // top-level: carry the relay-picker selection to the publish step
         if (scheduledAt) { q.set('schedule', String(scheduledAt)); sendSignRequest(ctx, prepared.signed, `/note/publish?${q}`); return; } // store, don't publish
         sendSignRequest(ctx, prepared.signed, q.toString() ? `/note/publish?${q}` : '/note/publish');
         return;

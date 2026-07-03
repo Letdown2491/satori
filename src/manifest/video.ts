@@ -12,7 +12,7 @@ import { renderContent, videoItems, mediaTiles } from '../render/content.ts';
 import { cardShell, cardTitle, clampIfTall, cwIfFlagged } from '../render/note.ts';
 import type { ProfileMap } from '../render/util.ts';
 import { parseImeta } from '../nostr/imeta.ts';
-import { VIDEO_KINDS } from '../nostr/nip71.ts';
+import { VIDEO_KINDS, isShortVideo } from '../nostr/nip71.ts';
 import { tag1 } from '../nostr/tags.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
@@ -21,7 +21,10 @@ import type { NostrEvent } from '../nostr/types.ts';
  * shared privacy-aware player. Description (NIP-71 content = summary) tokenizes + clamps off-focused. */
 function videoBody(ev: NostrEvent, profiles: ProfileMap | undefined, clamp: boolean, inlineVideo: boolean): SafeHtml {
     const [primary] = [...parseImeta(ev)]; // [url, meta] of the first imeta
-    const player = primary ? mediaTiles(videoItems([{ url: primary[0], meta: primary[1] }]), true, inlineVideo) : null;
+    // NIP-71: when the imeta carries no `dim`, the KIND decides orientation (a kind:22/34236 short is
+    // vertical) - pass it as the aspect fallback so a poster-less short doesn't render landscape.
+    const meta = primary && !primary[1].dim ? { ...primary[1], orient: isShortVideo(ev.kind) ? 'portrait' as const : 'landscape' as const } : primary?.[1];
+    const player = primary ? mediaTiles(videoItems([{ url: primary[0], meta }]), true, inlineVideo) : null;
     const notes = ev.content.trim() ? renderContent(ev.content, profiles, false) : null;
     const visual = html`
       ${player}

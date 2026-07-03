@@ -2,7 +2,7 @@
 // names its IMMEDIATE parent with lowercase tags (e/a/i + k). We render the immediate parent as the "in
 // reply to" link on the comment card.
 
-import { tag1 } from './tags.ts';
+import { tag1, quotedIds } from './tags.ts';
 import type { NostrEvent } from './types.ts';
 
 export const KIND_COMMENT = 1111;
@@ -14,7 +14,12 @@ export const KIND_COMMENT = 1111;
 export interface CommentParent { type: 'e' | 'a' | 'i'; value: string; kind: string; relay?: string; pubkey?: string }
 export function commentParent(ev: NostrEvent): CommentParent | null {
     const kind = tag1(ev, 'k');
-    const e = ev.tags.find((t) => t[0] === 'e' && t[1]); if (e) return { type: 'e', value: e[1]!, kind, relay: e[2] || undefined, pubkey: e[3] || undefined };
+    // A NIP-22 `e` tag carries no marker (index 3 is the author pubkey), so a `q`-quoted event can't be told
+    // apart from the parent by shape - exclude quoted ids so a quote in the comment isn't mistaken for its
+    // parent. (A NIP-27 mention e-tag still can't be distinguished; we rely on compliant clients emitting the
+    // parent `e` first, as this find() picks the first surviving `e`.)
+    const quoted = quotedIds(ev);
+    const e = ev.tags.find((t) => t[0] === 'e' && t[1] && !quoted.has(t[1])); if (e) return { type: 'e', value: e[1]!, kind, relay: e[2] || undefined, pubkey: e[3] || undefined };
     const a = ev.tags.find((t) => t[0] === 'a' && t[1]); if (a) return { type: 'a', value: a[1]!, kind, relay: a[2] || undefined };
     const i = ev.tags.find((t) => t[0] === 'i' && t[1]); if (i) return { type: 'i', value: i[1]!, kind };
     return null;

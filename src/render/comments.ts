@@ -12,22 +12,7 @@ import { parseEmojiTags } from '../nostr/nip30.ts';
 import { avatar, displayName, timeAgo, npub, type ProfileMap } from './util.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Session } from '../session.ts';
-
-interface CNode { event: NostrEvent; children: CNode[] }
-
-/** Thread comments by their NIP-22 lowercase parent: an `e` tag = a parent
- * comment; none (only the article `a` tag) = top-level. */
-function buildTree(comments: NostrEvent[]): CNode[] {
-    const nodes = new Map(comments.map((c) => [c.id, { event: c, children: [] as CNode[] }]));
-    const roots: CNode[] = [];
-    for (const c of [...comments].sort((a, b) => a.created_at - b.created_at)) {
-        const node = nodes.get(c.id)!;
-        const parentId = c.tags.find((t) => t[0] === 'e' && t[1])?.[1];
-        const parent = parentId ? nodes.get(parentId) : undefined;
-        if (parent) parent.children.push(node); else roots.push(node);
-    }
-    return roots;
-}
+import { buildThreadTree, type TreeNode } from '../nostr/thread.ts';
 
 /** The comment compose / reply form. pi/pp empty (top-level) → parent = the
  * article; otherwise pi=parent comment id, pp=its author. Submitting MORPHS the
@@ -51,7 +36,7 @@ function commentTitle(n: number, oob = false): SafeHtml {
     return html`<h3 id="comments-title" class="comments-title"${oob ? raw(' h-oob="true"') : raw('')}>${n || 'No'} comment${n === 1 ? '' : 's'}</h3>`;
 }
 
-function renderNode(node: CNode, profiles: ProfileMap, ra: string, rp: string): SafeHtml {
+function renderNode(node: TreeNode, profiles: ProfileMap, ra: string, rp: string): SafeHtml {
     const ev = node.event;
     const slot = `creply-${ev.id.slice(0, 16)}`;
     return html`
@@ -72,7 +57,7 @@ function renderNode(node: CNode, profiles: ProfileMap, ra: string, rp: string): 
 
 /** The list items (the morph payload + the initial render share these). */
 function commentItems(comments: NostrEvent[], profiles: ProfileMap, ra: string, rp: string): SafeHtml {
-    return join(buildTree(comments).map((n) => renderNode(n, profiles, ra, rp)));
+    return join(buildThreadTree(comments).map((n) => renderNode(n, profiles, ra, rp)));
 }
 
 export function commentSection(_s: Session, ra: string, rp: string, comments: NostrEvent[], profiles: ProfileMap): SafeHtml {

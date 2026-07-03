@@ -494,6 +494,9 @@
         /* Compose type selector - Note · Poll · Article (segmented, in the modal head). */
         .compose-types { display: inline-flex; gap: 6px; }
         .compose-types[hidden] { display: none; }
+        /* On the full /compose page the pills are a direct child of .view-pad and would sit flush against the
+           first input; give them the same breathing room the modal has (its .modal-head has margin-bottom). */
+        .view-pad > .compose-types { margin-bottom: 10px; }
         .compose-type {
             padding: 4px 13px; border-radius: 14px; border: 1px solid var(--border);
             background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer;
@@ -597,6 +600,10 @@
         .poll-opt:focus { outline: none; border-color: var(--accent); }
         .rm-opt { padding: 6px 10px; }
         .add-opt { align-self: flex-start; }
+        /* The poll's "+ Add option" + settings grouped in a panel card, matching the schedule/relay sections
+           (and the same in the modal + on the page). */
+        .poll-controls { display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+        .poll-controls .add-opt { align-self: flex-start; }
         .poll-settings { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
         .poll-settings .toggle { margin: 0; }
         .modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
@@ -1309,6 +1316,10 @@
         .nip-kinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
         .article .nip-kinds { margin: -8px 0 22px; }
         .nip-kind-chip { font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+        /* NIP-23 article topics (t tags) under the byline - reuse the chip look; each links to a hashtag search */
+        .article-topics { display: flex; flex-wrap: wrap; gap: 6px; margin: -14px 0 30px; }
+        .article-topics .nip-kind-chip { text-decoration: none; }
+        .article-topics .nip-kind-chip:hover { border-color: var(--accent); color: var(--text); }
         /* Long-form composer */
         .article-compose { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 24px; min-height: calc(100vh - 64px); }
         /* Only the writing surface fills the leftover height; everything else stays natural. */
@@ -1339,7 +1350,9 @@
         }
         .ac-body:focus { outline: none; border-color: var(--accent); }
         .ac-preview { flex: 1; min-height: 320px; padding: 4px 2px; }
-        .ac-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 6px; }
+        /* Carded action bar, matching the note/picture/poll .compose-foot (panel + border). Standalone here
+           (not contiguous with the textarea like the note foot), so it's a fully-bordered rounded bar. */
+        .ac-foot { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
         /* Publish article matches Save draft's size (the default button's 10px/16px made it chunkier); the
            accent fill already marks it as primary, so it doesn't also need to be bigger. */
         .ac-foot button { padding: 6px 10px; }
@@ -1397,6 +1410,8 @@
         .comment-children { margin-left: 16px; padding-left: 12px; border-left: 1px solid var(--border); }
         .mention { color: var(--accent); text-decoration: none; cursor: pointer; }
         .mention:hover { text-decoration: underline; }
+        /* An unsupported/secret nostr: entity (nsec, unknown type) rendered inert - muted, no link, no key leak. */
+        .mention-inert { color: var(--muted); word-break: break-all; }
         .quote {
             display: block; margin: 10px 0; padding: 9px 12px;
             border: 1px solid var(--border); border-left: 3px solid var(--accent);
@@ -1561,13 +1576,15 @@ a.fab { display: inline-flex; align-items: center; justify-content: center; text
 /* Compose modal: cap height + scroll the body, with the foot pinned to the bottom so
    Publish stays reachable however tall the preview gets. The negative margins span the
    foot edge-to-edge over the modal's 16px padding. */
-#compose-modal .modal { max-height: 85vh; overflow: hidden auto; padding-bottom: 0; } /* clip the foot's edge-to-edge bleed → no horizontal scrollbar */
+#compose-modal .modal { max-height: 85vh; overflow: hidden auto; } /* cap height + scroll the body; the foot stays reachable via position:sticky */
+/* Carded action bar, matching the article foot (.ac-foot). position:sticky keeps Publish reachable when a
+   long preview grows the modal body; the card is inset (no edge bleed) so it reads the same on the page. */
 .compose-foot {
     display: flex; align-items: center; gap: 10px;
     position: sticky; bottom: 0; z-index: 1;
     background: var(--panel);
-    margin: 14px -16px 0; padding: 14px 16px;
-    border-top: 1px solid var(--border);
+    margin-top: 12px; padding: 12px 14px;
+    border: 1px solid var(--border); border-radius: 10px;
 }
 /* Publish (note/poll) matches Save draft's size (the default button's 10px/16px made it chunkier); the
    accent fill already marks it as primary, so it doesn't also need to be bigger. (Same as .ac-foot.) */
@@ -1698,11 +1715,13 @@ html[data-webln-busy="paying"] .paying-toast .pay-work { display: inline; }
 .media-remove:hover { background: var(--err); }
 /* Compose toolbar: "Add media" on the left (a file <input> hidden behind a
    labelled button), then the secondary Attach + primary Publish on the right. */
-.compose-box .attach-btn {
+.compose-box .attach-btn,
+.ac-foot .attach-btn {
     display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
     color: var(--muted); padding: 8px; border-radius: 8px; line-height: 0;
 }
-.compose-box .attach-btn:hover { color: var(--accent); background: var(--panel); }
+.compose-box .attach-btn:hover,
+.ac-foot .attach-btn:hover { color: var(--accent); background: var(--panel); }
 .compose-box .attach-btn input[type="file"] { display: none; }
 .attach-go { background: transparent; color: var(--accent); }
 .attach-go:hover { background: var(--panel); }
@@ -1824,7 +1843,11 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
    .quote rule only adds margin above the card, so the text would butt right up). */
 .reply-context { margin-bottom: 10px; }
 
-.ac-form { display: flex; flex-direction: column; gap: 12px; }
+.ac-form { display: flex; flex-direction: column; gap: 10px; }
+/* The schedule/relay rows carry a margin-top for the block-layout .compose-box; inside .ac-form's flex-gap
+   that would DOUBLE the spacing, so zero it here (the gap already spaces them) - keeps the article's section
+   spacing the same as the other tabs. */
+.ac-form .schedule-row, .ac-form .relays-row { margin-top: 0; }
 
 /* Phase 6c - drafts list */
 .draft-list { list-style: none; padding: 0; margin: 0; }
@@ -1843,20 +1866,22 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
    note and article composers, so the row/accent selectors are NOT scoped to .compose-box/.compose-foot
    (that scoping is why the article composer showed the row un-toggled). */
 .sched-check { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-.schedule-row { margin-top: 10px; display: none; align-items: center; gap: 8px; }
+/* Revealed schedule + relay sections carry their OWN panel background + border so they read the same on the
+   page (dark bg) and in the modal (panel bg) - without a fixed bg they'd show the container and differ. */
+.schedule-row { margin-top: 10px; display: none; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
 #schedule-toggle:checked ~ .schedule-row { display: flex; }
 #schedule-toggle:checked ~ .compose-foot .schedule-btn,
 #schedule-toggle:checked ~ .ac-foot .schedule-btn { color: var(--accent); }
-/* The article foot right-aligns its actions; the clock is a TOOL, so push it left away from the buttons
-   (mirrors the note foot's left-tools / right-actions split). */
-.ac-foot .schedule-btn { margin-right: auto; }
 .schedule-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
 /* Relays: a globe (.relays-btn) toggles #relays-toggle; the row reveals on :checked (like Schedule). The
    write relays start checked - uncheck to post to a subset, or add a one-off. Resets every open. */
 .relays-check { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-.compose-box .relays-row { margin-top: 10px; display: none; flex-direction: column; gap: 8px; }
+.compose-box .relays-row,
+.ac-form .relays-row { display: none; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.compose-box .relays-row { margin-top: 10px; } /* block layout needs the gap; .ac-form's flex gap already spaces it */
 #relays-toggle:checked ~ .relays-row { display: flex; }
-#relays-toggle:checked ~ .compose-foot .relays-btn { color: var(--accent); }
+#relays-toggle:checked ~ .compose-foot .relays-btn,
+#relays-toggle:checked ~ .ac-foot .relays-btn { color: var(--accent); }
 .relays-row-head { font-size: 12px; color: var(--muted); }
 /* Relays as toggle chips, in the house pill idiom (same as .rw-chip / .compose-type.active): accent OUTLINE
    + accent text = posting there; muted outline = dropped. No solid fill - all-on shouldn't be a wall of

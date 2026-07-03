@@ -15,6 +15,7 @@
 
 import { decode } from 'nostr-tools/nip19';
 import { INDEXER_RELAYS, writeRelaysFor } from './nostr/nip65.ts';
+import { normalizeRelayUrl } from './data/relay-favorites.ts';
 import { HEX64 } from './nostr/tags.ts';
 import type { NostrEvent, UnsignedEvent } from './nostr/types.ts';
 import type { Session } from './session.ts';
@@ -110,6 +111,42 @@ export function isValidTarget(name: ActionName, target: string): boolean {
 
 export function writeRelays(s: Session): string[] {
     return writeRelaysFor(s.myRelays);
+}
+
+/** The relays to publish a top-level post to, from the compose relay-picker: the checked write relays (the
+ * `relay` fields) plus an optional validated one-off (`customrelay`). Anti-tamper: checked relays must be in
+ * your write set. Empty selection → ALL write relays (never publish to nowhere). Replies/quotes send no relay
+ * fields, so they fall through to the full write set here. `p` is the form (bunker) or the query (nip07).
+ * Shared by the note/picture/poll/article composers. */
+export function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string | null }, s: Session & { me: string }): string[] {
+    const all = writeRelaysFor(s.myRelays);
+    const allowed = new Set(all);
+    const picked = p.getAll('relay').filter((u) => allowed.has(u));
+    const custom = normalizeRelayUrl(p.get('customrelay') ?? '');
+    const targets = [...new Set([...picked, ...(custom ? [custom] : [])])];
+    return targets.length ? targets : all;
+}
+
+/** Serialize the relay-picker selection (the `relay[]` + `customrelay` form fields) onto a nip07 publish-
+ * continuation URL - the write-side mirror of chosenTargets, so the field names stay in lockstep. The
+ * continuation re-validates centrally via chosenTargets on the query; this only carries the raw selection.
+ * Shared by the note/picture/poll/article composers. */
+export function appendRelayTargets(q: URLSearchParams, p: { getAll(n: string): string[]; get(n: string): string | null }): void {
+    for (const u of p.getAll('relay')) q.append('relay', u);
+    const cr = (p.get('customrelay') ?? '').trim();
+    if (cr) q.set('customrelay', cr);
+}
+
+/** Parse the compose `schedule` field (a datetime-local string) into a future unix-seconds timestamp, or a
+ * reason it's unusable. `empty` = missing/unparseable; `past` = not in the future. Each caller renders the
+ * error its own way (back() vs a 400 fragment), so this shares only the parse+validate. */
+export type ScheduleParse = { at: number } | { error: 'empty' | 'past' };
+export function parseScheduleAt(raw: string): ScheduleParse {
+    const t = new Date(raw.trim()).getTime();
+    if (isNaN(t)) return { error: 'empty' };
+    const at = Math.floor(t / 1000);
+    if (at <= Math.floor(Date.now() / 1000)) return { error: 'past' };
+    return { at };
 }
 
 /** Publish a signed event to `relays` (default: your write relays) and report whether at least one

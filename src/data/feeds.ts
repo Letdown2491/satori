@@ -5,7 +5,7 @@
 import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, routeAuthorsToRelays } from '../nostr/nip65.ts';
-import { HEX64 } from '../nostr/tags.ts';
+import { HEX64, isAddressable, tag1 } from '../nostr/tags.ts';
 import { coalesceOne } from './coalesce.ts';
 import { fetchRelayLists } from './relays.ts';
 import { seenRelaysFor } from './seen-relays.ts';
@@ -23,12 +23,21 @@ function chunk<T>(arr: T[], size: number): T[][] {
     return out;
 }
 
-function mergeNewest(lists: NostrEvent[][], limit: number): NostrEvent[] {
+/** Newest-first, deduped, capped. Addressable kinds (30000-39999) collapse by their (kind,pubkey,d)
+ * COORDINATE keeping the newest edit - the outbox fan-out merges across relays, so a stale version and the
+ * edited one arrive with DIFFERENT ids and would otherwise BOTH show (NIP-01: only the latest per coordinate
+ * is retained). Plain events dedup by id. Sort first so the first kept per key is the newest. */
+function dedupeNewest(events: NostrEvent[], limit: number): NostrEvent[] {
+    const key = (e: NostrEvent): string => isAddressable(e.kind) ? `${e.kind}:${e.pubkey}:${tag1(e, 'd')}` : e.id;
     const seen = new Set<string>();
-    return lists.flat()
-        .filter((e) => (seen.has(e.id) ? false : seen.add(e.id)))
+    return events
         .sort((a, b) => b.created_at - a.created_at)
+        .filter((e) => { const k = key(e); return seen.has(k) ? false : seen.add(k); })
         .slice(0, limit);
+}
+
+function mergeNewest(lists: NostrEvent[][], limit: number): NostrEvent[] {
+    return dedupeNewest(lists.flat(), limit);
 }
 
 /** People you follow → their write relays, grouped per relay (computed once). */
@@ -70,12 +79,12 @@ async function routeFor(pool: Pool, authors: string[]): Promise<FeedRoute> {
 
 /** One page of a routed feed (Following / Followers). `until` bounds it to older
  * events; `kinds` defaults to notes + polls (pass [30023] for the long-form feed). */
-export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>>, limit: number, until?: number, kinds: number[] = [1, 1068], since?: number): Promise<NostrEvent[]> {
+export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>>, limit: number, until?: number, kinds: number[] = [1, 1068], since?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     const queries: Promise<NostrEvent[]>[] = [];
     for (const [relay, authorSet] of route) {
         for (const authorChunk of chunk([...authorSet], MAX_AUTHORS_PER_FILTER)) {
             const filter = { kinds, authors: authorChunk, limit: limit * 2, ...(until ? { until } : {}), ...(since ? { since } : {}) };
-            queries.push(pool.query([relay], filter, { fast: true }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
+            queries.push(pool.query([relay], filter, { fast: true, profile: true, budget }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
         }
     }
     return mergeNewest(await Promise.all(queries), limit);
@@ -168,9 +177,5 @@ export async function fetchAuthorNotes(pool: Pool, pubkey: string, kinds: number
     // `kinds` is the VIEWER's profile content-type prefs (notes/polls + whichever rich kinds they enabled).
     // The manifest renders each kind's card, so no per-kind branch here - just the viewer-chosen query.
     const raw = await pool.query(relays, { kinds, authors: [pubkey], limit, ...(until ? { until } : {}) }, { fast: true }).catch(() => []);
-    const seen = new Set<string>();
-    return raw
-        .filter((e) => (seen.has(e.id) ? false : seen.add(e.id)))
-        .sort((a, b) => b.created_at - a.created_at)
-        .slice(0, limit);
+    return dedupeNewest(raw, limit);
 }
