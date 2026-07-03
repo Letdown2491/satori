@@ -101,9 +101,11 @@ export class Pool {
         const tor = relaysViaTor();
         const base = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
         // maxWait = the hard cap. Default (no budget) keeps today's fixed cap. 'page' = a tight first-paint cap;
-        // 'adaptive' (single relay only - the outbox fan-out) scales per-relay from the profile toward the ceiling.
-        const maxWait = opts.budget === 'page' ? (tor ? TOR_PAGE_MAX_WAIT : PAGE_MAX_WAIT)
-            : opts.budget === 'adaptive' && relays.length === 1 ? relayBudget(relays[0]!, base, tor ? TOR_LIST_CEILING : LIST_CEILING)
+        // 'adaptive' (single relay only - the outbox fan-out) scales per-relay from the profile: empty relays
+        // bail fast to the page cap (floor), a rare rich-but-truncating relay gets extended toward the ceiling.
+        const pageCap = tor ? TOR_PAGE_MAX_WAIT : PAGE_MAX_WAIT;
+        const maxWait = opts.budget === 'page' ? pageCap
+            : opts.budget === 'adaptive' && relays.length === 1 ? relayBudget(relays[0]!, pageCap, base, tor ? TOR_LIST_CEILING : LIST_CEILING)
             : base;
         const quiet = tor ? 1800 : 700;
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;

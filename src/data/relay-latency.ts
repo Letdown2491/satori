@@ -13,11 +13,14 @@ import { jsonStore, debouncedFlush } from './json-store.ts';
 
 const MAX_RELAYS = 500; // LRU cap so the file can't grow without bound
 const ALPHA = 0.3;      // EWMA weight for a new sample (moderate smoothing over the day's queries)
-// Adaptive-budget knobs (Step 4 tunes these against real data). DEFAULT is the caller's `base` (today's fixed
-// cap = also cold-start/low-confidence). We only spend MORE than base on a relay we've LEARNED is starved.
-const N_MIN = 5;         // min samples before the profile is trusted enough to adapt off the default
-const TRUNC_LO = 0.2;    // truncation rate below which the base cap already finishes it (quiet/EOSE)
-const PROLIFIC_EV = 100; // avg events/query above which a truncating relay is a prolific TAIL (scroll recovers it), not starved
+// Adaptive-budget knobs (tuned against real outbox-only data, 2026-07-02). The real signal turned out to be
+// `ev` (events delivered), not truncation: the slow relays deliver ~NOTHING for the feed (they take ~3.4s to
+// EOSE empty), so the win is CUTTING them, not extending them. DEFAULT is the caller's `base` (today's cap =
+// also cold-start/low-confidence).
+const N_MIN = 5;        // min samples before the profile is trusted enough to adapt off the default
+const EV_EMPTY = 1;     // avg events/query below this (i.e. ~0) = empty FOR YOUR FEED → bail fast to `floor`
+const TRUNC_HI = 0.3;   // a DELIVERING relay truncating above this rate looks budget-starved
+const RICH_EV = 20;     // ...and only if it delivers this many events/query (a real backlog) is more time worth it
 const FILE = process.env.SATORI_RELAY_LATENCY_FILE || join(process.cwd(), '.data', 'relay-latency.json');
 
 const norm = (u: string): string => u.replace(/\/+$/, '').toLowerCase();
@@ -58,15 +61,19 @@ export function recordLatency(relay: string, ms: number, truncated: boolean, eve
     flusher.schedule();
 }
 
-/** Adaptive hard-cap (ms) for a single relay, scaling from `base` toward `ceiling` by how budget-starved its
- * profile says it is. Returns `base` (today's behavior) when there's not enough evidence, when it rarely
- * truncates (finishes on its own), or when it's a PROLIFIC tail (high `ev` - waiting only fetches older events
- * that scroll-pagination recovers). Only a relay that truncates a lot while delivering LITTLE (connect/slow
- * delivery) earns extra rope, proportional to its truncation rate. Pure profile read; cheap per query. */
-export function relayBudget(relay: string, base: number, ceiling: number): number {
+/** Adaptive hard-cap (ms) for a single relay from its latency profile:
+ *  - EMPTY (delivers ~nothing across many queries) → `floor`: bail fast. It returns nothing for your feed, so
+ *    waiting the full cap is pure wasted latency with no completeness cost. This is the main win.
+ *  - a real BACKLOG (delivers a lot AND still truncates at the cap) → extend toward `ceiling`, proportional to
+ *    its truncation rate. (Rare on the outbox path - most slow relays are empty, not rich.)
+ *  - otherwise (delivers and finishes in time) or too little evidence → `base` (today's default).
+ * Pure profile read; cheap per query. */
+export function relayBudget(relay: string, floor: number, base: number, ceiling: number): number {
     const s = stats.get(norm(relay));
-    if (!s || s.n < N_MIN) return base;                          // not enough evidence yet → default
+    if (!s || s.n < N_MIN) return base;                                    // not enough evidence yet → default
+    if (s.ev < EV_EMPTY) return floor;                                     // empty for your feed → bail fast
     const truncRate = s.trunc / s.n;
-    if (truncRate < TRUNC_LO || s.ev >= PROLIFIC_EV) return base; // finishes on its own, or prolific tail
-    return Math.min(ceiling, Math.round(base + truncRate * (ceiling - base)));
+    if (truncRate >= TRUNC_HI && s.ev >= RICH_EV)                          // rich but cut off → more rope
+        return Math.min(ceiling, Math.round(base + truncRate * (ceiling - base)));
+    return base;                                                           // delivers, finishes in time → default
 }
