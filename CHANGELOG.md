@@ -44,6 +44,13 @@ All notable changes to this project are documented here. The format is based on
   Article composer's section spacing, button order, and foot now match the other tabs. The
   Article schedule (clock) icon also picks up the same muted color as the others.
 
+### Fixed
+
+- The relay-favorite star and the Undo buttons work again. The helmjs 0.14.2 bump (in 0.4.2) had regressed
+  `h-post` on bare buttons - it only bound the mutating verbs on `<form>` elements - which silently disabled
+  every form-less mutation. Fixed in helmjs 0.14.3 (mutating verbs now bind on any element, like `h-get`
+  already did) and re-bundled.
+
 ## [0.4.2] - 2026-07-02
 
 ### Added
