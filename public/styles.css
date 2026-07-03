@@ -414,6 +414,7 @@
         /* The 1fr label pushes the Feed/Profile columns to the right edge - right-aligned + symmetric,
            and both grids' columns line up there. */
         .filter-grid { display: grid; grid-template-columns: 1fr auto auto; gap: 12px 24px; align-items: center; margin: 6px 0 4px; }
+        .filter-grid.show-kinds { grid-template-columns: 1fr auto auto auto; } /* + the "Own timeline" column */
         .filter-col-head { color: var(--muted); font-size: 12px; text-align: center; }
         .filter-head-left { color: var(--muted); font-size: 12px; } /* the post-type column header, left-aligned */
         .filter-grid-label { font-size: 14px; }

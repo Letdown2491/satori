@@ -140,19 +140,22 @@ function behaviorPanel(a: Appearance): SafeHtml {
  * rides in a hidden field; add/remove re-render this section, Save writes the cookie. */
 /** Server-side feed content filters: a keyword/regex box + structural toggles. The whole
  * section re-renders on save (helmjs swaps #filters-section; zero-JS reloads). */
-// Shared grid header (Type | Feed | Profile) for both the show-allowlist and the hide-grid.
-const gridHead = (): SafeHtml => html`<span class="filter-head-left">Type</span><span class="filter-col-head">Feeds</span><span class="filter-col-head">Profile</span>`;
+// Shared grid header (Type | Feeds | Profile [| extra]) for the show-allowlist and the hide-grid. The
+// show-allowlist passes 'Timeline' for its third checkbox column; the hide-grid omits it (two columns).
+const gridHead = (extra?: string): SafeHtml => html`<span class="filter-head-left">Type</span><span class="filter-col-head">Feeds</span><span class="filter-col-head">Profile</span>${extra ? html`<span class="filter-col-head">${extra}</span>` : null}`;
 
-/** "Show these kinds" FIELDS (no form/button) - the allowlist grid. Checked = SHOWN. */
+/** "Show these kinds" FIELDS (no form/button) - the allowlist grid. Checked = SHOWN. The third column
+ * ("Own timeline") promotes a type to its own entry in the header switcher (its kinds, from your follows). */
 function showKindsFields(prefs: ContentPrefs): SafeHtml {
     const row = (id: string, label: string): SafeHtml => html`
       <span class="filter-grid-label">${label}</span>
       <label class="filter-cell"><input type="checkbox" name="feed_${id}" value="1"${prefs.feed[id] ? raw(' checked') : raw('')}></label>
-      <label class="filter-cell"><input type="checkbox" name="profile_${id}" value="1"${prefs.profile[id] ? raw(' checked') : raw('')}></label>`;
+      <label class="filter-cell"><input type="checkbox" name="profile_${id}" value="1"${prefs.profile[id] ? raw(' checked') : raw('')}></label>
+      <label class="filter-cell"><input type="checkbox" name="timeline_${id}" value="1"${prefs.timeline[id] ? raw(' checked') : raw('')}></label>`;
     return html`
-      <h3>Show these kinds</h3>
-      <p class="filter-help">Pick which kinds of post appear in your timeline and on profiles. Pictures default off in the feed - most are posted as ordinary notes. Choices apply only to what you see; they never leave this machine.</p>
-      <div class="filter-grid">${gridHead()}${join(CONTENT_TYPES.map((c) => row(c.id, c.label)))}</div>`;
+      <h3>Content types</h3>
+      <p class="filter-help">Pick where each type of post shows up: in your main feed, on profiles, or as its own timeline in the header switcher (that type, from the people you follow). Pictures are off in the feed by default, since most are posted as ordinary notes. Choices apply only to what you see, and never leave this machine.</p>
+      <div class="filter-grid show-kinds">${gridHead('Own timeline')}${join([...CONTENT_TYPES].sort((a, b) => a.label.localeCompare(b.label)).map((c) => row(c.id, c.label)))}</div>`;
 }
 
 /** "Content filtering" FIELDS (no form/button) - keyword/regex box + the hide-post-types grid. The hide
@@ -301,7 +304,7 @@ export function privacySection(): SafeHtml {
 }
 
 /** The settings page, organised into CSS-only tabs (shared .tabset-* pattern):
- * Appearance & Behavior (display + feed/posting + media servers) · Filters · Privacy · Relays
+ * General (display + feed/posting + media servers) · Filters · Privacy · Relays
  * (NIP-65 relays + NIP-17 DM relays) · Search. The Relays panel keeps the id
  * `panel-relays`/`set-relays` internally (the tab was renamed from "Network"). All panels
  * render (forms' partial swaps + radio tab-state persist). */
@@ -315,14 +318,14 @@ export function settingsPage(v: SettingsView): SafeHtml {
         <input type="radio" name="settab" id="set-relays" class="tabset-radio">
         <input type="radio" name="settab" id="set-search" class="tabset-radio">
         <div class="tabset-list" role="tablist">
-          <label for="set-appearance" class="tabset-tab" role="tab">Appearance &amp; Behavior</label>
+          <label for="set-appearance" class="tabset-tab" role="tab">General</label>
           <label for="set-backup" class="tabset-tab" role="tab">Backup</label>
           <label for="set-filters" class="tabset-tab" role="tab">Content</label>
           <label for="set-privacy" class="tabset-tab" role="tab">Privacy</label>
           <label for="set-relays" class="tabset-tab" role="tab">Relays</label>
           <label for="set-search" class="tabset-tab" role="tab">Search</label>
         </div>
-        <div class="tabset-panel panel-appearance" role="tabpanel" aria-label="Appearance & Behavior">
+        <div class="tabset-panel panel-appearance" role="tabpanel" aria-label="General">
           ${appearanceSection(v.a)}
           <section>
             <h3>Media</h3>

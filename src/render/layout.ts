@@ -15,7 +15,7 @@ export type ActiveView =
     | 'feed' | 'profile' | 'compose' | 'notifications' | 'bookmarks'
     | 'settings' | 'wallet' | 'drafts' | 'muted' | 'search' | null;
 
-export type FeedTab = 'following' | 'followers' | 'longform';
+export type FeedTab = 'following' | 'followers';
 
 export interface ChromeOpts {
     title?: string;
@@ -27,6 +27,11 @@ export interface ChromeOpts {
     notesSince?: number;
     /** When set, this is a relay timeline: the switcher shows this label as current (no tab active). */
     relayLabel?: string;
+    /** The content types promoted to their own timeline (data/content-prefs.ts) - extra switcher entries,
+     * so you can jump to any promoted timeline from every page. */
+    timelines?: { id: string; label: string }[];
+    /** When set, a promoted-timeline view is active (the content-type id): the switcher marks that entry. */
+    activeTimeline?: string;
     theme?: Theme;
     /** Content already renders its own <h1> (e.g. the article reader) - suppress the
      * injected sr-only page heading so there's exactly one h1. */
@@ -44,7 +49,6 @@ const pollTrigger = (everyS: number, initial: boolean): string =>
 const FEED_TABS: { tab: FeedTab; label: string; href: string }[] = [
     { tab: 'following', label: 'Following', href: '/' },
     { tab: 'followers', label: 'Followers', href: '/followers' },
-    { tab: 'longform', label: 'Longform', href: '/longform' },
 ];
 
 
@@ -73,24 +77,33 @@ export function dmDotInner(unread = false, initial = false): SafeHtml {
 }
 
 /** The centered header switcher - a native <details h-dismiss> dropdown (zero-JS), shown on EVERY page.
- * On a timeline the summary is the current tab (or relay label) with the tabs below (active one highlighted).
- * On any other page, pass `title` (+ optional `titleCount`): the summary becomes that page's title, and the
- * menu lists the page as a dim context row, a divider, then the timelines - so you can jump to a timeline
- * from anywhere without going Home first. Every menu ends in "Browse a relay…" (the relay-picker modal).
- * The pick link carries the switcher's context (tab/label OR title) so the picker response can OOB this
- * <details> back CLOSED (`oob`) - opening a modal is a partial swap that would otherwise leave it open. */
-export function feedSwitch(o: { active?: FeedTab; relayLabel?: string; title?: string; titleCount?: number; oob?: boolean } = {}): SafeHtml {
+ * On a timeline the summary is the current tab (or relay label, or a promoted-timeline label) with the tabs
+ * below (active one highlighted). Any content type promoted to its own timeline (`timelines`) is listed under
+ * the tabs, linking to /timeline/<id>. On any other page, pass `title` (+ optional `titleCount`): the summary
+ * becomes that page's title, and the menu lists the page as a dim context row, then the tabs + timelines - so
+ * you can jump to a timeline from anywhere without going Home first. Every menu ends in "Browse a relay…" (the
+ * relay-picker modal). The pick link carries the switcher's context (tab/label OR title) so the picker response
+ * can OOB this <details> back CLOSED (`oob`) - opening a modal is a partial swap that would otherwise leave it
+ * open (a promoted-timeline view reuses the tab=following pick context). */
+export function feedSwitch(o: { active?: FeedTab; relayLabel?: string; title?: string; titleCount?: number; timelines?: { id: string; label: string }[]; activeTimeline?: string; oob?: boolean } = {}): SafeHtml {
     const onPage = o.title !== undefined; // a non-timeline page: the summary is the page title, no tab active
-    const label = onPage ? o.title! : (o.relayLabel ?? (FEED_TABS.find((t) => t.tab === o.active) ?? FEED_TABS[0]!).label);
+    const activeTl = o.activeTimeline ? o.timelines?.find((t) => t.id === o.activeTimeline) : undefined;
+    const label = onPage ? o.title!
+        : activeTl ? activeTl.label
+        : (o.relayLabel ?? (FEED_TABS.find((t) => t.tab === o.active) ?? FEED_TABS[0]!).label);
     const pickHref = onPage
         ? `/relay/pick?title=${encodeURIComponent(o.title!)}${o.titleCount != null ? `&tc=${String(o.titleCount)}` : ''}`
         : `/relay/pick?tab=${o.active ?? 'following'}${o.relayLabel ? `&rl=${encodeURIComponent(o.relayLabel)}` : ''}`;
+    // A tab is highlighted only on a plain tab view (not a relay browse, not a promoted-timeline view, not an
+    // off-feed page) - those set their own current label instead.
+    const tabActive = (t: FeedTab): boolean => !o.relayLabel && !o.activeTimeline && !onPage && t === o.active;
     return html`
       <details id="feed-switch"${o.oob ? raw(' h-oob="true"') : raw('')} class="feed-switch" h-dismiss>
         <summary class="feed-toggle"><span>${label}</span>${onPage ? titleCount(o.titleCount) : null} <span class="chevron">▾</span></summary>
         <div class="feed-menu">
           ${onPage ? html`<span class="feed-current">${o.title}</span>` : null}
-          ${FEED_TABS.map((t) => html`<a class="feed-item ${!o.relayLabel && !onPage && t.tab === o.active ? 'active' : ''}" href="${t.href}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
+          ${FEED_TABS.map((t) => html`<a class="feed-item ${tabActive(t.tab) ? 'active' : ''}" href="${t.href}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
+          ${(o.timelines ?? []).map((t) => html`<a class="feed-item ${o.activeTimeline === t.id ? 'active' : ''}" href="/timeline/${t.id}" h-get h-prefetch="hover" h-scroll="top instant">${t.label}</a>`)}
           <a class="feed-item feed-item-add" href="${pickHref}" h-target="#modal" h-swap="inner" h-focus="#relay-pick-url" h-push-url="false">Browse a relay…</a>
         </div>
       </details>`;
@@ -169,8 +182,8 @@ function bar(o: ChromeOpts): SafeHtml {
     // Every page gets the switcher: on a timeline it's the tab switcher; elsewhere the summary is the
     // page title and the menu drops the timelines below it (jump to a feed from anywhere).
     const center = html`<div class="header-center">${onFeed
-        ? feedSwitch({ active: o.feedTab ?? 'following', relayLabel: o.relayLabel })
-        : feedSwitch({ title: o.title ?? '', titleCount: o.titleCount })}</div>`;
+        ? feedSwitch({ active: o.feedTab ?? 'following', relayLabel: o.relayLabel, timelines: o.timelines, activeTimeline: o.activeTimeline })
+        : feedSwitch({ title: o.title ?? '', titleCount: o.titleCount, timelines: o.timelines })}</div>`;
     // Search + the account hub. The avatar itself becomes the privacy shield when Tor
     // is on (in accountMenu), so no separate indicator crowds the bar.
     const right = html`<nav class="bar-right" aria-label="Account"><a class="notes-mark" href="/search" aria-label="Search" h-focus="#search-input" h-scroll="top instant">${icon('search')}</a>${accountMenu(o.me)}</nav>`;
@@ -184,7 +197,9 @@ export function page(content: SafeHtml, o: ChromeOpts): SafeHtml {
     // One injected sr-only <h1> per page (the document heading), unless the content
     // already supplies one (the article reader). Feed has no chrome title → use the
     // active tab's label.
-    const h1text = o.title ?? (o.active === 'feed' ? (FEED_TABS.find((t) => t.tab === o.feedTab)?.label ?? 'Home') : 'Home');
+    const h1text = o.title ?? (o.active === 'feed'
+        ? (o.activeTimeline ? (o.timelines?.find((t) => t.id === o.activeTimeline)?.label ?? 'Home') : (FEED_TABS.find((t) => t.tab === o.feedTab)?.label ?? 'Home'))
+        : 'Home');
     const pageHeading = o.contentH1 ? null : html`<h1 class="sr-only">${h1text}</h1>`;
     const shell = o.loggedIn
         ? html`

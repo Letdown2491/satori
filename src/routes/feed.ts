@@ -1,8 +1,9 @@
-// The timelines. Three tabs share one machinery:
+// The timelines. Two tabs plus the promoted content-type timelines share one machinery:
 //   following - your follows' notes, outbox-routed (their NIP-65 write relays).
 //   followers - people who follow you, same outbox routing.
-//   longform  - your follows' NIP-23 long-form (kind:30023).
-// All paginate (?until cursor + infinite scroll) and carry a "new notes" poller.
+//   /timeline/<id> - your follows' events of ONE promoted content type (its kinds), same follows route. The
+//     old hardcoded "longform" tab is now just the article timeline (/timeline/article, promoted by default).
+// All paginate (?until cursor + infinite scroll); only Following carries the "new notes" poller / boundary.
 
 import { buildFollowsRoute, buildFollowersRoute, fetchRoutedPage, fetchRelayPage } from '../data/feeds.ts';
 import { getFavoriteRelays, toggleFavoriteRelay, normalizeRelayUrl, relayLabel } from '../data/relay-favorites.ts';
@@ -30,8 +31,7 @@ import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
 import { myRelayUrls } from '../nostr/nip65.ts';
 import { signsOnClient } from '../session.ts';
-import { FEED_KINDS } from '../manifest/feed-config.ts';
-import { feedKinds, profileKinds } from '../data/content-prefs.ts';
+import { feedKinds, profileKinds, timelineKinds, timelineTypes, isTimelineType, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { prepareEvents } from '../manifest/registry.ts';
 import type { FeedTab } from '../render/layout.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -43,7 +43,7 @@ const LONGFORM_PAGE = 20;
 // calm nudge, not a live counter.
 // Feed fetch-kinds now live in the local manifest's IA config (manifest/feed-config.ts).
 
-const TABS: FeedTab[] = ['following', 'followers', 'longform'];
+const TABS: FeedTab[] = ['following', 'followers'];
 
 /** The private (NIP-44) list kinds still awaiting a nip07 decrypt this session.
  * Until decrypted they can't filter the feed (mutes) OR fill the bookmark glyph
@@ -94,30 +94,38 @@ function boundaryParam(ctx: Ctx): number | null {
     return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-const PATHS: Record<FeedTab, string> = { following: '/', followers: '/followers', longform: '/longform' };
-const pageSize = (tab: FeedTab) => (tab === 'longform' ? LONGFORM_PAGE : PAGE);
-// The longform feed is the dedicated articles surface (always articles); every other timeline feed uses
-// the user's per-kind visibility prefs (notes/polls by default, rich kinds opt-in).
-const kindsFor = (tab: FeedTab, me: string) => (tab === 'longform' ? FEED_KINDS.longform : feedKinds(me));
+const PATHS: Record<FeedTab, string> = { following: '/', followers: '/followers' };
 
-// A feed SOURCE: one of the routed tabs, OR a single relay's timeline ("browse a relay"). fillPage/
-// buildFeed are source-agnostic; only the source-specific bits below (fetch, cache key, kinds, pagesize,
-// sentinel) branch. A relay source is plain infinite scroll, kinds = the user's feed prefs, NOT cached
-// (no TTL for its key → cachedFeed/putCachedFeed simply no-op), and shows the stranger-feed `mute` glyph.
-// No caught-up boundary - that's a Following-only concept.
-export type FeedSource = { tab: FeedTab } | { relay: string };
+// A feed SOURCE: one of the routed tabs, a single relay's timeline ("browse a relay"), OR a promoted content
+// type's timeline (its kinds, from your follows). fillPage/buildFeed are source-agnostic; only the source-
+// specific bits below (fetch, cache key, kinds, pagesize, sentinel) branch. A relay source is plain infinite
+// scroll, kinds = the user's feed prefs, NOT cached (no TTL for its key → cachedFeed/putCachedFeed simply no-
+// op), and shows the stranger-feed `mute` glyph. A type source is the old longform machinery generalized:
+// same follows route, one content type's kinds, rich-content page size. No caught-up boundary - that's a
+// Following-only concept.
+export type FeedSource = { tab: FeedTab } | { relay: string } | { type: string };
 const isRelay = (src: FeedSource): src is { relay: string } => 'relay' in src;
-const srcKey = (src: FeedSource): string => (isRelay(src) ? `relay:${src.relay}` : src.tab);
-const srcPageSize = (src: FeedSource): number => (isRelay(src) ? PAGE : pageSize(src.tab));
+const isType = (src: FeedSource): src is { type: string } => 'type' in src;
+const srcKey = (src: FeedSource): string => (isRelay(src) ? `relay:${src.relay}` : isType(src) ? `type:${src.type}` : src.tab);
+const srcPageSize = (src: FeedSource): number => (isType(src) ? LONGFORM_PAGE : PAGE); // rich types page like longform
 // An explicit relay browse shows that relay's CONTENT across every renderable kind (profileKinds), not the
 // narrow home-feed set - otherwise a long-form-only relay (articles/wikis, no kind:1) reads as empty. This
 // also lets seen-relays learn addressable-event authors from a relay you visit (bootstrapping outbox reads).
-const srcKinds = (src: FeedSource, me: string): number[] => (isRelay(src) ? profileKinds(me) : kindsFor(src.tab, me));
+// A type source queries exactly that content type's kinds.
+const srcKinds = (src: FeedSource, me: string): number[] => (isRelay(src) ? profileKinds(me) : isType(src) ? timelineKinds(src.type) : feedKinds(me));
 function srcSentinel(src: FeedSource, until: number): SafeHtml {
-    return isRelay(src) ? pagerSentinel(`/relay?r=${encodeURIComponent(src.relay)}&until=${until}`) : sentinel(src.tab, until);
+    if (isRelay(src)) return pagerSentinel(`/relay?r=${encodeURIComponent(src.relay)}&until=${until}`);
+    if (isType(src)) return pagerSentinel(`/timeline/${src.type}?until=${until}`);
+    return sentinel(src.tab, until);
 }
 async function srcFetch(s: Session & { me: string }, src: FeedSource, until?: number, limit?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     if (isRelay(src)) return fetchRelayPage(s.pool, src.relay, limit ?? PAGE, until, srcKinds(src, s.me)).catch(() => [] as NostrEvent[]);
+    if (isType(src)) {
+        // Same follows route as Following (same authors), just this content type's kinds - exactly what the
+        // old longform tab did, now per promoted type.
+        const route = await routeFor(s, 'following');
+        return fetchRoutedPage(s.pool, route, limit ?? LONGFORM_PAGE, until, timelineKinds(src.type), undefined, budget).catch(() => [] as NostrEvent[]);
+    }
     return fetchPage(s, src.tab, until, limit, budget);
 }
 
@@ -134,7 +142,7 @@ async function routeFor(s: Session & { me: string }, tab: FeedTab): Promise<Map<
 
 async function fetchPage(s: Session & { me: string }, tab: FeedTab, until?: number, limit?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     const route = await routeFor(s, tab);
-    return fetchRoutedPage(s.pool, route, limit ?? pageSize(tab), until, kindsFor(tab, s.me), undefined, budget).catch(() => [] as NostrEvent[]);
+    return fetchRoutedPage(s.pool, route, limit ?? PAGE, until, feedKinds(s.me), undefined, budget).catch(() => [] as NostrEvent[]);
 }
 
 /** Infinite-scroll sentinel for a tab (delegates to the shared pager sentinel). */
@@ -217,13 +225,13 @@ async function fillPage(s: Session & { me: string }, src: FeedSource, until?: nu
     return { visible, allRaw, more, newestRaw, recovered };
 }
 
-async function buildFeed(s: Session & { me: string }, src: FeedSource, until?: number): Promise<{ content: SafeHtml; newestTs: number | undefined; events: NostrEvent[] }> {
+async function buildFeed(s: Session & { me: string }, src: FeedSource, until?: number, emptyLine?: string): Promise<{ content: SafeHtml; newestTs: number | undefined; events: NostrEvent[] }> {
     const { visible, allRaw, more, newestRaw } = await fillPage(s, src, until);
     // nip07: kick off the private-list decrypt as the feed lands, then it re-renders. Tab feeds only - the
-    // primer re-renders a TAB's #feed; a relay feed skips it (private mutes just apply once you visit a tab).
-    const primer = !isRelay(src) && pendingPrivateKinds(s).length ? listPrimer({ tab: src.tab }) : null;
+    // primer re-renders a TAB's #feed; a relay/type feed skips it (private mutes just apply once you visit a tab).
+    const primer = !isRelay(src) && !isType(src) && pendingPrivateKinds(s).length ? listPrimer({ tab: src.tab }) : null;
     const body = visible.length === 0 && allRaw.length === 0
-        ? quoteEmpty(quote('empty'))
+        ? quoteEmpty(emptyLine ?? quote('empty'))
         : html`${noteList(visible, s.profiles, s, { mute: isRelay(src), faces: true })}${more}`;
     return {
         content: html`<ul class="feed" id="feed">${body}</ul>${primer}`,
@@ -369,7 +377,7 @@ export async function getNotesDot(ctx: Ctx): Promise<void> {
     // the slow / connect-laggard relays the fast landing paint can't wait for - and fold the result into the
     // pending buffer. Counting the BUFFER (not just this fetch) means the dot reflects what the landing will
     // actually render (fillPage folds the same buffer), so the count can't promise notes the load then misses.
-    const events = await fetchRoutedPage(s.pool, route, threshold + 5, undefined, kindsFor('following', s.me), seen, 'adaptive').catch(() => [] as NostrEvent[]);
+    const events = await fetchRoutedPage(s.pool, route, threshold + 5, undefined, feedKinds(s.me), seen, 'adaptive').catch(() => [] as NostrEvent[]);
     foldPending(s.me, 'following', events, false);
     // Count against the SAME boundary the landing uses (not raw `seen`), so the dot counts exactly the set the
     // landing will surface as "new" - after a >7d absence `boundary` floors to 7d, and events older than that
@@ -381,7 +389,32 @@ export async function getNotesDot(ctx: Ctx): Promise<void> {
 
 export const getFeed = (ctx: Ctx) => serveFeed(ctx, 'following');
 export const getFollowers = (ctx: Ctx) => serveFeed(ctx, 'followers');
-export const getLongform = (ctx: Ctx) => serveFeed(ctx, 'longform');
+// Back-compat: the old /longform URL is now just the article timeline (promoted by default).
+export const getLongform = (ctx: Ctx) => redirect(ctx, '/timeline/article');
+
+/** GET /timeline/:id - a promoted content type's own timeline: that type's kinds (data/content-prefs.ts) from
+ * the people you follow (the SAME outbox follows route as Following, just different kinds - the generalized
+ * longform tab). Plain paginated infinite scroll through the shared fill/filter/enrich machinery; no caught-up
+ * boundary, no mark-seen, no new-notes dot - those stay Following-only. An unknown content-type id falls back
+ * to the home feed. A rare-kind timeline (e.g. Custom NIPs) is often empty; it shows a calm empty message. */
+export async function getTimeline(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const id = ctx.params.id ?? '';
+    if (!isTimelineType(id)) { redirect(ctx, '/'); return; }
+    const src: FeedSource = { type: id };
+    const untilParam = ctx.query.get('until');
+    const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;
+    const label = CONTENT_TYPES.find((c) => c.id === id)?.label ?? 'posts';
+
+    if (ctx.isPartial && ctx.hTarget === '#more') {
+        const { visible, more } = await fillPage(s, src, until);
+        sendFragment(ctx, html`${noteList(visible, s.profiles, s, { faces: true })}${more}`);
+        return;
+    }
+    const { content, newestTs } = await buildFeed(s, src, until, `No ${label.toLowerCase()} from people you follow yet.`);
+    sendPage(ctx, content, chromeFor(ctx, s, { active: 'feed', activeTimeline: id, notesSince: newestTs }));
+}
 
 /** GET /relay?r=<wss url> - browse a single relay's timeline (saved or ad-hoc). Plain infinite scroll
  * through the shared fill/filter/enrich machinery; no caught-up boundary, no mark-seen (the dot tracks
@@ -436,11 +469,13 @@ export async function getRelayPick(ctx: Ctx): Promise<void> {
     const favs = getFavoriteRelays(s.me);
     if (ctx.isPartial) {
         // Rebuild the switcher CLOSED (OOB) for whichever header opened the picker: a non-timeline page
-        // carries ?title (+ ?tc); a timeline carries ?tab (+ ?rl). Reconstruct the matching one.
+        // carries ?title (+ ?tc); a timeline carries ?tab (+ ?rl). Reconstruct the matching one, keeping the
+        // promoted-timeline entries so canceling the picker doesn't strip them from the menu.
+        const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
         const title = ctx.query.get('title');
         const sw = title !== null
-            ? feedSwitch({ title, titleCount: Number(ctx.query.get('tc')) || undefined, oob: true })
-            : feedSwitch({ active: tabParam(ctx), relayLabel: ctx.query.get('rl') || undefined, oob: true });
+            ? feedSwitch({ title, titleCount: Number(ctx.query.get('tc')) || undefined, timelines, oob: true })
+            : feedSwitch({ active: tabParam(ctx), relayLabel: ctx.query.get('rl') || undefined, timelines, oob: true });
         sendFragment(ctx, html`${relayPicker(favs, mine)}${sw}`);
     } else {
         sendPage(ctx, relayPickerPage(favs, mine), chromeFor(ctx, s, { active: 'feed', title: 'Browse a relay' }));

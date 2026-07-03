@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Custom timelines. Any content type in Settings > Content can be given its own entry in the header
+  switcher, showing that type from the people you follow. So you can, for example, keep Pictures out of
+  your main feed but still have a Pictures timeline, or add a Custom NIPs timeline. It's the third
+  checkbox ("Own timeline") next to Feeds and Profile. Articles is on by default, which is the old
+  Longform tab, now just one of these timelines.
+
+### Changed
+
+- Renamed the "Appearance & Behavior" settings tab to "General".
+
 ## [0.5.0] - 2026-07-04
 
 ### Added

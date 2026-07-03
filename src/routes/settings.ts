@@ -7,9 +7,9 @@
 
 import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, contentTabPanel, backupSection, type SettingsView } from '../render/settings.ts';
 import { getFilters, saveFilters } from '../data/filters.ts';
-import { getContentPrefs, saveContentPrefs, CONTENT_TYPES } from '../data/content-prefs.ts';
+import { getContentPrefs, saveContentPrefs, timelineTypes, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { privacyMode, setPrivacyMode, isPrivacyMode } from '../privacy.ts';
-import { accountMenu } from '../render/layout.ts';
+import { accountMenu, feedSwitch } from '../render/layout.ts';
 import { html } from '../html.ts';
 import { fetchTrustScore } from '../data/trust.ts';
 import { relayListTemplate, publishRelayList, publishRelayListSigned, clearRelayListCache } from '../data/relays.ts';
@@ -103,9 +103,9 @@ export async function postContent(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const form = await readForm(ctx.req);
-    // Show-these-kinds allowlist.
-    const pick = (p: 'feed' | 'profile') => Object.fromEntries(CONTENT_TYPES.map((c) => [c.id, form.get(`${p}_${c.id}`) === '1']));
-    saveContentPrefs(s.me, { feed: pick('feed'), profile: pick('profile') });
+    // Show-these-kinds allowlist (feed / profile) plus the promoted-timeline column.
+    const pick = (p: 'feed' | 'profile' | 'timeline') => Object.fromEntries(CONTENT_TYPES.map((c) => [c.id, form.get(`${p}_${c.id}`) === '1']));
+    saveContentPrefs(s.me, { feed: pick('feed'), profile: pick('profile'), timeline: pick('timeline') });
     // Content filtering: keyword/regex patterns + hide-post-types flags.
     const patterns = (form.get('patterns') ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
     const flags = (p: 'feed' | 'profile') => ({
@@ -114,8 +114,13 @@ export async function postContent(ctx: Ctx): Promise<void> {
         hideLinkOnly: form.get(`${p}_hideLinkOnly`) === '1',
     });
     saveFilters(s.me, { patterns, feed: flags('feed'), profile: flags('profile') });
-    if (ctx.isPartial) sendFragment(ctx, contentTabPanel(getContentPrefs(s.me), getFilters(s.me), 'Saved ✓'));
-    else redirect(ctx, '/settings');
+    if (ctx.isPartial) {
+        // Promoting/demoting a type changes the header switcher's timeline list, so OOB-rebuild the switcher
+        // (the settings page's onPage variant, summary "Settings") alongside the tab panel - otherwise the new
+        // timeline only appears after a full page reload.
+        const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
+        sendFragment(ctx, html`${contentTabPanel(getContentPrefs(s.me), getFilters(s.me), 'Saved ✓')}${feedSwitch({ title: 'Settings', timelines, oob: true })}`);
+    } else redirect(ctx, '/settings');
 }
 
 async function sendFullPage(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView>): Promise<void> {

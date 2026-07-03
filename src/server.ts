@@ -17,7 +17,7 @@ import { getScheduled, postScheduledCancel } from './routes/scheduled.ts';
 import { prunePersisted, persistedPubkeys } from './store.ts';
 import { adoptOwnerIfUnclaimed, accessMode } from './access.ts';
 import { getSession, isLoggedIn } from './session.ts';
-import { getFeed, getFollowers, getLongform, getRelay, getRelayPick, postRelayFavorite, getFaces, getNotesDot, getFeedSeen, getListPrime, postListPrimed } from './routes/feed.ts';
+import { getFeed, getFollowers, getLongform, getTimeline, getRelay, getRelayPick, postRelayFavorite, getFaces, getNotesDot, getFeedSeen, getListPrime, postListPrimed } from './routes/feed.ts';
 import { getLogin, postLogin, postLogout, postLoginNip07, postLoginNip07Verify } from './routes/login.ts';
 import { getProfile, getProfileExtras, getThread, getThreadPrivate, postThreadPrivateSeals, postThreadPrivateRumors, getArticle, getEmbed } from './routes/read.ts';
 import { getHandlers } from './routes/handlers.ts';
@@ -143,6 +143,7 @@ const ROUTES: Route[] = [
     route('POST', '/settings/media/publish', postMediaPublish),
     route('GET', '/followers', getFollowers),
     route('GET', '/longform', getLongform),
+    route('GET', '/timeline/:id', getTimeline),
     route('GET', '/faces', getFaces),
     route('GET', '/relay', getRelay),
     route('GET', '/relay/pick', getRelayPick),
