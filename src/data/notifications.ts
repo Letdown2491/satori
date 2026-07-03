@@ -9,6 +9,7 @@ import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { KIND_POLL, KIND_POLL_RESPONSE } from '../nostr/nip88.ts';
 import { KIND_COMMENT } from '../nostr/nip22.ts';
+import { verifyEvent } from 'nostr-tools/pure';
 
 export type NotifType = 'reply' | 'mention' | 'pollvote' | 'zap' | 'reaction' | 'privateReply';
 export interface Notif { type: NotifType; event: NostrEvent }
@@ -87,24 +88,33 @@ function msatsFromBolt11(invoice: string): number {
     }
 }
 
-/** Pull the sender + sats out of a kind:9735 zap receipt (from its embedded kind:9734 request
- * in the `description` tag). The request's `amount` tag is optional, so fall back to the
- * authoritative amount in the receipt's bolt11 invoice rather than showing "0 sats". */
+/** Pull the sender + sats out of a kind:9735 zap receipt. The zapper identity AND the claimed amount both
+ * live in the embedded kind:9734 request (the `description` tag), which ANYONE can forge in a receipt tagged
+ * to you - SimplePool verifies only the receipt's OWN signature, not the embedded request's. So we verify the
+ * request's signature and confirm its p/e/a match the receipt (else the named zapper is spoofable), and take
+ * the amount from the bolt11 invoice (what was actually paid), authoritative over the request's self-declared
+ * `amount`. An unverifiable request yields an ANONYMOUS zap - real sats from the invoice, no name, the
+ * "someone zapped you" path - never a spoofed identity. */
 export function parseZapReceipt(ev: NostrEvent): ZapInfo {
+    const bolt11 = ev.tags.find((t) => t[0] === 'bolt11')?.[1];
+    const paid = bolt11 ? msatsFromBolt11(bolt11) : 0;
     const desc = ev.tags.find((t) => t[0] === 'description')?.[1];
     let sender: string | null = null;
-    let msats = 0;
+    let claimed = 0;
     if (desc) {
         try {
             const req = JSON.parse(desc) as NostrEvent;
-            sender = req.pubkey ?? null;
-            const amt = req.tags?.find((t) => t[0] === 'amount')?.[1];
-            if (amt) msats = Number(amt) || 0;
-        } catch { /* malformed */ }
+            // Only trust the zapper/amount from a validly signed 9734 whose target tags match the receipt's.
+            const matches = (name: string): boolean => {
+                const on = ev.tags.find((t) => t[0] === name)?.[1];
+                return !on || req.tags?.find((t) => t[0] === name)?.[1] === on;
+            };
+            if (req.kind === 9734 && verifyEvent(req as never) && matches('p') && matches('e') && matches('a')) {
+                sender = req.pubkey ?? null;
+                claimed = Number(req.tags?.find((t) => t[0] === 'amount')?.[1]) || 0;
+            }
+        } catch { /* malformed description → anonymous */ }
     }
-    if (msats === 0) {
-        const bolt11 = ev.tags.find((t) => t[0] === 'bolt11')?.[1];
-        if (bolt11) msats = msatsFromBolt11(bolt11);
-    }
+    const msats = paid > 0 ? paid : claimed; // bolt11 (actually paid) is authoritative; request amount only as fallback
     return { sender, sats: Math.round(msats / 1000) };
 }

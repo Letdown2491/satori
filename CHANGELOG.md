@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format is based on
   scheduled notes and articles. (Polls stay non-schedulable by design: a poll's end time is
   baked in when it's signed, so a scheduled poll would arrive already counting down.)
 - A page `<meta name="description">`.
+- A `feedRecovery` counter at the login-gated `GET /metrics` (landings, notes surfaced, notes
+  recovered by the slow-relay backfill, and the recovery rate) so the feed-reliability work can be
+  measured and tuned on real numbers instead of estimates.
 
 ### Changed (defaults)
 
@@ -55,6 +58,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Zap notifications are now validated instead of trusted. A kind:9735 receipt's zapper name and sats
+  come from an embedded zap request that anyone can forge in a receipt addressed to you, so a fake
+  "Jack zapped you 1,000,000 sats" was possible. The embedded request's signature is now verified and
+  its target checked against the receipt; the amount is taken from the paid invoice (authoritative). An
+  unverifiable zap shows as an anonymous "someone zapped you N sats" with the real amount, never a
+  spoofed name. (Found in a NIP-57 read-side audit.)
 - Trailing punctuation after a link no longer becomes part of the link. A URL written with normal
   punctuation, e.g. `https://nostr21.com,` or `(https://nostr21.com)`, was linked including the comma or
   paren, so clicking it went to the wrong address; the trailing characters now stay as text. Balanced parens

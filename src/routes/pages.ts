@@ -7,6 +7,7 @@ import { profileCacheStats } from '../data/profile-cache.ts';
 import { avatarCacheStats } from '../data/avatar-cache.ts';
 import { engagementStats } from '../data/engagement-cache.ts';
 import { dmScanStats } from '../data/dm-metrics.ts';
+import { feedRecoveryStats } from '../data/feed-metrics.ts';
 import { requireLogin, chromeFor } from './common.ts';
 import { readAppearance, writeAppearance, parseZapPresets, THEMES, type Theme } from '../theme.ts';
 import { prefToggle, PREF_FIELDS } from '../render/settings.ts';
@@ -59,7 +60,7 @@ export function getMetrics(ctx: Ctx): void {
     const s = requireLogin(ctx);
     if (!s) return;
     ctx.res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    ctx.res.end(JSON.stringify({ profileCache: profileCacheStats(), avatarCache: avatarCacheStats(), engagement: engagementStats(s.me), dmScans: dmScanStats() }, null, 2));
+    ctx.res.end(JSON.stringify({ profileCache: profileCacheStats(), avatarCache: avatarCacheStats(), engagement: engagementStats(s.me), dmScans: dmScanStats(), feedRecovery: feedRecoveryStats() }, null, 2));
 }
 
 export function getWallet(ctx: Ctx): void {

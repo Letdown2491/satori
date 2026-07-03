@@ -21,6 +21,7 @@ import { ensureLists, mutedPubkeys, PRIVATE_KINDS, actionKind } from '../actions
 import { getFilters, compileFilters } from '../data/filters.ts';
 import { cachedFeed, putCachedFeed } from '../data/feed-cache.ts';
 import { foldPending, pendingNew } from '../data/feed-pending.ts';
+import { recordFollowingLanding } from '../data/feed-metrics.ts';
 import { ensureLikes } from '../likes.ts';
 import { ensureEngaged, engageTarget } from '../engaged.ts';
 import { ensureZaps } from '../zaps.ts';
@@ -155,7 +156,7 @@ const OVERFETCH = 3;  // when filtering, the first window pulls this many × tar
  * (the un-consumed tail is simply re-read by the next window). Returns the visible notes, the raw
  * events consumed (for the list-primer's private-list check), a `more` sentinel, and the newest
  * raw timestamp (the notes-dot high-water). */
-async function fillPage(s: Session & { me: string }, src: FeedSource, until?: number, extra?: NostrEvent[], budget?: 'page' | 'adaptive'): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number }> {
+async function fillPage(s: Session & { me: string }, src: FeedSource, until?: number, extra?: NostrEvent[], budget?: 'page' | 'adaptive'): Promise<{ visible: NostrEvent[]; allRaw: NostrEvent[]; more: SafeHtml | null; newestRaw: number; recovered: number }> {
     // Load the lists CONCURRENTLY with the first page fetch, not serially before it: mute is only
     // needed once the page returns (filtering), bookmark/pin only at render. Awaited inside the loop
     // after the fetch (so it overlaps it) - saves ~1 round-trip on a cold paint (a full ~12s on Tor).
@@ -198,11 +199,12 @@ async function fillPage(s: Session & { me: string }, src: FeedSource, until?: nu
     // fast paint's relays didn't deliver in time. Merge post-loop so they ride the SAME keep()/enrich path -
     // dedup against what we already have, filter (mute/content), then re-sort newest-first. This is what makes
     // the new-notes dot and the load consistent: the dot counted these, and here they actually render.
+    let recovered = 0; // notes the tight first-paint fetch missed that the backfill buffer (`extra`) recovers - see feed-metrics.ts
     if (extra?.length) {
         const have = new Set(allRaw.map((e) => e.id));
         for (const e of extra) {
             if (have.has(e.id) || !keep(e)) continue;
-            allRaw.push(e); visible.push(e);
+            allRaw.push(e); visible.push(e); recovered++;
         }
         visible.sort((a, b) => b.created_at - a.created_at);
         if (visible.length) newestRaw = Math.max(newestRaw, visible[0]!.created_at); // high-water covers folded events
@@ -212,7 +214,7 @@ async function fillPage(s: Session & { me: string }, src: FeedSource, until?: nu
     // so this stays free of `kind ===` branching.
     await Promise.all([ensureProfiles(s, [s.me, ...notePubkeys(visible)]), ensureLikes(s, visible.map((e) => e.id)), ensureEngaged(s, visible.map(engageTarget)), ensureZaps(s), prepareEvents(visible, s)]);
     const more = !exhausted ? srcSentinel(src, cursor!) : null;
-    return { visible, allRaw, more, newestRaw };
+    return { visible, allRaw, more, newestRaw, recovered };
 }
 
 async function buildFeed(s: Session & { me: string }, src: FeedSource, until?: number): Promise<{ content: SafeHtml; newestTs: number | undefined; events: NostrEvent[] }> {
@@ -282,11 +284,12 @@ function followingBoundary(ctx: Ctx, me: string): number {
 async function followingFirstView(s: Session & { me: string }, boundary: number): Promise<{ inner: SafeHtml; newestTs: number; events: NostrEvent[] }> {
     // Fold in the background-backfill buffer (slow-relay events the dot found since the fast paint) so the
     // landing SHOWS exactly what the dot COUNTED - fillPage's keep() applies mute/content filters to them.
-    const { visible, allRaw, more, newestRaw } = await fillPage(s, { tab: 'following' }, undefined, pendingNew(s.me, 'following', boundary), 'page');
+    const { visible, allRaw, more, newestRaw, recovered } = await fillPage(s, { tab: 'following' }, undefined, pendingNew(s.me, 'following', boundary), 'page');
     const newVisible = visible.filter((e) => e.created_at > boundary);
     // Mark everything we're showing as `shown` so the next dot poll (which re-fetches with the adaptive budget)
     // doesn't recount on-screen notes as "new".
     foldPending(s.me, 'following', newVisible, true);
+    recordFollowingLanding(newVisible.length, recovered); // measure how much the slow-relay backfill actually rescued
     const reached = visible.some((e) => e.created_at <= boundary) || more === null; // saw all the new in one window
     const moreExists = more !== null || visible.length > newVisible.length; // more pages, or older notes held in this window
     const contFrom = (newVisible.length ? newVisible[newVisible.length - 1]!.created_at : newestRaw) - 1;
