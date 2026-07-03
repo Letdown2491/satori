@@ -17,6 +17,10 @@ All notable changes to this project are documented here. The format is based on
 ### Changed
 
 - Renamed the "Appearance & Behavior" settings tab to "General".
+- Settings > Content is easier to use. The content-type toggles now save the moment you flip them (with a
+  quiet "Saved ✓"), so there's no Save button to hunt for; the keyword/regex filter keeps its own Save, since
+  you don't want that saved mid-typing. The type grid also scrolls within a fixed height, with its column
+  headers pinned, so it stays compact as more types are added.
 
 ### Fixed
 

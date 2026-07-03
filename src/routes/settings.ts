@@ -5,7 +5,7 @@
 // here; nip07 sign-and-continues. A relay save also updates s.myRelays + invalidates
 // the routed-feed caches and persists, so the whole app uses the new list.
 
-import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, contentTabPanel, backupSection, type SettingsView } from '../render/settings.ts';
+import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, type SettingsView } from '../render/settings.ts';
 import { getFilters, saveFilters } from '../data/filters.ts';
 import { getContentPrefs, saveContentPrefs, timelineTypes, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { privacyMode, setPrivacyMode, isPrivacyMode } from '../privacy.ts';
@@ -97,16 +97,32 @@ async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<Sett
     return { a, relayDraft, mediaDraft, dmRelayDraft, searchNoteDraft, searchProfileDraft, filters, contentPrefs, ...ov };
 }
 
-/** POST /settings/content - the whole Content tab in one save: per-kind visibility AND the filters
- * (keywords + hide-types) persist together, so neither half is lost to a separate form's button. */
-export async function postContent(ctx: Ctx): Promise<void> {
+/** POST /settings/content-prefs - the AUTO-SAVING content-types grid: per-kind feed/profile visibility plus
+ * the promoted-timeline column. Reads ONLY its own fields (feed_/profile_/timeline_ over CONTENT_TYPES). On
+ * the helmjs path it returns just the "Saved ✓" tick (swaps #content-saved, leaving the grid untouched) plus
+ * an OOB switcher rebuild (a timeline toggle changes the promoted list); no-JS falls back to a full reload. */
+export async function postContentPrefs(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const form = await readForm(ctx.req);
-    // Show-these-kinds allowlist (feed / profile) plus the promoted-timeline column.
     const pick = (p: 'feed' | 'profile' | 'timeline') => Object.fromEntries(CONTENT_TYPES.map((c) => [c.id, form.get(`${p}_${c.id}`) === '1']));
     saveContentPrefs(s.me, { feed: pick('feed'), profile: pick('profile'), timeline: pick('timeline') });
-    // Content filtering: keyword/regex patterns + hide-post-types flags.
+    if (ctx.isPartial) {
+        // Promoting/demoting a type changes the header switcher's timeline list, so OOB-rebuild the switcher
+        // (the settings page's onPage variant, summary "Settings") - otherwise the new timeline only appears
+        // after a full page reload.
+        const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
+        sendFragment(ctx, html`${savedTick(true)}${feedSwitch({ title: 'Settings', timelines, oob: true })}`);
+    } else redirect(ctx, '/settings');
+}
+
+/** POST /settings/content-filters - the EXPLICIT-Save content-filtering form: keyword/regex patterns + the
+ * hide-post-types flags (a separate store from the types grid). Reads ONLY its own fields. On the helmjs path
+ * it re-renders its own form with the "Saved ✓" status; no-JS falls back to a full reload. */
+export async function postContentFilters(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const form = await readForm(ctx.req);
     const patterns = (form.get('patterns') ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
     const flags = (p: 'feed' | 'profile') => ({
         hideReplies: form.get(`${p}_hideReplies`) === '1',
@@ -114,13 +130,8 @@ export async function postContent(ctx: Ctx): Promise<void> {
         hideLinkOnly: form.get(`${p}_hideLinkOnly`) === '1',
     });
     saveFilters(s.me, { patterns, feed: flags('feed'), profile: flags('profile') });
-    if (ctx.isPartial) {
-        // Promoting/demoting a type changes the header switcher's timeline list, so OOB-rebuild the switcher
-        // (the settings page's onPage variant, summary "Settings") alongside the tab panel - otherwise the new
-        // timeline only appears after a full page reload.
-        const timelines = timelineTypes(s.me).map((c) => ({ id: c.id, label: c.label }));
-        sendFragment(ctx, html`${contentTabPanel(getContentPrefs(s.me), getFilters(s.me), 'Saved ✓')}${feedSwitch({ title: 'Settings', timelines, oob: true })}`);
-    } else redirect(ctx, '/settings');
+    if (ctx.isPartial) sendFragment(ctx, contentFiltersForm(getFilters(s.me), 'Saved ✓'));
+    else redirect(ctx, '/settings');
 }
 
 async function sendFullPage(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView>): Promise<void> {

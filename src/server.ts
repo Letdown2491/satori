@@ -27,7 +27,7 @@ import { getYtCard, getYtThumb, getYtPlay, getYtPlaylistCard, getYtPlaylistPlay 
 import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postPicture, postPicturePublish, postPrivateReplySeal, postPrivateReplyWrap, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
 import { postAppearance, getWallet, postWallet, getMetrics } from './routes/pages.ts';
 import { getBookmarks, getMuted, getListDecrypt, postListDecrypted } from './routes/saved.ts';
-import { getSettings, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContent } from './routes/settings.ts';
+import { getSettings, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContentPrefs, postContentFilters } from './routes/settings.ts';
 import { getProfileEdit, postProfile, postProfilePublish } from './routes/profile.ts';
 import { getNotifications, getNotifUnread } from './routes/notifications.ts';
 import { getMessages, getRequests, getMessagesDot, getNewMessage, getThread as getDmThread, getThreadOlder, postSend, postReadAll, getDmSync, getThreadSync, postDmSeals, postDmRumors, postDmLegacy, postSendSeal, postSendWrap } from './routes/dms.ts';
@@ -124,7 +124,8 @@ const ROUTES: Route[] = [
     route('GET', '/settings', getSettings),
     route('POST', '/settings/appearance', postAppearance),
     route('POST', '/settings/privacy', postPrivacy),
-    route('POST', '/settings/content', postContent),
+    route('POST', '/settings/content-prefs', postContentPrefs),
+    route('POST', '/settings/content-filters', postContentFilters),
     route('GET', '/settings/privacy/status', getPrivacyStatus),
     route('POST', '/settings/relays/edit', postRelaysEdit),
     route('POST', '/settings/relays', postRelays),

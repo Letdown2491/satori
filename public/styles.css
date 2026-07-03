@@ -332,9 +332,6 @@
         .page-bar-action { margin-left: auto; display: inline-flex; align-items: center; }
         .settings-page section { padding: 16px 0; border-top: 1px solid var(--border); }
         .settings-page section:first-child { border-top: none; }
-        /* Content tab's Save is far below a long grid + the filtering section, so pin it to the bottom of the
-           viewport while you scroll - always visible, so it's clear changes need saving. Opaque bg over content. */
-        .content-save { position: sticky; bottom: 0; z-index: 5; margin-top: 12px; padding: 12px 0; background: var(--bg); border-top: 1px solid var(--border); }
         .settings-page h3 { font-size: 14px; margin: 0 0 10px; font-weight: 700; }
         .settings-page h3 .hint { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
         /* The network editors (relays / media servers) stack vertically - overriding
@@ -417,7 +414,17 @@
         /* The 1fr label pushes the Feed/Profile columns to the right edge - right-aligned + symmetric,
            and both grids' columns line up there. */
         .filter-grid { display: grid; grid-template-columns: 1fr auto auto; gap: 12px 24px; align-items: center; margin: 6px 0 4px; }
-        .filter-grid.show-kinds { grid-template-columns: 1fr auto auto auto; } /* + the "Own timeline" column */
+        /* + the "Own timeline" column. Capped-and-scrolled so the (growing) types catalog stays compact:
+           the right padding keeps the scrollbar off the checkbox column. */
+        .filter-grid.show-kinds { grid-template-columns: 1fr auto auto auto; max-height: 340px; overflow-y: auto; padding-right: 8px; }
+        /* Keep the column header row visible while the rows scroll: the header cells are the first grid
+           items, so sticking them to the scroll-container top pins them (opaque bg covers scrolled rows). */
+        .show-kinds .filter-head-left, .show-kinds .filter-col-head { position: sticky; top: 0; background: var(--bg); z-index: 1; }
+        /* The auto-save tick beside the "Content types" heading: appears then fades (the types grid saves on
+           every toggle, so this is the quiet confirmation that a change was persisted). */
+        .content-saved { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 8px; }
+        .content-saved.show { animation: contentSaved 2s ease forwards; }
+        @keyframes contentSaved { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
         .filter-col-head { color: var(--muted); font-size: 12px; text-align: center; }
         .filter-head-left { color: var(--muted); font-size: 12px; } /* the post-type column header, left-aligned */
         .filter-grid-label { font-size: 14px; }

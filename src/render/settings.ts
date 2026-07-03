@@ -144,6 +144,13 @@ function behaviorPanel(a: Appearance): SafeHtml {
 // show-allowlist passes 'Timeline' for its third checkbox column; the hide-grid omits it (two columns).
 const gridHead = (extra?: string): SafeHtml => html`<span class="filter-head-left">Type</span><span class="filter-col-head">Feeds</span><span class="filter-col-head">Profile</span>${extra ? html`<span class="filter-col-head">${extra}</span>` : null}`;
 
+/** The inline "Saved ✓" affordance beside the "Content types" heading. Empty until a save; the `.show`
+ * class runs a CSS fade. The auto-saving types form targets this span (outer swap), so a save updates ONLY
+ * the tick, leaving the grid (and its scroll position) untouched. */
+export function savedTick(saved: boolean): SafeHtml {
+    return html`<span id="content-saved" class="content-saved${saved ? ' show' : ''}" aria-live="polite">${saved ? 'Saved ✓' : ''}</span>`;
+}
+
 /** "Show these kinds" FIELDS (no form/button) - the allowlist grid. Checked = SHOWN. The third column
  * ("Own timeline") promotes a type to its own entry in the header switcher (its kinds, from your follows). */
 function showKindsFields(prefs: ContentPrefs): SafeHtml {
@@ -153,7 +160,7 @@ function showKindsFields(prefs: ContentPrefs): SafeHtml {
       <label class="filter-cell"><input type="checkbox" name="profile_${id}" value="1"${prefs.profile[id] ? raw(' checked') : raw('')}></label>
       <label class="filter-cell"><input type="checkbox" name="timeline_${id}" value="1"${prefs.timeline[id] ? raw(' checked') : raw('')}></label>`;
     return html`
-      <h3>Content types</h3>
+      <h3>Content types ${savedTick(false)}</h3>
       <p class="filter-help">Pick where each type of post shows up: in your main feed, on profiles, or as its own timeline in the header switcher (that type, from the people you follow). Pictures are off in the feed by default, since most are posted as ordinary notes. Choices apply only to what you see, and never leave this machine.</p>
       <div class="filter-grid show-kinds">${gridHead('Own timeline')}${join([...CONTENT_TYPES].sort((a, b) => a.label.localeCompare(b.label)).map((c) => row(c.id, c.label)))}</div>`;
 }
@@ -178,18 +185,31 @@ function filterFields(f: FeedFilters): SafeHtml {
       </div>`;
 }
 
-/** The whole Content tab: the show-allowlist + the filtering controls in ONE form with ONE Save - so a
- * change to kinds AND a keyword can't lose one half to the other form's button (the prior two-form trap). */
+/** Content filtering as its OWN form (explicit Save). Kept separate from the auto-saving types grid so the
+ * keyword/regex textarea never saves mid-typing; the hide-post-types toggles ride with it under this Save.
+ * Re-rendered whole on save (helmjs swaps #content-filters-form; the button shows `status`'s "Saved ✓"). */
+export function contentFiltersForm(f: FeedFilters, status?: string): SafeHtml {
+    return html`
+        <form id="content-filters-form" action="/settings/content-filters" method="post" h-post h-target="#content-filters-form" h-swap="outer">
+          ${filterFields(f)}
+          <div class="row-controls">
+            <button type="submit" class="busy-btn${status ? ' saved' : ''}"><span class="btn-label">Save</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
+          </div>
+        </form>`;
+}
+
+/** The Content tab: TWO independent forms over SEPARATE stores, so neither half is a footgun for the other.
+ * Form 1 (content types) AUTO-SAVES - each checkbox change posts to /settings/content-prefs and updates only
+ * the inline "Saved ✓" tick (the grid, capped-and-scrolled, is never re-rendered so its scroll is kept); the
+ * noscript button is the zero-JS save. Form 2 (content filtering) keeps its explicit Save. */
 export function contentTabPanel(prefs: ContentPrefs, f: FeedFilters, status?: string): SafeHtml {
     return html`
       <section id="content-tab">
-        <form action="/settings/content" method="post" h-post h-target="#content-tab" h-swap="outer">
+        <form id="content-types-form" action="/settings/content-prefs" method="post" h-post h-target="#content-saved" h-swap="outer" h-trigger="change">
           ${showKindsFields(prefs)}
-          ${filterFields(f)}
-          <div class="row-controls content-save">
-            <button type="submit" class="busy-btn${status ? ' saved' : ''}"><span class="btn-label">Save</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
-          </div>
+          <noscript><div class="row-controls"><button type="submit" class="busy-btn"><span class="btn-label">Save types</span></button></div></noscript>
         </form>
+        ${contentFiltersForm(f, status)}
       </section>`;
 }
 
