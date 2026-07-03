@@ -211,6 +211,7 @@ export function page(content: SafeHtml, o: ChromeOpts): SafeHtml {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
+  <meta name="description" content="A self-hosted Nostr client built as pure hypermedia: server-rendered, zero client-side app code, your key never on the server, Tor-friendly.">
   <title>${title}</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='%23b23a26' stroke-width='2.4'/%3E%3C/svg%3E">

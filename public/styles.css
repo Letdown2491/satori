@@ -1698,11 +1698,13 @@ html[data-webln-busy="paying"] .paying-toast .pay-work { display: inline; }
 .media-remove:hover { background: var(--err); }
 /* Compose toolbar: "Add media" on the left (a file <input> hidden behind a
    labelled button), then the secondary Attach + primary Publish on the right. */
-.compose-box .attach-btn {
+.compose-box .attach-btn,
+.ac-foot .attach-btn {
     display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
     color: var(--muted); padding: 8px; border-radius: 8px; line-height: 0;
 }
-.compose-box .attach-btn:hover { color: var(--accent); background: var(--panel); }
+.compose-box .attach-btn:hover,
+.ac-foot .attach-btn:hover { color: var(--accent); background: var(--panel); }
 .compose-box .attach-btn input[type="file"] { display: none; }
 .attach-go { background: transparent; color: var(--accent); }
 .attach-go:hover { background: var(--panel); }
