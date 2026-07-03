@@ -1344,7 +1344,7 @@
         .ac-preview { flex: 1; min-height: 320px; padding: 4px 2px; }
         /* Carded action bar, matching the note/picture/poll .compose-foot (panel + border). Standalone here
            (not contiguous with the textarea like the note foot), so it's a fully-bordered rounded bar. */
-        .ac-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+        .ac-foot { display: flex; align-items: center; gap: 12px; margin-top: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
         /* Publish article matches Save draft's size (the default button's 10px/16px made it chunkier); the
            accent fill already marks it as primary, so it doesn't also need to be bigger. */
         .ac-foot button { padding: 6px 10px; }
@@ -1856,9 +1856,6 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
 #schedule-toggle:checked ~ .schedule-row { display: flex; }
 #schedule-toggle:checked ~ .compose-foot .schedule-btn,
 #schedule-toggle:checked ~ .ac-foot .schedule-btn { color: var(--accent); }
-/* The article foot right-aligns its actions; the clock is a TOOL, so push it left away from the buttons
-   (mirrors the note foot's left-tools / right-actions split). */
-.ac-foot .schedule-btn { margin-right: auto; }
 .schedule-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
 /* Relays: a globe (.relays-btn) toggles #relays-toggle; the row reveals on :checked (like Schedule). The
    write relays start checked - uncheck to post to a subset, or add a one-off. Resets every open. */

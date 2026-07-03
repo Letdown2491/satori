@@ -43,8 +43,8 @@ export function articleComposeForm(c: ArticleComposeCtx = {}): SafeHtml {
         ${scheduleRow('/article')}
         ${relayPickerRow(c.relays ?? [])}
         <div class="ac-foot">
-          ${c.relays?.length ? relaysToggleBtn() : null}
           <label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>
+          ${c.relays?.length ? relaysToggleBtn() : null}
           <span id="compose-status" class="compose-status">${c.status ?? ''}</span>
           <button type="submit" class="ghost" formaction="/draft" formmethod="post">Save draft</button>
           <button type="submit">Publish article</button>
