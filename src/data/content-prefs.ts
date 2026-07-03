@@ -54,6 +54,11 @@ export const CONTENT_TYPES: ContentType[] = [
     { id: 'repo', label: 'Git repositories', kinds: [KIND_REPO], feed: false, profile: true, timeline: false },
 ];
 
+/** The mainstream content types shown by default in Settings > Content; the niche kinds sit behind a
+ * "Show more" disclosure. Both groups render alphabetically. */
+const CORE_TYPE_IDS = new Set(['note', 'poll', 'article', 'picture', 'video']);
+export const isCoreType = (id: string): boolean => CORE_TYPE_IDS.has(id);
+
 export type ContentPrefs = { feed: Record<string, boolean>; profile: Record<string, boolean>; timeline: Record<string, boolean> };
 
 const FILE = process.env.SATORI_CONTENT_PREFS_FILE || join(process.cwd(), '.data', 'content-prefs.json');

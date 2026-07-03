@@ -414,12 +414,17 @@
         /* The 1fr label pushes the Feed/Profile columns to the right edge - right-aligned + symmetric,
            and both grids' columns line up there. */
         .filter-grid { display: grid; grid-template-columns: 1fr auto auto; gap: 12px 24px; align-items: center; margin: 6px 0 4px; }
-        /* + the "Own timeline" column. Capped-and-scrolled so the (growing) types catalog stays compact:
-           the right padding keeps the scrollbar off the checkbox column. */
-        .filter-grid.show-kinds { grid-template-columns: 1fr auto auto auto; max-height: 340px; overflow-y: auto; padding-right: 8px; }
-        /* Keep the column header row visible while the rows scroll: the header cells are the first grid
-           items, so sticking them to the scroll-container top pins them (opaque bg covers scrolled rows). */
-        .show-kinds .filter-head-left, .show-kinds .filter-col-head { position: sticky; top: 0; background: var(--bg); z-index: 1; }
+        /* + the "Own timeline" column. FIXED checkbox-column widths so the default (core) grid and the
+           "Show more" tail grid line up - the tail grid has no header row, so `auto` columns would drift. */
+        .filter-grid.show-kinds { grid-template-columns: 1fr 64px 64px 100px; }
+        .show-kinds .filter-cell { justify-self: center; } /* centre each checkbox under its fixed-width header */
+        /* "Show more" / "Show less" disclosure for the niche types (native <details>, zero-JS). */
+        .more-types { margin: 2px 0 0; }
+        .more-types .more-toggle { list-style: none; cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; width: max-content; }
+        .more-types .more-toggle::marker, .more-types .more-toggle::-webkit-details-marker { display: none; }
+        .more-types .more-toggle::after { content: 'Show more'; }
+        .more-types[open] .more-toggle::after { content: 'Show less'; }
+        .more-types .more-toggle:hover { color: var(--text); }
         /* The auto-save tick beside the "Content types" heading: appears then fades (the types grid saves on
            every toggle, so this is the quiet confirmation that a change was persisted). */
         .content-saved { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 8px; }

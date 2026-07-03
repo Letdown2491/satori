@@ -12,7 +12,7 @@ import { privacyMode, torAvailable, type PrivacyMode } from '../privacy.ts';
 import type { RelayEntry } from '../nostr/types.ts';
 import type { Appearance, Theme } from '../theme.ts';
 import type { FeedFilters, SurfaceFlags } from '../data/filters.ts';
-import { CONTENT_TYPES, type ContentPrefs } from '../data/content-prefs.ts';
+import { CONTENT_TYPES, isCoreType, type ContentPrefs } from '../data/content-prefs.ts';
 import { BACKUP_LISTS } from '../data/list-backup.ts';
 import type { TrustScore } from '../data/trust.ts';
 
@@ -159,10 +159,17 @@ function showKindsFields(prefs: ContentPrefs): SafeHtml {
       <label class="filter-cell"><input type="checkbox" name="feed_${id}" value="1"${prefs.feed[id] ? raw(' checked') : raw('')}></label>
       <label class="filter-cell"><input type="checkbox" name="profile_${id}" value="1"${prefs.profile[id] ? raw(' checked') : raw('')}></label>
       <label class="filter-cell"><input type="checkbox" name="timeline_${id}" value="1"${prefs.timeline[id] ? raw(' checked') : raw('')}></label>`;
+    const byLabel = (a: { label: string }, b: { label: string }): number => a.label.localeCompare(b.label);
+    const core = CONTENT_TYPES.filter((c) => isCoreType(c.id)).sort(byLabel); // notes/polls/articles/pictures/videos
+    const tail = CONTENT_TYPES.filter((c) => !isCoreType(c.id)).sort(byLabel); // the niche kinds, behind "Show more"
     return html`
       <h3>Content types ${savedTick(false)}</h3>
       <p class="filter-help">Pick where each type of post shows up: in your main feed, on profiles, or as its own timeline in the header switcher (that type, from the people you follow). Pictures are off in the feed by default, since most are posted as ordinary notes. Choices apply only to what you see, and never leave this machine.</p>
-      <div class="filter-grid show-kinds">${gridHead('Own timeline')}${join([...CONTENT_TYPES].sort((a, b) => a.label.localeCompare(b.label)).map((c) => row(c.id, c.label)))}</div>`;
+      <div class="filter-grid show-kinds">${gridHead('Own timeline')}${join(core.map((c) => row(c.id, c.label)))}</div>
+      <details class="more-types">
+        <summary class="more-toggle"></summary>
+        <div class="filter-grid show-kinds">${join(tail.map((c) => row(c.id, c.label)))}</div>
+      </details>`;
 }
 
 /** "Content filtering" FIELDS (no form/button) - keyword/regex box + the hide-post-types grid. The hide
