@@ -88,7 +88,7 @@ function hasTallMedia(ev: NostrEvent): boolean {
     const only = media[0]!;
     if (only.t === 'video') return true;
     const dim = parseImeta(ev).get(only.url)?.dim;
-    const m = dim ? /^(\d+)x(\d+)$/.exec(dim) : null;
+    const m = dim ? /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(dim) : null; // tolerate decimals ("464.0x848.0")
     if (!m) return true; // unknown dims → assume tall
     return Number(m[1]) / Number(m[2]) <= EMBED_WIDE_RATIO;
 }
@@ -705,6 +705,7 @@ export function articleReader(ev: NostrEvent, profiles?: ProfileMap, s?: Session
         ${cover}
         <h1 class="article-title">${a.title}</h1>
         ${addressableByline(ev, a.publishedAt, a.content, profiles)}
+        ${a.topics.length ? html`<div class="article-topics">${join(a.topics.slice(0, 12).map((t) => html`<a class="nip-kind-chip" href="/search?q=${encodeURIComponent('#' + t)}" h-scroll="top instant">#${t}</a>`))}</div>` : null}
         ${renderMarkdown(a.content, profiles, coverUrl)}
         ${articleActions(ev, naddrFor(ev), s, true)}
       </article>`;

@@ -9,10 +9,11 @@ import { commentParent, KIND_COMMENT } from './nip22.ts';
 export interface TreeNode { event: NostrEvent; children: TreeNode[] }
 
 /** The id of the event a reply/comment hangs off. A NIP-22 comment (kind:1111) names its parent with a
- * lowercase `e` tag (read via commentParent, so a stray mention/quote e-tag can't be mistaken for it); a
- * parent that's addressable or external (an article coord, an `i` URL) has no event id -> null = a root.
- * Everything else is a NIP-10 reply. */
-export function threadParent(ev: NostrEvent): string | null {
+ * lowercase `e` tag (read via commentParent, which skips `q`-quoted events; NIP-22 e-tags carry no marker,
+ * so a stray NIP-27 mention e-tag is distinguished only by the parent being emitted first). A parent that's
+ * addressable or external (an article coord, an `i` URL) has no event id -> null = a root. Everything else
+ * is a NIP-10 reply. */
+function threadParent(ev: NostrEvent): string | null {
     if (ev.kind === KIND_COMMENT) { const p = commentParent(ev); return p?.type === 'e' ? p.value : null; }
     return replyParent(ev)?.id ?? null;
 }

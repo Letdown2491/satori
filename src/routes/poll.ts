@@ -10,7 +10,7 @@ import {
     buildResponseTags, tallyResponses, isPollEnded,
 } from '../nostr/nip88.ts';
 import { INDEXER_RELAYS, readRelaysFor } from '../nostr/nip65.ts';
-import { published, writeRelays, chosenTargets } from '../actions.ts';
+import { published, writeRelays, chosenTargets, appendRelayTargets } from '../actions.ts';
 import { pollSection, pollOptionRow, POLL_DURATION_DAYS } from '../render/poll.ts';
 import { readSignedEvent, requireSigned } from '../nip07.ts';
 import { decode } from 'nostr-tools/nip19';
@@ -52,8 +52,7 @@ export async function postPoll(ctx: Ctx): Promise<void> {
         // carry the relay-picker selection onto the publish continuation (nip07), like notes
         const q = new URLSearchParams();
         if (fromModal) q.set('inmodal', '1');
-        for (const u of form.getAll('relay')) q.append('relay', u);
-        const custom = form.get('customrelay'); if (custom) q.set('customrelay', custom);
+        appendRelayTargets(q, form);
         sendSignRequest(ctx, prepared.signed, `/poll/publish${q.toString() ? `?${q}` : ''}`);
         return;
     }

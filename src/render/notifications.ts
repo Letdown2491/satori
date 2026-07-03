@@ -50,7 +50,7 @@ function reactionRow(ev: NostrEvent, profiles: ProfileMap): SafeHtml {
     const noteId = [...ev.tags].reverse().find((t) => t[0] === 'e' && t[1])?.[1]; // the reacted note
     // A custom (NIP-30) reaction is a `:shortcode:` in content + the image in this event's own `emoji`
     // tags - decode against those (not the reactor's profile). A "+"/empty like normalizes to a heart.
-    const react = ev.content === '+' || ev.content === '' ? html`♥` : withEmoji(ev.content, emojiFromTags(ev.tags));
+    const react = ev.content === '+' || ev.content === '' ? html`♥` : withEmoji(ev.content, emojiFromTags(ev.tags)); // dislikes ('-') are filtered upstream, never reach here
     let note: SafeHtml = html`your note`;
     if (noteId) { try { note = html`<a href="/t/${neventEncode({ id: noteId })}" h-get h-prefetch="hover" h-scroll="top instant">your note</a>`; } catch { /* keep text */ } }
     return html`<li class="notif-row">${avatar(ev.pubkey, profiles.get(ev.pubkey)?.picture, 'sm')}

@@ -1316,6 +1316,10 @@
         .nip-kinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
         .article .nip-kinds { margin: -8px 0 22px; }
         .nip-kind-chip { font-size: 11px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+        /* NIP-23 article topics (t tags) under the byline - reuse the chip look; each links to a hashtag search */
+        .article-topics { display: flex; flex-wrap: wrap; gap: 6px; margin: -14px 0 30px; }
+        .article-topics .nip-kind-chip { text-decoration: none; }
+        .article-topics .nip-kind-chip:hover { border-color: var(--accent); color: var(--text); }
         /* Long-form composer */
         .article-compose { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 24px; min-height: calc(100vh - 64px); }
         /* Only the writing surface fills the leftover height; everything else stays natural. */

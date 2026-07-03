@@ -5,7 +5,7 @@
 // escaped by construction; nostr entities become in-app links (mentions → /u/,
 // quotes → /t/, articles → /a/). Media and links are scheme-checked.
 
-import { tokenize } from '../nostr/content.ts';
+import { tokenize, type ContentToken } from '../nostr/content.ts';
 import { parseBlocks, parseInline, type Inline, type Block } from '../nostr/markdown.ts';
 import { parseAdocBlocks, parseAdocInline, normalizeWikiTopic, type WikiLink } from '../nostr/asciidoc.ts';
 import { naddrEncode } from 'nostr-tools/nip19';
@@ -155,9 +155,9 @@ function dimStyle(meta?: MediaMeta): SafeHtml {
 }
 /** Orientation bucket from the dim - a CSS class (no inline style) so a poster-less video
  * facade reserves roughly the right aspect; the real <video>'s width/height correct it on play. */
-function aspectClass(dim?: string): string {
+function aspectClass(dim?: string, fallback = 'landscape'): string {
     const d = parseDim(dim);
-    if (!d) return 'landscape';
+    if (!d) return fallback; // no usable dim → the caller's orientation hint (NIP-71 kind), else landscape
     return d.w > d.h ? 'landscape' : d.w < d.h ? 'portrait' : 'square';
 }
 
@@ -171,13 +171,13 @@ function video(url: string, meta?: MediaMeta, inline = false): SafeHtml {
     // With a poster (imeta thumb): show the frame; preload="none" so the video itself loads only on play -
     // a real frame with NO fetch, so we use it regardless of the inline pref.
     if (meta?.thumb) {
-        return html`<video class="media ${aspectClass(meta.dim)}" src="${href}" controls preload="none" playsinline${dimStyle(meta)} poster="${imgSrc(meta.thumb)}"></video>`;
+        return html`<video class="media ${aspectClass(meta.dim, meta.orient)}" src="${href}" controls preload="none" playsinline${dimStyle(meta)} poster="${imgSrc(meta.thumb)}"></video>`;
     }
     // No poster. Inline pref ON: load the video so the browser shows its first frame + inline play
     // (preload="metadata" = an on-load fetch to the host, the deliberate tradeoff). OFF (default): the
     // calm no-fetch play-facade that loads nothing until clicked.
     if (inline) {
-        return html`<video class="media ${aspectClass(meta?.dim)}" src="${href}" controls preload="metadata" playsinline${dimStyle(meta)}></video>`;
+        return html`<video class="media ${aspectClass(meta?.dim, meta?.orient)}" src="${href}" controls preload="metadata" playsinline${dimStyle(meta)}></video>`;
     }
     return videoFacade(url, meta);
 }
@@ -188,7 +188,7 @@ function video(url: string, meta?: MediaMeta, inline = false): SafeHtml {
 function videoSuppressed(url: string, meta?: MediaMeta): SafeHtml {
     const href = safeUrl(url);
     if (href === '#') return extLink(url, url);
-    return html`<a class="video-facade strict ${aspectClass(meta?.dim)}" href="${href}" target="_blank" rel="noreferrer noopener" aria-label="Open video (leaves Tor)" title="Open video (leaves Tor)">${icon('play', true)}<span class="video-strict-note">opens outside Tor</span></a>`;
+    return html`<a class="video-facade strict ${aspectClass(meta?.dim, meta?.orient)}" href="${href}" target="_blank" rel="noreferrer noopener" aria-label="Open video (leaves Tor)" title="Open video (leaves Tor)">${icon('play', true)}<span class="video-strict-note">opens outside Tor</span></a>`;
 }
 
 /** No-poster play placeholder: a calm ink panel + play glyph (aspect-bucketed from the imeta
@@ -201,7 +201,7 @@ function videoFacade(url: string, meta?: MediaMeta): SafeHtml {
     // The h-get lives on the <div> (helmjs reads h-get off non-anchors; on an <a> it would use
     // href and fetch the cross-origin mp4 itself → a connect-src block). The inner <a href=file>
     // is the no-JS fallback (opens the video directly); with JS the div swaps in the player.
-    return html`<div class="video-facade ${aspectClass(meta?.dim)}" id="${raw(id)}" h-get="/video?${q}" h-target="#${raw(id)}" h-swap="outer" h-push-url="false"><a class="video-facade-play" href="${href}" aria-label="Play video">${icon('play', true)}</a></div>`;
+    return html`<div class="video-facade ${aspectClass(meta?.dim, meta?.orient)}" id="${raw(id)}" h-get="/video?${q}" h-target="#${raw(id)}" h-swap="outer" h-push-url="false"><a class="video-facade-play" href="${href}" aria-label="Play video">${icon('play', true)}</a></div>`;
 }
 
 /** The autoplaying player swapped in when a facade is clicked (explicit play). */
@@ -236,6 +236,23 @@ function gatherRun(toks: ReturnType<typeof tokenize>, i: number, imeta?: ImetaMa
         else break;
     }
     return { run, next: j };
+}
+
+/** NIP-92: a media URL with no file extension (a Blossom/hash url) tokenizes as a plain `url` because the
+ * tokenizer classifies by extension alone. Upgrade it to image/video when its imeta `m` (mime) says so, so
+ * extensionless media still renders as media - grouping into galleries and getting a lightbox like any other
+ * image/video. Returns the SAME array when nothing changed (the memoized token array stays untouched). */
+function applyImetaMime(toks: ContentToken[], imeta?: ImetaMap): ContentToken[] {
+    if (!imeta) return toks;
+    let changed = false;
+    const out = toks.map((t): ContentToken => {
+        if (t.t !== 'url') return t;
+        const mime = imeta.get(t.url)?.mime;
+        if (mime?.startsWith('image/')) { changed = true; return { t: 'image', url: t.url }; }
+        if (mime?.startsWith('video/')) { changed = true; return { t: 'video', url: t.url }; }
+        return t;
+    });
+    return changed ? out : toks;
 }
 
 const playBadge = (): SafeHtml => html`<div class="gallery-play">${icon('play', true)}</div>`;
@@ -301,7 +318,7 @@ function mediaRuns(toks: ReturnType<typeof tokenize>, imeta?: ImetaMap): MediaIt
  * <body>). Single videos play inline, so they get no overlay. */
 export function mediaLightboxes(text: string, autoLoad = true, imeta?: ImetaMap): SafeHtml {
     if (!autoLoad) return html``; // media shown as links → no lightbox overlays
-    const overlays = mediaRuns(tokenize(text), imeta)
+    const overlays = mediaRuns(applyImetaMime(tokenize(text), imeta), imeta)
         .filter((run) => !(run.length === 1 && run[0]!.type === 'video'))
         .map((run) => lightbox(run));
     if (!overlays.length) return html``;
@@ -391,7 +408,7 @@ function youtubePlaylistCard(list: string): SafeHtml {
  * Pass `embeds=false` inside an embed preview to keep one level deep (chips). */
 export function renderContent(text: string, profiles?: ProfileMap, embeds = true, media: MediaPrefs = DEFAULT_MEDIA, imeta?: ImetaMap, emoji?: EmojiMap, author?: string): SafeHtml {
     const parts: SafeHtml[] = [];
-    const toks = tokenize(text);
+    const toks = applyImetaMime(tokenize(text), imeta);
     let i = 0;
     // A token that renders as a BLOCK-level card (quoted note / article / media / YT facade).
     // The author's blank lines around such a card would otherwise render (.content is pre-wrap)

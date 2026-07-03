@@ -40,3 +40,9 @@ export const isAddressable = (kind: number): boolean => kind >= 30000 && kind < 
 /** The `relay` tag urls, de-duped and capped (default 8). Shared by the DM / draft / poll relay parsers. */
 export const relayTags = (ev: NostrEvent, cap = 8): string[] =>
     [...new Set(ev.tags.filter((t) => t[0] === 'relay' && t[1]).map((t) => t[1]!))].slice(0, cap);
+
+/** The set of event ids this event `q`-quotes (NIP-18 quote tags). Excluded from reply/comment PARENT
+ * resolution (a quote isn't the thing you're replying to) and enumerated as reposts by the engagement
+ * cache - the one definition of "the ids this event quotes", shared so the exclusion can't drift. */
+export const quotedIds = (ev: NostrEvent): Set<string> =>
+    new Set(ev.tags.filter((t) => t[0] === 'q' && t[1]).map((t) => t[1]!));

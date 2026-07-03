@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { naddrEncode } from 'nostr-tools/nip19';
 import { debouncedFlush } from './json-store.ts';
 import { writeRelaysFor } from '../nostr/nip65.ts';
-import { isAddressable, coordParts } from '../nostr/tags.ts';
+import { isAddressable, coordParts, quotedIds } from '../nostr/tags.ts';
 import { emojiFromTags } from '../nostr/nip30.ts';
 import { parseZapReceipt } from './notifications.ts';
 import type { Pool } from './pool.ts';
@@ -142,9 +142,9 @@ async function syncEngagement(pool: Pool, me: string, myRelays: RelayList | null
         }
         for (const ev of posts) {
             if (ev.kind === 1) {
-                const qs = ev.tags.filter((t) => t[0] === 'q' && t[1]).map((t) => t[1]!);
+                const qs = quotedIds(ev);
                 for (const q of qs) u.reposted.add(q);
-                for (const t of ev.tags) if (t[0] === 'e' && t[1] && !qs.includes(t[1])) u.replied.add(t[1]);
+                for (const t of ev.tags) if (t[0] === 'e' && t[1] && !qs.has(t[1])) u.replied.add(t[1]);
             } else if (ev.kind === 6 || ev.kind === 16) {
                 for (const t of ev.tags) if ((t[0] === 'e' || t[0] === 'a') && t[1]) u.reposted.add(t[1]);
             } else if (ev.kind === 1111) {

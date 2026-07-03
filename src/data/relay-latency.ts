@@ -72,6 +72,9 @@ export function relayBudget(relay: string, floor: number, base: number, ceiling:
     const s = stats.get(norm(relay));
     if (!s || s.n < N_MIN) return base;                                    // not enough evidence yet → default
     if (s.ev < EV_EMPTY) return floor;                                     // empty for your feed → bail fast
+    // NOTE: `ev`/`ms` are EWMA (recent-weighted) but `trunc`/`n` are lifetime counts, so this truncRate is a
+    // lifetime average that lags recent behavior. Only gates the rare rich-but-truncating branch; if that ever
+    // misbehaves, switch trunc to a windowed count too.
     const truncRate = s.trunc / s.n;
     if (truncRate >= TRUNC_HI && s.ev >= RICH_EV)                          // rich but cut off → more rope
         return Math.min(ceiling, Math.round(base + truncRate * (ceiling - base)));

@@ -15,7 +15,7 @@ import { commentRoot, KIND_COMMENT } from '../nostr/nip22.ts';
 import { isAddressable, tag1 } from '../nostr/tags.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
-import { chosenTargets } from '../actions.ts';
+import { chosenTargets, appendRelayTargets, parseScheduleAt } from '../actions.ts';
 import { decode } from 'nostr-tools/nip19';
 import { decodeNaddr } from '../nostr/nip19.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -439,9 +439,9 @@ export async function postPicture(ctx: Ctx): Promise<void> {
     // Schedule: sign now with created_at = the chosen time, hold on disk, the sweep broadcasts it then.
     let scheduledAt = 0;
     if (form.get('do') === 'schedule') {
-        const t = new Date((form.get('schedule') ?? '').trim()).getTime();
-        scheduledAt = isNaN(t) ? 0 : Math.floor(t / 1000);
-        if (scheduledAt <= Math.floor(Date.now() / 1000)) { sendFragment(ctx, html`<div class="notice error">Pick a time in the future to schedule.</div>`, {}, 400); return; }
+        const r = parseScheduleAt(form.get('schedule') ?? '');
+        if ('error' in r) { sendFragment(ctx, html`<div class="notice error">Pick a time in the future to schedule.</div>`, {}, 400); return; }
+        scheduledAt = r.at;
     }
     const opts = { title, content, imeta, contentWarning: cw ? (cwReason || '') : null, ...(scheduledAt ? { createdAt: scheduledAt } : {}) };
     if (signsOnClient(s)) {
@@ -449,8 +449,7 @@ export async function postPicture(ctx: Ctx): Promise<void> {
         const q = new URLSearchParams();
         if (fromModal) q.set('inmodal', '1');
         if (scheduledAt) q.set('schedule', String(scheduledAt)); // store, don't publish
-        for (const u of form.getAll('relay')) q.append('relay', u); // carry the relay-picker selection
-        const cr = (form.get('customrelay') ?? '').trim(); if (cr) q.set('customrelay', cr);
+        appendRelayTargets(q, form); // carry the relay-picker selection
         sendSignRequest(ctx, prepared.signed, q.toString() ? `/picture/publish?${q}` : '/picture/publish');
         return;
     }
@@ -533,10 +532,9 @@ export async function postNote(ctx: Ctx): Promise<void> {
     // hold it on disk, and the daemon's sweep broadcasts it then. The "Schedule" button sends do=schedule.
     let scheduledAt = 0;
     if (!replyNevent && form.get('do') === 'schedule') {
-        const t = new Date((form.get('schedule') ?? '').trim()).getTime();
-        if (isNaN(t)) { back('Pick a time to schedule this for.'); return; }
-        scheduledAt = Math.floor(t / 1000);
-        if (scheduledAt <= Math.floor(Date.now() / 1000)) { back('Pick a time in the future to schedule.'); return; }
+        const r = parseScheduleAt(form.get('schedule') ?? '');
+        if ('error' in r) { back(r.error === 'empty' ? 'Pick a time to schedule this for.' : 'Pick a time in the future to schedule.'); return; }
+        scheduledAt = r.at;
     }
 
     const opts = {
@@ -584,10 +582,7 @@ export async function postNote(ctx: Ctx): Promise<void> {
         if (commentTarget) q.set('k', String(KIND_COMMENT)); // the continuation must verify a 1111, not a kind:1
         if (inthread) q.set('inthread', inthread);
         if (fromModal) q.set('inmodal', '1');
-        if (!replyNevent && !quoteNevent) { // top-level: carry the relay-picker selection to the publish step
-            for (const u of form.getAll('relay')) q.append('relay', u);
-            const cr = (form.get('customrelay') ?? '').trim(); if (cr) q.set('customrelay', cr);
-        }
+        if (!replyNevent && !quoteNevent) appendRelayTargets(q, form); // top-level: carry the relay-picker selection to the publish step
         if (scheduledAt) { q.set('schedule', String(scheduledAt)); sendSignRequest(ctx, prepared.signed, `/note/publish?${q}`); return; } // store, don't publish
         sendSignRequest(ctx, prepared.signed, q.toString() ? `/note/publish?${q}` : '/note/publish');
         return;

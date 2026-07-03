@@ -45,6 +45,13 @@ All notable changes to this project are documented here. The format is based on
   (Note · Picture · Poll · Article) get consistent spacing off the first field; and the
   Article composer's section spacing, button order, and foot now match the other tabs. The
   Article schedule (clock) icon also picks up the same muted color as the others.
+- Bumped the bundled helmjs to v0.14.4. No API changes, all passive hardening we benefit from:
+  a fix for `h-sync="abort"` letting two concurrent requests slip through (helps search-as-you-type
+  and the feed poll), an `IntersectionObserver` leak fix for non-`once` intersect triggers, and a
+  bound (cap 50) on the `h-prefetch` speculative cache. Its new security note (untrusted HTML in a
+  swap can smuggle live `h-*` directives) does not affect us: all rendered content goes through the
+  `SafeHtml` escaping helper and the markdown/asciidoc parsers honor no raw-HTML passthrough, so
+  user content can never become a live element.
 
 ### Fixed
 
@@ -64,6 +71,23 @@ All notable changes to this project are documented here. The format is based on
   `h-post` on bare buttons - it only bound the mutating verbs on `<form>` elements - which silently disabled
   every form-less mutation. Fixed in helmjs 0.14.3 (mutating verbs now bind on any element, like `h-get`
   already did) and re-bundled.
+- Extensionless media (a Blossom hash URL) in a note now renders as the image/video it is instead of a plain
+  text link. The content tokenizer classifies media by file extension, so a URL with no extension was missed;
+  it now also honors the NIP-92 `imeta` `m` (mime) type, so such media groups into galleries and gets a
+  lightbox like any other. (Found in a NIP-92 read-side audit.)
+- Vertical short videos (NIP-71 kind 22 / 34236) with no `dim` in their `imeta` now render in portrait
+  instead of defaulting to landscape - the video kind is used as the orientation fallback.
+- Article topics (NIP-23 `t` tags) are now shown on the article reader as a row of hashtag chips, each
+  linking to a search for that tag. They were parsed but never displayed.
+- Dislike reactions (NIP-25 `-`) are no longer surfaced in notifications at all. A stranger's thumbs-down
+  carries no reply/zap/conversation value and is pure agitation, so omitting it is consistent with hiding the
+  like button and reaction counts. Positive and custom-emoji reactions still show (when reaction notifications
+  are enabled, which is off by default).
+- The thread "root" link for old, unmarked (deprecated positional NIP-10) replies now points at the true
+  thread root (the first `e` tag) rather than the immediate parent.
+- A `nostr:`-prefixed reference is no longer tokenized when it sits mid-word (e.g. `foonostr:...`), matching
+  the existing guard on bare `npub1...`/`note1...` references; and a NIP-22 comment that quotes an event no
+  longer risks mistaking that `q`-quoted event for its parent. (Found in NIP-27 / NIP-22 read-side audits.)
 
 ## [0.4.2] - 2026-07-02
 

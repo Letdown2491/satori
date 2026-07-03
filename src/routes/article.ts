@@ -9,7 +9,7 @@ import { signArticle, publishSigned, captureSigner, type ArticleFields } from '.
 import { KIND_ARTICLE } from '../nostr/nip23.ts';
 import { articleReader } from '../render/note.ts';
 import { articleComposePage, draftsView, draftsScreen, draftsSyncShell, type ArticleComposeCtx } from '../render/article-compose.ts';
-import { chosenTargets } from '../actions.ts';
+import { chosenTargets, appendRelayTargets, parseScheduleAt } from '../actions.ts';
 import { titleCount } from '../render/layout.ts';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type ArticleDraft, type Draft } from '../drafts.ts';
 import { holdScheduled, SCHEDULE_FULL_MSG, listScheduled } from '../data/scheduled.ts';
@@ -61,30 +61,33 @@ export async function postArticle(ctx: Ctx): Promise<void> {
     // to the draft), so we skip the draft-wrap retire dance here.
     let scheduledAt = 0;
     if (form.get('do') === 'schedule') {
-        const t = new Date((form.get('schedule') ?? '').trim()).getTime();
-        scheduledAt = isNaN(t) ? 0 : Math.floor(t / 1000);
-        if (!scheduledAt || scheduledAt <= Math.floor(Date.now() / 1000)) { back('Pick a time in the future to schedule.'); return; }
+        const r = parseScheduleAt(form.get('schedule') ?? '');
+        if ('error' in r) { back('Pick a time in the future to schedule.'); return; }
+        scheduledAt = r.at;
     }
     const fields: ArticleFields = scheduledAt ? { ...f, createdAt: scheduledAt } : f;
 
     // nip07: build the exact 30023 template; the extension signs it. If this draft was synced,
     // batch-sign the article + a BLANK wrap (one prompt) so publishing also retires the draft wrap
     // (else it would resurrect on the next /drafts load). Scheduling keeps the draft, so it skips that.
-    // Carry the relay-picker selection onto the publish continuation (nip07 forwards it on the URL; bunker
-    // reads the form directly below).
-    const rq = [...form.getAll('relay').map((u) => `&relay=${encodeURIComponent(u)}`), form.get('customrelay') ? `&customrelay=${encodeURIComponent(form.get('customrelay')!)}` : ''].join('');
+    // nip07 forwards the relay-picker selection on the publish-continuation URL (bunker reads the form
+    // directly below); the continuation re-validates it centrally via chosenTargets.
     if (signsOnClient(s)) {
         const prepared = await signArticle(captureSigner, s.me, s.myRelays!, fields);
+        const q = new URLSearchParams({ d: f.identifier });
+        appendRelayTargets(q, form);
         if (scheduledAt) {
-            sendSignRequest(ctx, prepared.signed, `/article/publish?d=${encodeURIComponent(f.identifier)}&schedule=${scheduledAt}${rq}`);
+            q.set('schedule', String(scheduledAt));
+            sendSignRequest(ctx, prepared.signed, `/article/publish?${q}`);
             return;
         }
         const draft = getDraft(s.me, f.identifier);
         if (draft?.synced) {
             const blank = draftWrapTemplate(s.me, f.identifier, draftToEvent(draft, s.me).kind, '');
-            sendSignRequest(ctx, { templates: [prepared.signed, blank] }, `/article/publish?d=${encodeURIComponent(f.identifier)}&retire=1${rq}`, 'sign_event_batch');
+            q.set('retire', '1');
+            sendSignRequest(ctx, { templates: [prepared.signed, blank] }, `/article/publish?${q}`, 'sign_event_batch');
         } else {
-            sendSignRequest(ctx, prepared.signed, `/article/publish?d=${encodeURIComponent(f.identifier)}${rq}`);
+            sendSignRequest(ctx, prepared.signed, `/article/publish?${q}`);
         }
         return;
     }

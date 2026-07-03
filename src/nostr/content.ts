@@ -20,7 +20,7 @@ const VIDEO_RE = /\.(mp4|webm|mov|m4v|ogv)(\?[^\s]*)?$/i;
 // entity (group 3) - many notes paste e.g. npub1… without the nostr: prefix. The
 // bare form needs a preceding boundary so it isn't matched inside another word.
 const BECH = '[023456789acdefghjklmnpqrstuvwxyz]{20,}'; // bech32 data charset (no 1/b/i/o)
-const TOKEN_RE = new RegExp(`(https?:\\/\\/[^\\s<]+)|nostr:([a-z0-9]+)|(?<![\\w/])((?:npub1|nprofile1|nevent1|note1|naddr1)${BECH})`, 'gi');
+const TOKEN_RE = new RegExp(`(https?:\\/\\/[^\\s<]+)|(?<![\\w/])nostr:([a-z0-9]+)|(?<![\\w/])((?:npub1|nprofile1|nevent1|note1|naddr1)${BECH})`, 'gi');
 
 /** Decode a bech32 entity into a token, falling back to raw text (`raw`). */
 function decodeToken(bech: string, raw: string): ContentToken {
