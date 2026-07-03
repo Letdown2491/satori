@@ -11,8 +11,7 @@ import { seenRelaysFor } from '../data/seen-relays.ts';
 import { coordinateOf, isAddressable, tag1, HEX64 } from '../nostr/tags.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { commentSection } from '../render/comments.ts';
-import { replyParent } from '../nostr/nip10.ts';
-import { commentParent, KIND_COMMENT } from '../nostr/nip22.ts';
+import { buildThreadTree, type TreeNode } from '../nostr/thread.ts';
 import { getFilters, compileFilters } from '../data/filters.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
@@ -131,37 +130,13 @@ export async function getProfileExtras(ctx: Ctx): Promise<void> {
 
 // --- GET /t/<nevent|note> --------------------------------------------------
 
-interface RNode { event: NostrEvent; children: RNode[] }
-
-/** The id of the event a reply/comment hangs off: NIP-22 comments (kind 1111) name their parent with a
- * lowercase `e` tag whose 4th slot is the parent's PUBKEY (no NIP-10 marker), which replyParent can't read -
- * so resolve those via commentParent; everything else is NIP-10. Lets one tree nest notes + comments. */
-function threadParent(ev: NostrEvent): string | null {
-    if (ev.kind === KIND_COMMENT) { const p = commentParent(ev); return p?.type === 'e' ? p.value : null; }
-    return replyParent(ev)?.id ?? null;
-}
-
-/** Nest replies by their parent (ported from Satori's thread.ts; now NIP-10 + NIP-22-aware). */
-function buildReplyTree(replies: NostrEvent[], focusedId: string): RNode[] {
-    const nodes = new Map<string, RNode>(replies.map((e) => [e.id, { event: e, children: [] }]));
-    const roots: RNode[] = [];
-    for (const e of [...replies].sort((a, b) => a.created_at - b.created_at)) {
-        const node = nodes.get(e.id)!;
-        const pid = threadParent(e);
-        const parent = pid && pid !== focusedId ? nodes.get(pid) : undefined;
-        if (parent) parent.children.push(node);
-        else roots.push(node);
-    }
-    return roots;
-}
-
 function continueLink(parent: NostrEvent, depth: number): SafeHtml {
     let bech = parent.id;
     try { bech = neventEncode({ id: parent.id, author: parent.pubkey }); } catch { /* raw id */ }
     return html`<li class="continue-thread depth-${Math.min(depth, MAX_DEPTH)}"><a href="/t/${bech}" h-scroll="top instant">continue this thread →</a></li>`;
 }
 
-function renderReplyTree(nodes: RNode[], depth: number, profiles: ProfileMap, s: Session, inThread: string, privateIds: Set<string>): SafeHtml {
+function renderReplyTree(nodes: TreeNode[], depth: number, profiles: ProfileMap, s: Session, inThread: string, privateIds: Set<string>): SafeHtml {
     const out: SafeHtml[] = [];
     for (const node of nodes) {
         out.push(noteCard(node.event, profiles, s, { hideParent: true, depth, inThread, isPrivate: privateIds.has(node.event.id) }));
@@ -228,7 +203,7 @@ export async function getThread(ctx: Ctx): Promise<void> {
     const muted = mutedPubkeys(s);
     // `inThread` (this thread's nevent) lets every reply button append back here.
     // The #thread <ul> is where an optimistic reply is appended (helmjs `append`).
-    const tree = renderReplyTree(buildReplyTree(allReplies.filter((r) => !muted.has(r.pubkey)), id), 0, s.profiles, s, entity, privateIds);
+    const tree = renderReplyTree(buildThreadTree(allReplies.filter((r) => !muted.has(r.pubkey)), id), 0, s.profiles, s, entity, privateIds);
     // nip07: an invisible load-trigger that decrypts gift-wraps and appends any private replies (once).
     const warm = signsOnClient(s) ? html`<div id="thread-warm" h-get="/t/${entity}/private" h-trigger="load" h-swap="none" h-push-url="false"></div>` : null;
     const content = html`<ul class="feed" id="thread">${renderEvent(focused, 'focused', { profiles: s.profiles, s, inThread: entity })}${tree}</ul>${warm}`;
