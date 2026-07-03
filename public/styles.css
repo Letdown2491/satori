@@ -423,11 +423,11 @@
         .show-kinds .filter-cell { justify-self: center; } /* centre each checkbox under its fixed-width header */
         /* "Show more" / "Show less" disclosure for the niche types (native <details>, zero-JS). */
         .more-types { margin: 2px 0 0; }
-        .more-types .more-toggle { list-style: none; cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; width: max-content; }
+        .more-types .more-toggle { list-style: none; cursor: pointer; color: var(--accent); font-weight: 600; font-size: 13px; padding: 6px 0; width: max-content; }
         .more-types .more-toggle::marker, .more-types .more-toggle::-webkit-details-marker { display: none; }
         .more-types .more-toggle::after { content: 'Show more'; }
         .more-types[open] .more-toggle::after { content: 'Show less'; }
-        .more-types .more-toggle:hover { color: var(--text); }
+        .more-types .more-toggle:hover { text-decoration: underline; }
         /* The auto-save tick beside the "Content types" heading: appears then fades (the types grid saves on
            every toggle, so this is the quiet confirmation that a change was persisted). */
         .content-saved { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 8px; }
