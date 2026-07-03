@@ -1563,13 +1563,15 @@ a.fab { display: inline-flex; align-items: center; justify-content: center; text
 /* Compose modal: cap height + scroll the body, with the foot pinned to the bottom so
    Publish stays reachable however tall the preview gets. The negative margins span the
    foot edge-to-edge over the modal's 16px padding. */
-#compose-modal .modal { max-height: 85vh; overflow: hidden auto; padding-bottom: 0; } /* clip the foot's edge-to-edge bleed → no horizontal scrollbar */
+#compose-modal .modal { max-height: 85vh; overflow: hidden auto; } /* cap height + scroll the body; the foot stays reachable via position:sticky */
+/* Carded action bar, matching the article foot (.ac-foot). position:sticky keeps Publish reachable when a
+   long preview grows the modal body; the card is inset (no edge bleed) so it reads the same on the page. */
 .compose-foot {
     display: flex; align-items: center; gap: 10px;
     position: sticky; bottom: 0; z-index: 1;
     background: var(--panel);
-    margin: 14px -16px 0; padding: 14px 16px;
-    border-top: 1px solid var(--border);
+    margin-top: 12px; padding: 12px 14px;
+    border: 1px solid var(--border); border-radius: 10px;
 }
 /* Publish (note/poll) matches Save draft's size (the default button's 10px/16px made it chunkier); the
    accent fill already marks it as primary, so it doesn't also need to be bigger. (Same as .ac-foot.) */
