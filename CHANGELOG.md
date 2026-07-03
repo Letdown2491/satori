@@ -24,6 +24,7 @@ All notable changes to this project are documented here. The format is based on
   quiet "Saved ✓"), so there's no Save button to hunt for; the keyword/regex filter keeps its own Save, since
   you don't want that saved mid-typing. The type list shows the common types (Notes, Polls, Articles,
   Pictures, Videos) with the niche kinds behind a "Show more" toggle, so it stays compact as more are added.
+- Minor visual polish across the settings tabs (tidier button sizing, a clearer "Show more" toggle).
 
 ### Fixed
 
