@@ -10,7 +10,7 @@ import {
     buildResponseTags, tallyResponses, isPollEnded,
 } from '../nostr/nip88.ts';
 import { INDEXER_RELAYS, readRelaysFor } from '../nostr/nip65.ts';
-import { published, writeRelays } from '../actions.ts';
+import { published, writeRelays, chosenTargets } from '../actions.ts';
 import { pollSection, pollOptionRow, POLL_DURATION_DAYS } from '../render/poll.ts';
 import { readSignedEvent, requireSigned } from '../nip07.ts';
 import { decode } from 'nostr-tools/nip19';
@@ -49,11 +49,17 @@ export async function postPoll(ctx: Ctx): Promise<void> {
     const opts = { question, options, multiple, endsAt };
     if (signsOnClient(s)) {
         const prepared = await signPoll(captureSigner, s.me, s.myRelays!, opts);
-        sendSignRequest(ctx, prepared.signed, fromModal ? '/poll/publish?inmodal=1' : '/poll/publish');
+        // carry the relay-picker selection onto the publish continuation (nip07), like notes
+        const q = new URLSearchParams();
+        if (fromModal) q.set('inmodal', '1');
+        for (const u of form.getAll('relay')) q.append('relay', u);
+        const custom = form.get('customrelay'); if (custom) q.set('customrelay', custom);
+        sendSignRequest(ctx, prepared.signed, `/poll/publish${q.toString() ? `?${q}` : ''}`);
         return;
     }
     try {
         const prepared = await signPoll(s.signer!, s.me, s.myRelays!, opts);
+        prepared.writeTargets = chosenTargets(form, s); // relay-picker selection (top-level)
         if (await tryUndoWindow(ctx, s, prepared, { fromModal })) return; // hold + countdown toast (helmjs)
         await publishSigned(s.pool, prepared);
     } catch (err) {
@@ -72,7 +78,7 @@ export async function postPollPublish(ctx: Ctx): Promise<void> {
     const signed = await requireSigned(ctx, s.me, KIND_POLL, 'the poll');
     if (!signed) return;
     const fromModal = ctx.query.get('inmodal') === '1';
-    const prepared: Prepared = { signed, isReply: false, writeTargets: writeRelays(s), inboxTargets: [] };
+    const prepared: Prepared = { signed, isReply: false, writeTargets: chosenTargets(ctx.query, s as Session & { me: string }), inboxTargets: [] };
     if (await tryUndoWindow(ctx, s as Session & { me: string }, prepared, { requirePartial: false, fromModal })) return; // nip07 = always JS
     try { await publishSigned(s.pool, prepared); } catch (err) {
         sendFragment(ctx, html`<div class="notice error">Couldn't publish: ${err instanceof Error ? err.message : String(err)}</div>`, {}, 502);

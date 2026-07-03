@@ -15,6 +15,7 @@
 
 import { decode } from 'nostr-tools/nip19';
 import { INDEXER_RELAYS, writeRelaysFor } from './nostr/nip65.ts';
+import { normalizeRelayUrl } from './data/relay-favorites.ts';
 import { HEX64 } from './nostr/tags.ts';
 import type { NostrEvent, UnsignedEvent } from './nostr/types.ts';
 import type { Session } from './session.ts';
@@ -110,6 +111,20 @@ export function isValidTarget(name: ActionName, target: string): boolean {
 
 export function writeRelays(s: Session): string[] {
     return writeRelaysFor(s.myRelays);
+}
+
+/** The relays to publish a top-level post to, from the compose relay-picker: the checked write relays (the
+ * `relay` fields) plus an optional validated one-off (`customrelay`). Anti-tamper: checked relays must be in
+ * your write set. Empty selection → ALL write relays (never publish to nowhere). Replies/quotes send no relay
+ * fields, so they fall through to the full write set here. `p` is the form (bunker) or the query (nip07).
+ * Shared by the note/picture/poll/article composers. */
+export function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string | null }, s: Session & { me: string }): string[] {
+    const all = writeRelaysFor(s.myRelays);
+    const allowed = new Set(all);
+    const picked = p.getAll('relay').filter((u) => allowed.has(u));
+    const custom = normalizeRelayUrl(p.get('customrelay') ?? '');
+    const targets = [...new Set([...picked, ...(custom ? [custom] : [])])];
+    return targets.length ? targets : all;
 }
 
 /** Publish a signed event to `relays` (default: your write relays) and report whether at least one

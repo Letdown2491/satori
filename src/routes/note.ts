@@ -15,7 +15,7 @@ import { commentRoot, KIND_COMMENT } from '../nostr/nip22.ts';
 import { isAddressable, tag1 } from '../nostr/tags.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
-import { normalizeRelayUrl } from '../data/relay-favorites.ts';
+import { chosenTargets } from '../actions.ts';
 import { decode } from 'nostr-tools/nip19';
 import { decodeNaddr } from '../nostr/nip19.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -118,14 +118,16 @@ function noteFormPart(c: ComposeCtx, inModal = false): SafeHtml {
 }
 
 /** The poll compose form body (question + poll fields → POST /poll). */
-function pollFormPart(d: PollDraft | null = null, inModal = false, status = ''): SafeHtml {
+function pollFormPart(d: PollDraft | null = null, inModal = false, status = '', relays: string[] = []): SafeHtml {
     return html`
       <form class="compose-box" action="/poll" method="post" h-post>
         ${inModal ? html`<input type="hidden" name="inmodal" value="1">` : null}
         <input type="hidden" id="compose-draftid" name="draftid" value="${d?.id ?? ''}">
         <textarea name="content" id="poll-question" required placeholder="Ask a question…">${d?.question ?? ''}</textarea>
         ${pollComposeFields({ options: d?.options, multiple: d?.multi, duration: d?.duration })}
+        ${relayPickerRow(relays)}
         <div class="compose-foot">
+          ${relays.length ? relaysToggleBtn() : null}
           <span id="compose-status" class="compose-status">${status}</span>
           <button type="submit" class="ghost" formaction="/poll/draft" formmethod="post" h-target="${inModal ? '#modal' : 'body'}" h-swap="inner">Save draft</button>
           <button type="submit" class="publish-btn" formaction="/poll" formmethod="post" h-target="body" h-swap="inner">Post poll</button>
@@ -315,8 +317,8 @@ export async function getCompose(ctx: Ctx): Promise<void> {
 
     if (isNew && (ctx.query.get('type') === 'poll' || draft?.type === 'poll')) {
         const pd = draft?.type === 'poll' ? draft : null;
-        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(pd, true))); return; }
-        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(pd)}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(pd, true, '', writeRelaysFor(s.myRelays)))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(pd, false, '', writeRelaysFor(s.myRelays))}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
         return;
     }
 
@@ -331,6 +333,7 @@ export async function getCompose(ctx: Ctx): Promise<void> {
     if (isNew && (ctx.query.get('type') === 'article' || draft?.type === 'article')) {
         const d = draft?.type === 'article' ? draft : null;
         const c: ArticleComposeCtx = d ? { identifier: d.identifier, title: d.title, summary: d.summary, image: d.image, topics: d.topics, body: d.body } : {};
+        c.relays = writeRelaysFor(s.myRelays); // the relay-picker list
         sendPage(ctx, articleComposePage(c), chromeFor(ctx, s, { active: 'compose', title: 'Article' }));
         return;
     }
@@ -403,8 +406,8 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
     const draft: PollDraft = { type: 'poll', id, question, options, multi, duration, savedAt: Date.now(), synced: prev?.synced, syncedAt: prev?.syncedAt };
     const inModal = ctx.isPartial && ctx.hTarget === '#modal';
     const render = (status: string): void => {
-        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(draft, true, status))); return; }
-        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(draft, false, status)}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
+        if (inModal) { sendFragment(ctx, modalWrap(composeTypes('poll', true), pollFormPart(draft, true, status, writeRelaysFor(s.myRelays)))); return; }
+        sendPage(ctx, html`<div class="view-pad">${composeTypes('poll')}${pollFormPart(draft, false, status, writeRelaysFor(s.myRelays))}</div>`, chromeFor(ctx, s, { active: 'compose', title: 'Poll' }));
     };
     if (!question && options.length === 0) { render('Nothing to save yet.'); return; } // don't persist empty
     saveDraft(s.me, draft);
@@ -412,18 +415,6 @@ export async function postPollDraft(ctx: Ctx): Promise<void> {
     await saveDraftAndSync(ctx, s, draft, (synced) => render(savedStatus(synced)));
 }
 
-/** The relays to publish a top-level note to, from the compose relay-picker: the checked write relays (the
- * `relay` fields) plus an optional validated one-off (`customrelay`). Anti-tamper: checked relays must be in
- * your write set. Empty selection → ALL write relays (never publish to nowhere). Replies/quotes send no relay
- * fields, so they fall through to the full write set here. `p` is the form (bunker) or the query (nip07). */
-export function chosenTargets(p: { getAll(n: string): string[]; get(n: string): string | null }, s: Session & { me: string }): string[] {
-    const all = writeRelaysFor(s.myRelays);
-    const allowed = new Set(all);
-    const picked = p.getAll('relay').filter((u) => allowed.has(u));
-    const custom = normalizeRelayUrl(p.get('customrelay') ?? '');
-    const targets = [...new Set([...picked, ...(custom ? [custom] : [])])];
-    return targets.length ? targets : all;
-}
 
 /** POST /picture - compose a NIP-68 picture (kind:20). Both signing families like notes/polls: bunker signs
  * server-side (with an undo window); nip07 returns a sign request continued at /picture/publish. */

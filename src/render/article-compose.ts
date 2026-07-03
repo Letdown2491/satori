@@ -6,7 +6,7 @@
 import { html, raw, type SafeHtml } from '../html.ts';
 import { icon, enso } from './svg.ts';
 import { timeAgo } from './util.ts';
-import { scheduleRow, composeTypes } from './compose.ts';
+import { scheduleRow, composeTypes, relayPickerRow, relaysToggleBtn } from './compose.ts';
 import { quote } from './quotes.ts';
 import { scheduledSection } from './scheduled.ts';
 import type { Draft } from '../drafts.ts';
@@ -14,6 +14,7 @@ import type { ScheduledPost } from '../data/scheduled.ts';
 
 export interface ArticleComposeCtx {
     identifier?: string; title?: string; summary?: string; image?: string; topics?: string; body?: string; error?: string; status?: string;
+    relays?: string[]; // the relay-picker's write-relay list (populated on a fresh compose)
 }
 
 const BODY = '#ac-body';
@@ -40,7 +41,9 @@ export function articleComposeForm(c: ArticleComposeCtx = {}): SafeHtml {
              (pure CSS, like the note composer). The "Schedule" button sends do=schedule to /article. -->
         <input type="checkbox" id="schedule-toggle" class="sched-check">
         ${scheduleRow('/article')}
+        ${relayPickerRow(c.relays ?? [])}
         <div class="ac-foot">
+          ${c.relays?.length ? relaysToggleBtn() : null}
           <label class="attach-btn schedule-btn" for="schedule-toggle" title="Schedule for later" aria-label="Schedule for later">${icon('clock')}</label>
           <span id="compose-status" class="compose-status">${c.status ?? ''}</span>
           <button type="submit" class="ghost" formaction="/draft" formmethod="post">Save draft</button>
