@@ -31,13 +31,13 @@ import { readSignResult } from '../nip07.ts';
 import type { Session } from '../session.ts';
 import { myRelayUrls } from '../nostr/nip65.ts';
 import { signsOnClient } from '../session.ts';
-import { feedKinds, profileKinds, timelineKinds, timelineEntries, isTimelineType, CONTENT_TYPES } from '../data/content-prefs.ts';
+import { feedKinds, profileKinds, timelineKinds, timelineEntries, isContentType, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { prepareEvents } from '../manifest/registry.ts';
 import type { FeedTab } from '../render/layout.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 
 const PAGE = 30;
-const LONGFORM_PAGE = 20;
+const TIMELINE_PAGE = 20;
 // The new-notes indicators (both the off-feed dot and the on-feed mark) stay quiet
 // until the user's newNotesThreshold (readAppearance) new notes have gathered - a
 // calm nudge, not a live counter.
@@ -107,7 +107,7 @@ export type FeedSource = { tab: FeedTab } | { relay: string } | { type: string }
 const isRelay = (src: FeedSource): src is { relay: string } => 'relay' in src;
 const isType = (src: FeedSource): src is { type: string } => 'type' in src;
 const srcKey = (src: FeedSource): string => (isRelay(src) ? `relay:${src.relay}` : isType(src) ? `type:${src.type}` : src.tab);
-const srcPageSize = (src: FeedSource): number => (isType(src) ? LONGFORM_PAGE : PAGE); // rich types page like longform
+const srcPageSize = (src: FeedSource): number => (isType(src) ? TIMELINE_PAGE : PAGE); // promoted-timeline page size (like the old longform feed)
 // An explicit relay browse shows that relay's CONTENT across every renderable kind (profileKinds), not the
 // narrow home-feed set - otherwise a long-form-only relay (articles/wikis, no kind:1) reads as empty. This
 // also lets seen-relays learn addressable-event authors from a relay you visit (bootstrapping outbox reads).
@@ -124,7 +124,7 @@ async function srcFetch(s: Session & { me: string }, src: FeedSource, until?: nu
         // Same follows route as Following (same authors), just this content type's kinds - exactly what the
         // old longform tab did, now per promoted type.
         const route = await routeFor(s, 'following');
-        return fetchRoutedPage(s.pool, route, limit ?? LONGFORM_PAGE, until, timelineKinds(src.type), undefined, budget).catch(() => [] as NostrEvent[]);
+        return fetchRoutedPage(s.pool, route, limit ?? TIMELINE_PAGE, until, timelineKinds(src.type), undefined, budget).catch(() => [] as NostrEvent[]);
     }
     return fetchPage(s, src.tab, until, limit, budget);
 }
@@ -401,7 +401,7 @@ export async function getTimeline(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const id = ctx.params.id ?? '';
-    if (!isTimelineType(id)) { redirect(ctx, '/'); return; }
+    if (!isContentType(id)) { redirect(ctx, '/'); return; }
     const src: FeedSource = { type: id };
     const untilParam = ctx.query.get('until');
     const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;

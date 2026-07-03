@@ -109,6 +109,6 @@ export function timelineKinds(id: string): number[] {
     return CONTENT_TYPES.find((c) => c.id === id)?.kinds ?? [];
 }
 /** Is `id` a known content type? (Timeline-route validation.) */
-export function isTimelineType(id: string): boolean {
+export function isContentType(id: string): boolean {
     return CONTENT_TYPES.some((c) => c.id === id);
 }
