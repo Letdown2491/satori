@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - unreleased
+
+### Added
+
+- Local relay. At the top of Settings > Relays you can point Satori at one personal relay of your own,
+  an aggregator, outbox, or blaster, by ws://, wss://, or .onion URL. Read and Write are each set to
+  Off, Add, or Only: Add uses the relay alongside your normal relays, while Only routes exclusively to
+  it and skips the outbox and your published NIP-65 relays, so you can run your whole feed and posting
+  through a relay of your own. The local relay is kept private and is never added to your published
+  relay list, so no one else's client tries to reach it. Private relays that require NIP-42
+  authentication are supported: a bunker login authenticates on its own, and with a browser extension
+  you authenticate in one click (a prompt appears under the bar whenever it's needed) to sign a
+  one-time challenge, after which the daemon reuses that connection.
+
 ## [0.5.0] - 2026-07-03
 
 ### Added

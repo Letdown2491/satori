@@ -39,6 +39,20 @@ export interface ChromeOpts {
     /** A small count chip after the title (e.g. Bookmarks · 5). Lives in the visible bar only,
      * not the document <title>; an action can OOB-swap it live (see titleCount). */
     titleCount?: number;
+    /** nip07: the private local relay needs re-authentication (a read hit auth-required and the daemon
+     * can't sign in the background). Shows a one-click Authenticate banner under the bar. */
+    localAuthNeeded?: boolean;
+}
+
+/** Shown under the bar when a nip07 user's private local relay needs NIP-42 auth (else the feed is
+ * silently blank). One click signs the challenge via the extension and reloads. Bunker never sees this. */
+function localAuthBanner(): SafeHtml {
+    return html`<div class="local-auth-banner" role="alert">
+        <span>Your local relay needs authentication before it can load your feed.</span>
+        <form action="/settings/local-relay/auth?reauth=1" method="post" h-post h-swap="none">
+          <button type="submit" class="busy-btn"><span class="btn-label">Authenticate</span><span class="btn-busy">Authenticating…</span><span class="btn-done">✓</span></button>
+        </form>
+      </div>`;
 }
 
 /** The poller h-trigger string. On first mount (`initial`) it carries `load` for a one-shot check;
@@ -206,6 +220,7 @@ export function page(content: SafeHtml, o: ChromeOpts): SafeHtml {
           <a class="skip-link" href="#viewport">Skip to content</a>
           <div id="app">
             ${bar(o)}
+            ${o.localAuthNeeded ? localAuthBanner() : html``}
             <main id="viewport" tabindex="-1">
               ${pageHeading}
               <div h-error class="error-region" role="alert" aria-live="polite"></div>

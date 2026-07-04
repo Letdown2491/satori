@@ -482,6 +482,15 @@
         }
         .add-relay input[type=text]:focus { outline: none; border-color: var(--accent); }
         .relay-save { display: flex; align-items: center; gap: 10px; }
+        /* Local-relay Read/Write direction rows (each a 3-way Off/Add/Only rw-chip group). */
+        .local-relay-dirs { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 4px 0 12px; }
+        .luse-row { display: inline-flex; align-items: center; gap: 8px; }
+        .luse-label { font-size: 13px; color: var(--muted); min-width: 40px; }
+        /* Local-relay NIP-42 auth row (nip07): status + Authenticate button + help. */
+        .local-relay-auth { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+        .local-relay-auth > form { display: inline; }
+        .local-relay-auth .luse-label { margin-right: 10px; }
+        .local-relay-auth .filter-help { margin-top: 8px; }
         /* Muted-list name link (the row + layout live with the unmute animation below). */
         .mute-name { flex: 1; min-width: 0; font-weight: 600; color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .mute-name:hover { color: var(--accent); }
@@ -1899,6 +1908,10 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
 .relay-chip:has(input:checked) { border-color: var(--accent); color: var(--accent); }
 .relay-custom-input { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
 .relay-custom-input:focus { outline: none; border-color: var(--accent); }
+/* Local-relay notice inside the compose picker (only-mode override / add-mode mirror line). */
+.relay-local-note { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.relay-local-note b { color: var(--text); font-weight: 600; }
+.relay-local-note a { color: var(--accent); text-decoration: none; }
 .schedule-input { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; min-width: 0; }
 .schedule-input:focus { outline: none; border-color: var(--accent); }
 /* The native datetime picker icon is near-invisible on the dark panel - lift it so it reads. */
@@ -1993,6 +2006,10 @@ html[data-pay-method="nwc"] .pays-n { display: inline; }
 .privacy-cur { font-weight: 500; color: var(--accent); font-size: 12px; }
 /* Warming indicator: a real connected/total bar (width grows as relays connect, with
    a smooth transition so it advances rather than sweeps). Empty = hidden (no-JS). */
+/* App-wide re-auth prompt (nip07 private local relay). Accent-tinted, sits under the bar. */
+.local-auth-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; max-width: 640px; margin: 10px auto 0; padding: 10px 14px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, transparent); font-size: 13px; }
+.local-auth-banner span { flex: 1; min-width: 200px; color: var(--text); }
+.local-auth-banner form { margin: 0; }
 .privacy-warming { margin: 10px 0 2px; }
 .privacy-warming:empty { display: none; }
 .warm-row { display: flex; align-items: baseline; font-size: 12px; color: var(--muted); margin-bottom: 5px; }

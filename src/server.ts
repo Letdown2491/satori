@@ -27,7 +27,7 @@ import { getYtCard, getYtThumb, getYtPlay, getYtPlaylistCard, getYtPlaylistPlay 
 import { getCompose, getComposeClose, getComposePreview, postNote, postNotePublish, postPicture, postPicturePublish, postPrivateReplySeal, postPrivateReplyWrap, postNoteDraft, postPollDraft, getNoteTick, postNoteUndo } from './routes/note.ts';
 import { postAppearance, getWallet, postWallet, getMetrics } from './routes/pages.ts';
 import { getBookmarks, getMuted, getListDecrypt, postListDecrypted } from './routes/saved.ts';
-import { getSettings, getSettingsTab, postRelaysEdit, postRelays, postRelaysPublish, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContentPrefs, postContentFilters } from './routes/settings.ts';
+import { getSettings, getSettingsTab, postRelaysEdit, postRelays, postRelaysPublish, postLocalRelay, postLocalRelayAuth, postLocalRelayAuthComplete, postDmRelaysEdit, postDmRelays, postDmRelaysPublish, postMediaEdit, postMedia, postMediaPublish, getRelayScore, getBackupExport, postBackupImport, postBackupRestore, postSearchEdit, postSearchSave, postPrivacy, getPrivacyStatus, postContentPrefs, postContentFilters } from './routes/settings.ts';
 import { getProfileEdit, postProfile, postProfilePublish } from './routes/profile.ts';
 import { getNotifications, getNotifUnread } from './routes/notifications.ts';
 import { getMessages, getRequests, getMessagesDot, getNewMessage, getThread as getDmThread, getThreadOlder, postSend, postReadAll, getDmSync, getThreadSync, postDmSeals, postDmRumors, postDmLegacy, postSendSeal, postSendWrap } from './routes/dms.ts';
@@ -130,6 +130,9 @@ const ROUTES: Route[] = [
     route('POST', '/settings/relays/edit', postRelaysEdit),
     route('POST', '/settings/relays', postRelays),
     route('POST', '/settings/relays/publish', postRelaysPublish),
+    route('POST', '/settings/local-relay', postLocalRelay),
+    route('POST', '/settings/local-relay/auth', postLocalRelayAuth),
+    route('POST', '/settings/local-relay/auth/complete', postLocalRelayAuthComplete),
     route('POST', '/settings/dm-relays/edit', postDmRelaysEdit),
     route('POST', '/settings/dm-relays', postDmRelays),
     route('POST', '/settings/dm-relays/publish', postDmRelaysPublish),

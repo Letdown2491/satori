@@ -9,15 +9,19 @@
 // one impl serves both clearnet (direct) and onion (tunnelled) relays.
 
 import { relaysViaTor } from '../privacy.ts';
+import { isLocalRelayUrl } from '../local-relay.ts';
 
 const isOnion = (address: string): boolean => {
     try { return new URL(address).hostname.toLowerCase().endsWith('.onion'); } catch { return false; }
 };
 
-// A relay goes through Tor when it's .onion (the only way it connects) OR Privacy Mode
-// routes clearnet relays too. Read LIVE per-connection, so a Settings toggle takes
-// effect on the next relay dial without a restart.
-const routeViaTor = (address: string): boolean => isOnion(address) || relaysViaTor();
+// A relay goes through Tor when it's .onion (the only way it connects) OR Privacy Mode routes
+// clearnet relays too - EXCEPT the configured local relay, which bypasses the Privacy-Mode forcing:
+// a clearnet-local relay (ws://localhost) isn't reachable over Tor, so forcing it would just break
+// it. (An .onion local relay still routes via Tor - isOnion catches it first.) Read LIVE per-
+// connection, so a Settings toggle takes effect on the next relay dial without a restart.
+const routeViaTor = (address: string): boolean =>
+    isOnion(address) || (relaysViaTor() && !isLocalRelayUrl(address));
 
 /** Install Tor routing for .onion relays if TOR_SOCKS is set. Call once at startup,
  * before any relay connects. Safe to call when unset (no-op). */

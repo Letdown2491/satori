@@ -5,7 +5,8 @@
 // here; nip07 sign-and-continues. A relay save also updates s.myRelays + invalidates
 // the routed-feed caches and persists, so the whole app uses the new list.
 
-import { settingsPage, relaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, SETTINGS_TABS, type SettingsView, type SettingsTab } from '../render/settings.ts';
+import { settingsPage, relaySection, localRelaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, SETTINGS_TABS, type SettingsView, type SettingsTab } from '../render/settings.ts';
+import { localRelay, setLocalRelay, localRelayUrl, RELAY_USES, type RelayUse } from '../local-relay.ts';
 import { getFilters, saveFilters } from '../data/filters.ts';
 import { getContentPrefs, saveContentPrefs, timelineEntries, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { privacyMode, setPrivacyMode, isPrivacyMode } from '../privacy.ts';
@@ -19,9 +20,10 @@ import { KIND_DM_RELAYS } from '../nostr/nip17.ts';
 import { fetchBlossomServers, serverListTemplate, publishServerList, publishServerListSigned } from '../upload.ts';
 import { readSignedEvent, verifySigned } from '../nip07.ts';
 import { persistSession } from '../session.ts';
-import { requireLogin, chromeFor, meFor } from './common.ts';
+import { requireLogin, chromeFor, meFor, LAND_ON_FEED } from './common.ts';
+import { feedDocument } from './feed.ts';
 import { readAppearance, writeAppearance, parseRelayList } from '../theme.ts';
-import { parseRelayList as parseRelayListEvent } from '../nostr/nip65.ts';
+import { parseRelayList as parseRelayListEvent, normalizeRelayUrl } from '../nostr/nip65.ts';
 import { BACKUP_KINDS, BACKUP_VERSION, gatherBackup, restoreTemplate, restoreTargets } from '../data/list-backup.ts';
 import { anyAccepted } from '../data/pool.ts';
 import { SEARCH_NOTE_RELAYS, SEARCH_PROFILE_RELAYS } from '../data/search.ts';
@@ -97,7 +99,7 @@ async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<Sett
     const searchProfileDraft = ov.searchProfileDraft ?? a.searchProfileRelays;
     const filters = ov.filters ?? getFilters(s.me);
     const contentPrefs = ov.contentPrefs ?? getContentPrefs(s.me);
-    return { a, relayDraft, mediaDraft, dmRelayDraft, searchNoteDraft, searchProfileDraft, filters, contentPrefs, ...ov };
+    return { a, relayDraft, mediaDraft, dmRelayDraft, searchNoteDraft, searchProfileDraft, filters, contentPrefs, localRelay: localRelay(), localRelayAuth: localAuthUI(s), ...ov };
 }
 
 /** POST /settings/content-prefs - the AUTO-SAVING content-types grid: per-kind feed/profile visibility plus
@@ -511,6 +513,120 @@ export async function postSearchSave(ctx: Ctx): Promise<void> {
     if (kind === 'note') a.searchNoteRelays = saved; else a.searchProfileRelays = saved;
     writeAppearance(ctx, a);
     await respondSearch(ctx, s, kind, saved, 'Saved ✓');
+}
+
+// --- local relay (daemon-side aggregator/outbox/blaster, NOT published) ------
+// One private relay with a 3-way Read + Write policy (off/add/only). Persisted server-side
+// (local-relay.ts), kept OUT of your published NIP-65 list. "only" routes exclusively here.
+
+const localUse = (form: URLSearchParams, name: 'read' | 'write'): RelayUse => {
+    const v = form.get(name) ?? '';
+    return (RELAY_USES as string[]).includes(v) ? (v as RelayUse) : 'add';
+};
+
+/** POST /settings/local-relay - set (or clear) the private local relay + its read/write policy.
+ * An invalid URL leaves the current config untouched (a typo mustn't wipe it). On any real change
+ * we drop the routed-feed cache + recycle sockets so it takes effect on the next fetch/publish. */
+export async function postLocalRelay(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const form = await readForm(ctx.req);
+    const rawUrl = (form.get('url') ?? '').trim();
+    const read = localUse(form, 'read');
+    const write = localUse(form, 'write');
+    let status: string;
+    let err = false;
+    if (!rawUrl) {
+        setLocalRelay('', 'off', 'off');
+        status = 'Local relay disabled ✓';
+    } else if (!normalizeRelayUrl(rawUrl, { assumeWss: true })) {
+        status = 'Not a valid relay URL (use ws://, wss:// or a host).';
+        err = true; // leave the current config untouched
+    } else {
+        setLocalRelay(rawUrl, read, write);
+        const parts = [read !== 'off' ? `read: ${read}` : '', write !== 'off' ? `write: ${write}` : ''].filter(Boolean);
+        status = parts.length ? `Saved ✓ (${parts.join(', ')})` : 'Saved ✓ (read + write off)';
+    }
+    if (!err) {
+        s.followsRoute = null;
+        s.followersRoute = null;
+        s.pool.recycle();      // re-dial (or drop) the local relay now, like the Privacy toggle
+        s.signer?.reconnect(); // recycle tore down the bunker subscription; rebuild it (no-op for nip07)
+    }
+    // Fold NIP-42 auth into Save (nip07, JS path): the moment you save a private relay is exactly when an
+    // auth prompt makes sense, so a nip07 user never lands on a silently-blank feed. If the just-saved,
+    // in-use relay issues a challenge, chain into the sign round-trip now. Bunker auto-auths (skip); a relay
+    // that needs no auth returns no challenge, so we just save. No-JS can't sign, so it falls through too.
+    if (!err && rawUrl && ctx.isPartial && signsOnClient(s)) {
+        const lr = localRelay();
+        if (lr && (lr.read !== 'off' || lr.write !== 'off')) {
+            const challenge = await s.pool.localRelayChallenge();
+            if (challenge) {
+                const template = { kind: 22242, created_at: Math.floor(Date.now() / 1000), tags: [['relay', lr.url], ['challenge', challenge]], content: '', pubkey: s.me };
+                sendSignRequest(ctx, template, '/settings/local-relay/auth/complete');
+                return;
+            }
+        }
+    }
+    if (ctx.isPartial) { sendFragment(ctx, localRelaySection(localRelay(), status, err, localAuthUI(s))); return; }
+    await sendFullPage(ctx, s, { localRelayStatus: status, localRelayErr: err }, 'relays');
+}
+
+// --- local relay NIP-42 auth (nip07 only; bunker auto-auths via automaticallyAuth) ---
+const PLACE_LOCAL_RELAY = { 'H-Reswap': 'outer', 'H-Retarget': '#local-relay-section' };
+
+/** The auth UI state for the local-relay section: show the Authenticate button only for a nip07 session
+ * with a relay that's actually in use (read or write on). Bunker signs the challenge server-side. */
+function localAuthUI(s: Session): { needsAuth: boolean; authed: boolean } {
+    const lr = localRelay();
+    return {
+        needsAuth: signsOnClient(s) && !!lr && (lr.read !== 'off' || lr.write !== 'off'),
+        authed: s.pool.isLocalRelayAuthed(),
+    };
+}
+
+/** POST /settings/local-relay/auth - nip07: connect, read the relay's NIP-42 challenge, and ask the
+ * browser extension to sign it (the daemon can't sign a background challenge for a nip07 key). */
+export async function postLocalRelayAuth(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    // `reauth` = the app-wide banner (from any page); else the Settings button. The banner reloads on
+    // done/failure (its target section isn't on the page); the button swaps its section inline.
+    const reauth = ctx.query.get('reauth') === '1';
+    const fail = (status: string): void => {
+        if (reauth) { ctx.res.writeHead(200, { 'H-Refresh': 'true' }); ctx.res.end(); return; }
+        sendFragment(ctx, localRelaySection(localRelay(), status, true, localAuthUI(s)), PLACE_LOCAL_RELAY);
+    };
+    if (!signsOnClient(s)) { fail('Bunker logins authenticate automatically.'); return; }
+    const url = localRelayUrl();
+    if (!url) { fail('Set a local relay URL first.'); return; }
+    const challenge = await s.pool.localRelayChallenge();
+    if (!challenge) { fail('No auth challenge from the relay (it may not require auth, or is unreachable).'); return; }
+    const template = { kind: 22242, created_at: Math.floor(Date.now() / 1000), tags: [['relay', url], ['challenge', challenge]], content: '', pubkey: s.me };
+    sendSignRequest(ctx, template, reauth ? '/settings/local-relay/auth/complete?reauth=1' : '/settings/local-relay/auth/complete');
+}
+
+/** nip07 continuation: the extension-signed kind:22242 comes back; send it as AUTH on the relay socket. */
+export async function postLocalRelayAuthComplete(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    if (!signsOnClient(s)) { notFound(ctx); return; }
+    const reauth = ctx.query.get('reauth') === '1';
+    // The banner path lands on the feed via the sign-continuation seam (a body swap the continuation DOES
+    // honor - H-Refresh only works on a direct helm.js request, not here, which is why the page didn't
+    // reload on its own). On success the feed loads authed and the banner is gone; on failure it re-renders
+    // with the banner so you can retry. The Settings-button path swaps its own section inline as before.
+    const landOnFeed = async (): Promise<void> => { s.followsRoute = null; s.followersRoute = null; sendFragment(ctx, await feedDocument(ctx, s), LAND_ON_FEED); };
+    const signed = await readSignedEvent(ctx.req);
+    if (!signed || signed.pubkey !== s.me || signed.kind !== 22242) {
+        if (reauth) { await landOnFeed(); return; }
+        sendFragment(ctx, localRelaySection(localRelay(), 'Couldn’t verify the signed auth event.', true, localAuthUI(s)), PLACE_LOCAL_RELAY, 400);
+        return;
+    }
+    const ok = await s.pool.completeLocalRelayAuth(signed);
+    if (ok) { s.followsRoute = null; s.followersRoute = null; } // re-route reads over the now-authed socket
+    if (reauth) { await landOnFeed(); return; }
+    sendFragment(ctx, localRelaySection(localRelay(), ok ? 'Authenticated ✓' : 'The relay rejected the authentication.', !ok, localAuthUI(s)), PLACE_LOCAL_RELAY, ok ? 200 : 502);
 }
 
 // --- media servers (kind:10063) --------------------------------------------

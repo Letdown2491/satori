@@ -9,6 +9,7 @@ import { icon } from './svg.ts';
 import { minScheduleValue } from './util.ts';
 import { relayLabel } from '../data/relay-favorites.ts';
 import { torStrict } from '../privacy.ts';
+import { localWriteMode, localRelayUrl } from '../local-relay.ts';
 
 /** The revealed "Publish on <datetime> [Schedule]" row, shared by the note (POST /note) and article
  * (POST /article) composers so the markup can't drift. The clock toggle + reveal are pure CSS (the caller
@@ -28,12 +29,28 @@ export function scheduleRow(action: string, btnAttrs: SafeHtml = raw('')): SafeH
  * a subset, or add a one-off relay. Server side reads the `relay`/`customrelay` fields via chosenTargets.
  * Renders nothing when there are no write relays to offer. */
 export function relayPickerRow(relays: string[]): SafeHtml {
+    const localUrl = localRelayUrl();
+    const localMode = localWriteMode();
+    // Local-relay 'only' write policy overrides the picker entirely - the pool routes EVERY publish to
+    // just the local relay, so the NIP-65 chips would be inert. Show where posts actually go instead.
+    if (localMode === 'only' && localUrl) {
+        return html`<input type="checkbox" id="relays-toggle" class="relays-check">
+        <div class="relays-row">
+          <div class="relays-row-head">Post to relays</div>
+          <p class="relay-local-note">Local relay only: every post routes to <b>${relayLabel(localUrl)}</b>, skipping your other relays. Change in <a href="/settings/relays">Settings</a>.</p>
+        </div>`;
+    }
     if (!relays.length) return raw('');
+    // 'add': the pool ALSO mirrors every post to the local relay, on top of whatever you pick here.
+    const mirrorNote = (localMode === 'add' && localUrl)
+        ? html`<p class="relay-local-note">Also mirroring to your local relay (<b>${relayLabel(localUrl)}</b>).</p>`
+        : raw('');
     return html`<input type="checkbox" id="relays-toggle" class="relays-check">
         <div class="relays-row">
           <div class="relays-row-head">Post to relays</div>
           <div class="relay-chips">${relays.map((url) => html`<label class="relay-chip"><input type="checkbox" name="relay" value="${url}" checked>${relayLabel(url)}</label>`)}</div>
           <input class="relay-custom-input" type="text" name="customrelay" placeholder="wss://… (one-off relay)" autocomplete="off" spellcheck="false">
+          ${mirrorNote}
         </div>`;
 }
 

@@ -9,6 +9,7 @@ import { html, raw, join, type SafeHtml } from '../html.ts';
 import { shortRelay, shortHash } from './util.ts';
 import { DEFAULT_BLOSSOM_SERVER } from '../upload.ts';
 import { privacyMode, torAvailable, type PrivacyMode } from '../privacy.ts';
+import type { LocalRelay, RelayUse } from '../local-relay.ts';
 import type { RelayEntry } from '../nostr/types.ts';
 import type { Appearance, Theme } from '../theme.ts';
 import type { FeedFilters, SurfaceFlags } from '../data/filters.ts';
@@ -36,6 +37,11 @@ export interface SettingsView {
     contentPrefs: ContentPrefs;   // per-kind feed/profile visibility
     backupStatus?: string;        // lists backup/restore result message
     backupErr?: boolean;
+    localRelay?: LocalRelay | null; // the private local relay (aggregator/outbox/blaster), daemon-side config
+    localRelayStatus?: string;
+    localRelayErr?: boolean;
+    localRelayAuth?: { needsAuth: boolean; authed: boolean }; // nip07 NIP-42 auth state for the relay
+
 }
 
 /** The shared Save footer for a form-as-state relay editor: the busy-btn (with the section's own
@@ -350,6 +356,7 @@ function settingsPanel(v: SettingsView, active: SettingsTab): SafeHtml {
         case 'content': return contentTabPanel(v.contentPrefs, v.filters);
         case 'privacy': return privacySection();
         case 'relays': return html`
+          ${localRelaySection(v.localRelay ?? null, v.localRelayStatus, v.localRelayErr, v.localRelayAuth)}
           ${relaySection(v.relayDraft, v.relayStatus, v.relayErr)}
           ${dmRelaySection(v.dmRelayDraft, v.dmRelayStatus, v.dmRelayErr)}`;
         case 'search': return html`
@@ -413,6 +420,43 @@ export function relayScoreChip(url: string, score?: TrustScore | null, id: strin
     if (score === null) return html`<span class="relay-score score-unknown" id="${raw(id)}" title="No trust score">?</span>`;
     const tier = score.score >= 75 ? 'high' : score.score >= 50 ? 'mid' : 'low';
     return html`<span class="relay-score score-${tier}" id="${raw(id)}" title="${scoreTitle(score)}">${String(score.score)}</span>`;
+}
+
+/** The local-relay section (top of the Relays tab): ONE private relay - a self-hosted aggregator/
+ * outbox/blaster - the daemon reads from and mirrors writes to, kept OUT of your published NIP-65
+ * list. Read and Write are each a 3-way (Off / Add / Only); "Only" routes EXCLUSIVELY here, the way
+ * to test a custom relay in isolation. Not form-as-state (a single relay), just a plain save. */
+export function localRelaySection(lr: LocalRelay | null, status?: string, statusErr = false, auth?: { needsAuth: boolean; authed: boolean }): SafeHtml {
+    const uses: { v: RelayUse; label: string }[] = [{ v: 'off', label: 'Off' }, { v: 'add', label: 'Add' }, { v: 'only', label: 'Only' }];
+    const seg = (name: 'read' | 'write', current: RelayUse): SafeHtml => html`<div class="rw-group">${join(uses.map((u) =>
+        html`<label class="rw-chip"><input type="radio" name="${name}" value="${u.v}"${u.v === current ? raw(' checked') : raw('')}>${u.label}</label>`))}</div>`;
+    // nip07 + a private (auth-required) relay: the browser signs a one-time NIP-42 challenge and the daemon
+    // keeps that connection. Bunker logins auth automatically (server-side), so no button there.
+    const authBlock = auth?.needsAuth
+        ? html`<div class="local-relay-auth">
+            <span class="luse-label">${auth.authed ? 'Authenticated ✓' : 'Not authenticated'}</span>
+            <form action="/settings/local-relay/auth" method="post" h-post h-target="#local-relay-section" h-swap="outer">
+              <button type="submit" class="ghost">${auth.authed ? 'Re-authenticate' : 'Authenticate'}</button>
+            </form>
+            <p class="filter-help">If this relay requires NIP-42 auth, your browser extension signs a one-time challenge and the daemon reuses that connection. Re-authenticate after the relay or daemon restarts. (Bunker logins do this automatically.)</p>
+          </div>`
+        : html``;
+    return html`
+      <section id="local-relay-section">
+        <h3>Local relay</h3>
+        <p class="filter-help">One personal relay (aggregator / outbox / blaster) the daemon reads from and mirrors your posts to. It’s never added to your published relay list. <b>Add</b> uses it alongside your normal relays; <b>Only</b> routes exclusively here, skipping the outbox and your NIP-65 relays - the way to test whether a custom relay serves your whole feed and accepts your posts. Accepts ws://, wss:// or a .onion URL; leave the URL blank to disable.</p>
+        <form action="/settings/local-relay" method="post" h-post h-target="#local-relay-section" h-swap="outer">
+          <div class="add-relay">
+            <input type="text" name="url" value="${lr?.url ?? ''}" placeholder="ws://localhost:4869 (or wss:// / .onion)" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="local-relay-dirs">
+            <span class="luse-row"><span class="luse-label">Read</span>${seg('read', lr?.read ?? 'add')}</span>
+            <span class="luse-row"><span class="luse-label">Write</span>${seg('write', lr?.write ?? 'add')}</span>
+          </div>
+          ${relaySaveFooter(status, statusErr, 'Save local relay')}
+        </form>
+        ${authBlock}
+      </section>`;
 }
 
 /** The relays section (kind:10002 NIP-65). `draft` is the current editable list;

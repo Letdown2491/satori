@@ -26,7 +26,7 @@ export function chromeFor(
     const a = readAppearance(ctx);
     // Every page's switcher lists the user's promoted timelines (so you can jump to one from anywhere).
     const timelines = timelineEntries(s.me);
-    return { loggedIn: true, me: meFor(s), theme: a.theme, timelines, ...opts };
+    return { loggedIn: true, me: meFor(s), theme: a.theme, timelines, localAuthNeeded: s.pool.localAuthMissing(), ...opts };
 }
 
 /** Chrome for logged-out pages (sign-in) - no bar, but honor the theme cookie. */

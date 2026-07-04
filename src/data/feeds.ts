@@ -10,6 +10,7 @@ import { notFakePodcast } from '../nostr/nipf4.ts';
 import { coalesceOne } from './coalesce.ts';
 import { fetchRelayLists } from './relays.ts';
 import { seenRelaysFor } from './seen-relays.ts';
+import { localReadMode, localRelayUrl } from '../local-relay.ts';
 
 export interface FeedRoute {
     authors: string[];
@@ -72,8 +73,19 @@ export async function buildFollowersRoute(pool: Pool, me: string, myRelays: Rela
 
 async function routeFor(pool: Pool, authors: string[]): Promise<FeedRoute> {
     if (authors.length === 0) return { authors, route: new Map() };
+    const local = localRelayUrl();
+    // 'only': the local relay IS the whole feed - one full-coverage route, no outbox fan-out and no
+    // kind:10002 discovery. A follow whose notes the aggregator doesn't carry is simply absent, which
+    // is exactly the signal you want when testing a custom relay in isolation.
+    if (local && localReadMode() === 'only') {
+        console.log(`[feeds] routing ${authors.length} authors EXCLUSIVELY via local relay ${local}`);
+        return { authors, route: new Map([[local, new Set(authors)]]) };
+    }
     const relayLists = await fetchRelayLists(pool, INDEXER_RELAYS, authors);
     const route = routeAuthorsToRelays(relayLists, authors, { fallbackRelays: INDEXER_RELAYS });
+    // 'add': the local relay covers everyone alongside the outbox - queried ONCE for all authors (not
+    // per shard), so an aggregator can serve the whole feed from one socket while the outbox fills gaps.
+    if (local && localReadMode() === 'add') route.set(local, new Set(authors));
     console.log(`[feeds] routing ${authors.length} authors across ${route.size} relays`);
     return { authors, route };
 }

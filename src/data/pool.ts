@@ -4,8 +4,9 @@
 
 import { SimplePool } from 'nostr-tools/pool';
 import type { Filter } from 'nostr-tools';
-import { toPoolUrls, fromPoolUrl } from '../nostr/nip65.ts';
+import { toPoolUrls, toPoolUrl, fromPoolUrl } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
+import { localReadMode, localWriteMode, localRelayUrl, isLocalRelayUrl } from '../local-relay.ts';
 import { recordSeen } from './seen-relays.ts';
 import { recordLatency, relayBudget } from './relay-latency.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
@@ -20,6 +21,11 @@ export interface SubHandlers {
 }
 
 const normUrl = (u: string) => u.replace(/\/+$/, '').toLowerCase();
+
+// NIP-46 bunker RPC transport kind. Publishes of this kind are the signer channel (connect / sign
+// requests) and must reach EXACTLY the bunker's relays - the local-relay write policy must never
+// redirect or mirror them, or bunker signing breaks. Kept local to avoid a pool<->signer import.
+const NIP46_KIND = 24133;
 
 // Reliability caps so one slow/dead relay can't stall a render: a query returns
 // whatever arrived by the deadline instead of waiting for EVERY relay to EOSE.
@@ -50,6 +56,14 @@ export class Pool {
     // list (authing to strangers' relays would broadcast your identity everywhere).
     private authSign: ((tmpl: UnsignedEvent) => Promise<NostrEvent>) | null = null;
     private authRelays = new Set<string>();
+    // Local relay sockets we've NIP-42-authenticated this session (normalized urls). Only used by the
+    // nip07 manual-auth flow (bunker auto-auths via automaticallyAuth). Cleared on recycle since a fresh
+    // socket starts unauthed.
+    private authedLocal = new Set<string>();
+    // nip07 only: a read/get to the local relay hit `auth-required` and we couldn't sign it server-side.
+    // Drives the re-auth prompt (bunker signs in the background, so it never sets this). Sticky until a
+    // successful auth clears it.
+    private localAuthObservedRequired = false;
     // Warm-up tracking for the Privacy Mode indicator: which relays are dialing and
     // which have settled (connected OR failed), so the widget shows real progress.
     private warming: { urls: Set<string>; settled: Set<string> } | null = null;
@@ -59,7 +73,10 @@ export class Pool {
         this.raw.trackRelays = true; // populate seenOn so we can learn which relays actually carry an author's events
 
         (this.raw as { automaticallyAuth?: unknown }).automaticallyAuth = (url: string) => {
-            if (!this.authSign || !this.authRelays.has(normUrl(url))) return undefined;
+            // Authenticate (NIP-42) to relays in your own list, PLUS the explicitly-configured local relay -
+            // a private aggregator/outbox relay is the whole point of that feature and is typically auth-
+            // required. The "don't auth to strangers" concern doesn't apply: you deliberately set it as yours.
+            if (!this.authSign || !(this.authRelays.has(normUrl(url)) || isLocalRelayUrl(url))) return undefined;
             const sign = this.authSign;
             return (tmpl: UnsignedEvent) => sign(tmpl);
         };
@@ -72,6 +89,86 @@ export class Pool {
     }
     setAuthRelays(relays: string[]): void {
         this.authRelays = new Set(toPoolUrls(relays).map(normUrl));
+    }
+
+    // --- nip07 NIP-42 auth for the local relay ---------------------------------
+    // A private (auth-required) local relay needs NIP-42. Bunker signs the challenge server-side
+    // (automaticallyAuth). nip07 can't sign in the background, so the browser signs a challenge once,
+    // interactively, and we keep that authenticated socket for subsequent reads/writes.
+
+    /** Open a FRESH socket to the local relay and return its NIP-42 challenge (null if it doesn't
+     * challenge within the window / is unreachable). Recycles first so each attempt starts clean - no
+     * stale challenge and no cached auth promise (nostr-tools caches relay.authPromise, even a rejected
+     * one, so a retry on the same socket would just re-reject). */
+    async localRelayChallenge(): Promise<string | null> {
+        const url = localRelayUrl();
+        if (!url) return null;
+        try {
+            const pool = toPoolUrl(url);
+            const relay = await this.raw.ensureRelay(pool, { connectionTimeout: CONNECT_MAX_WAIT }) as unknown as { challenge?: string };
+            // The live socket usually ALREADY carries a challenge - in only-mode the background feed reads
+            // constantly provoke the (lazy) relay's AUTH. Read it directly; that's instant and robust under
+            // the daemon's concurrency (recycling + re-provoking here raced with that traffic and timed out).
+            // Fall back to a throwaway REQ to provoke one if the socket somehow has none yet (e.g. add-mode).
+            if (!relay.challenge) {
+                let sub: { close(): void } | undefined;
+                try { sub = this.raw.subscribeMany([pool], { kinds: [1], limit: 1 } as never, { onevent() {}, oneose() {}, onclose() {} } as never) as { close(): void }; } catch { /* provoke best-effort */ }
+                for (let i = 0; i < 30 && !relay.challenge; i++) await new Promise((r) => setTimeout(r, 100));
+                try { sub?.close(); } catch { /* already closed */ }
+            }
+            return relay.challenge ?? null;
+        } catch (e) { console.warn('[local-relay] challenge failed:', (e as Error)?.message ?? e); return null; }
+    }
+
+    /** Send a browser-signed kind:22242 as AUTH on the local relay's socket and await the relay's OK.
+     * On success the socket is marked authed, so subsequent reads/writes ride it. */
+    async completeLocalRelayAuth(signed: NostrEvent): Promise<boolean> {
+        const url = localRelayUrl();
+        if (!url) return false;
+        try {
+            const relay = await this.raw.ensureRelay(toPoolUrl(url)) as unknown as { auth(fn: () => Promise<NostrEvent>): Promise<unknown>; challenge?: string; authPromise?: unknown };
+            // Clear any stuck auth attempt: a background read's onauth (nip07) REJECTS to flag re-auth, and
+            // nostr-tools then leaves relay.authPromise pending forever (its catch never settles it). relay.auth
+            // returns that cached pending promise, so a manual auth would hang. Reset it for a fresh attempt;
+            // the socket keeps the same challenge, so the browser-signed event still matches.
+            relay.authPromise = undefined;
+            await relay.auth(async () => signed); // relay.auth rebuilds makeAuthEvent internally; we return the pre-signed one
+            this.authedLocal.add(normUrl(url));
+            this.localAuthObservedRequired = false; // clear the re-auth prompt
+            console.log(`[local-relay] authenticated to ${url}`);
+            return true;
+        } catch (e) {
+            console.warn('[local-relay] auth rejected:', (e as Error)?.message ?? e);
+            // nostr-tools caches relay.authPromise (even a rejected one), so re-auth on this socket would
+            // just re-reject. Drop it so the next Authenticate gets a fresh socket + challenge.
+            this.recycle([url]);
+            return false;
+        }
+    }
+
+    /** Whether the current local relay's socket is NIP-42 authenticated (this session). */
+    isLocalRelayAuthed(): boolean {
+        const url = localRelayUrl();
+        return !!url && this.authedLocal.has(normUrl(url));
+    }
+
+    /** A NIP-42 onauth for subscriptions/gets. Bunker (server-side signer) signs the challenge for OUR
+     * relays + the local relay, so a query auto-auths and RETRIES within the same request (fixes the
+     * first-query-empty lag on lazy relays). nip07 can't sign in the background: for the local relay it
+     * FLAGS that the manual Authenticate flow is needed, then rejects. Never signs for stranger relays. */
+    private onauth = (evt: UnsignedEvent): Promise<NostrEvent> => {
+        const relayUrl = (evt.tags?.find((t) => t[0] === 'relay')?.[1]) ?? '';
+        const isTarget = this.authRelays.has(normUrl(relayUrl)) || isLocalRelayUrl(relayUrl);
+        if (this.authSign && isTarget) return this.authSign(evt);
+        if (isLocalRelayUrl(relayUrl)) this.localAuthObservedRequired = true;
+        return Promise.reject(new Error('no background auth signer'));
+    };
+
+    /** nip07: the local relay needs the manual Authenticate flow (it required auth on a read and we
+     * couldn't sign it). False for bunker (auto-auths), when already authed, or when the relay is off. */
+    localAuthMissing(): boolean {
+        return this.localAuthObservedRequired && !this.authSign && !this.isLocalRelayAuthed()
+            && !!localRelayUrl() && (localReadMode() !== 'off' || localWriteMode() !== 'off');
     }
 
     /** Record which relays each event actually arrived on (empirical outbox memory, keyed by author), then
@@ -97,7 +194,21 @@ export class Pool {
     // straggler relay adds nothing a fast one didn't. NEVER use it for non-redundant fetches (gift-wrapped
     // DMs/drafts live on one relay set; a read-modify-write of your own lists must see every version) -
     // there an early resolve silently DROPS events. That asymmetry is why complete is the default.
+    /** Apply the local-relay READ policy to a relay set. 'only' replaces it with the local relay;
+     * 'add' unions the local relay in, EXCEPT for the profiled feed shards (profile=true) - those
+     * pull the local relay via an explicit full-coverage route in feeds.ts, so per-relay latency
+     * profiling stays single-relay. 'off'/unset leaves the set untouched. */
+    private withLocalRead(relays: string[], profile?: boolean): string[] {
+        const mode = localReadMode();
+        const url = localRelayUrl();
+        if (mode === 'off' || !url) return relays;
+        if (mode === 'only') return [url];
+        if (profile) return relays;
+        return relays.some((r) => normUrl(r) === normUrl(url)) ? relays : [...relays, url];
+    }
+
     query(relays: string[], filter: Filter, opts: { fast?: boolean; profile?: boolean; budget?: 'page' | 'adaptive' } = {}): Promise<NostrEvent[]> {
+        relays = this.withLocalRead(relays, opts.profile);
         const tor = relaysViaTor();
         const base = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
         // maxWait = the hard cap. Default (no budget) keeps today's fixed cap. 'page' = a tight first-paint cap;
@@ -148,6 +259,7 @@ export class Pool {
                         if (opts.fast) { clearTimeout(quietTimer); quietTimer = setTimeout(finish, quiet); }
                     },
                     oneose: () => finish(), // every relay EOSE'd → nothing more is coming
+                    onauth: this.onauth, // NIP-42: bunker auths+retries here; nip07 flags the local relay for re-auth
                     maxWait,
                 } as never) as { close: (reason?: string) => void };
             } catch { finish(); }
@@ -158,14 +270,41 @@ export class Pool {
     // preview shouldn't hold a relay connection for the full 6s when the event isn't there. Tor keeps
     // its own (longer) cap since circuits are slow and a too-short wait would just always miss.
     get(relays: string[], filter: Filter, maxWait?: number): Promise<NostrEvent | null> {
+        relays = this.withLocalRead(relays);
         const tor = relaysViaTor();
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
-        return (this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : (maxWait ?? GET_MAX_WAIT) }) as Promise<NostrEvent | null>)
+        return (this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : (maxWait ?? GET_MAX_WAIT), onauth: this.onauth } as never) as Promise<NostrEvent | null>)
             .then((ev) => { if (ev) this.recordSeenOn([ev]); return ev; });
     }
 
-    publish(relays: string[], event: NostrEvent): Promise<PromiseSettledResult<string>[]> {
-        return Promise.allSettled(this.raw.publish(toPoolUrls(relays), event as never));
+    /** Publish with the local-relay WRITE policy. 'add' publishes to `relays` as usual AND
+     * best-effort mirrors to the local relay (the mirror is NOT reflected in the returned
+     * results, so callers that zip results with their own target list stay aligned). 'only'
+     * sends EXCLUSIVELY to the local relay (skipping `relays`) and reports its outcome once per
+     * requested target, so anyAccepted()/index-zipping still hold - a self-hosted blaster relay
+     * then re-broadcasts. 'off'/unset publishes to `relays` unchanged. */
+    async publish(relays: string[], event: NostrEvent): Promise<PromiseSettledResult<string>[]> {
+        // Bunker RPC transport (NIP-46) bypasses the local-relay write policy entirely: it must reach
+        // exactly the bunker's relays. Redirecting ('only') or mirroring ('add') it breaks signing.
+        if (event.kind === NIP46_KIND) return Promise.allSettled(this.raw.publish(toPoolUrls(relays), event as never));
+        const url = localWriteMode() !== 'off' ? localRelayUrl() : null;
+        if (url && localWriteMode() === 'only') {
+            const res = await Promise.allSettled(this.raw.publish(toPoolUrls([url]), event as never));
+            const ok = anyAccepted(res);
+            if (process.env.SATORI_REQ_LOG) console.log(`[local-relay] exclusive publish kind:${event.kind} -> ${url}: ${ok ? 'ok' : 'rejected'}`);
+            if (!relays.length) return res;
+            return relays.map(() => ok
+                ? ({ status: 'fulfilled', value: url } as PromiseFulfilledResult<string>)
+                : ({ status: 'rejected', reason: new Error(`local relay ${url} rejected`) } as PromiseRejectedResult));
+        }
+        const results = await Promise.allSettled(this.raw.publish(toPoolUrls(relays), event as never));
+        if (url && !relays.some((r) => normUrl(r) === normUrl(url))) {
+            try {
+                void Promise.allSettled(this.raw.publish(toPoolUrls([url]), event as never))
+                    .then((rs) => { if (process.env.SATORI_REQ_LOG) console.log(`[local-relay] mirror kind:${event.kind} -> ${url}: ${anyAccepted(rs) ? 'ok' : 'rejected'}`); });
+            } catch (e) { console.warn('[local-relay] mirror failed:', (e as Error)?.message ?? e); }
+        }
+        return results;
     }
 
     subscribe(relays: string[], filter: Filter, handlers: SubHandlers) {
@@ -197,6 +336,9 @@ export class Pool {
      * reconnect on their own. */
     recycle(urls?: string[]): void {
         this.warming = null; // a recycle invalidates any in-flight warm progress
+        // A recycled socket re-opens unauthed, so drop its NIP-42 auth memory (all, if recycling everything).
+        if (urls?.length) for (const u of urls) this.authedLocal.delete(normUrl(u));
+        else this.authedLocal.clear();
         const targets = urls?.length ? toPoolUrls(urls) : [...this.raw.listConnectionStatus().keys()];
         if (targets.length) this.raw.close(targets);
     }
