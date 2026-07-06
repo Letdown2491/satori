@@ -62,6 +62,15 @@ export function accessHas(pubkey: string): boolean {
     return !set || set.has(pubkey);
 }
 
+/** True only when this instance serves exactly ONE pubkey (an owner lock or a one-entry allowlist).
+ * Gates SINGLE-USER-only features whose PROCESS-GLOBAL config would otherwise let one account affect
+ * another - the private relay routes/redirects everyone's reads and writes, so it's active only here.
+ * Open, unclaimed, or a >1 allowlist all return false. */
+export function isSingleUser(): boolean {
+    const set = allowedSet();
+    return !!set && set.size === 1;
+}
+
 /** Boot migration: if the instance is restricted-but-unclaimed and a user is already logged in,
  * adopt the most-recent as owner - so adding the owner lock to a running self-host deploy doesn't
  * log them out. No-op when open, env-configured, already claimed, or no existing sessions. */

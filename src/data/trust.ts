@@ -85,7 +85,7 @@ function toScore(ev: NostrEvent): TrustScore | null {
 /** The provider's write relays (where its assertions live), resolved via NIP-65 (fetchRelayLists is itself
  * cached) with the seed list as a fallback + redundancy. */
 async function providerRelays(pool: Pool): Promise<string[]> {
-    const lists = await fetchRelayLists(pool, INDEXER_RELAYS, [PROVIDER]).catch(() => null);
+    const lists = await fetchRelayLists(pool, INDEXER_RELAYS, [PROVIDER], { direct: true }).catch(() => null);
     return [...new Set([...writeRelaysFor(lists?.get(PROVIDER) ?? null), ...FALLBACK_RELAYS])];
 }
 
@@ -100,7 +100,7 @@ function fetchOne(pool: Pool, key: string): Promise<TrustScore | null> {
     const p = (async () => {
         try {
             const relays = await providerRelays(pool);
-            const events = await pool.query(relays, { kinds: [KIND_RELAY_ASSERTION], authors: [PROVIDER], '#d': [key], limit: 4 }, { fast: true });
+            const events = await pool.query(relays, { kinds: [KIND_RELAY_ASSERTION], authors: [PROVIDER], '#d': [key], limit: 4 }, { fast: true, direct: true });
             let best: NostrEvent | undefined; // newest matching assertion across the provider's relays
             for (const ev of events) if (norm(tag1(ev, 'd')) === key && (!best || ev.created_at > best.created_at)) best = ev;
             const v = best ? toScore(best) : null;

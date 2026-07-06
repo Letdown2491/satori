@@ -6,7 +6,7 @@ import { SimplePool } from 'nostr-tools/pool';
 import type { Filter } from 'nostr-tools';
 import { toPoolUrls, toPoolUrl, fromPoolUrl } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
-import { localReadMode, localWriteMode, localRelayUrl, isLocalRelayUrl } from '../local-relay.ts';
+import { localReadMode, localWriteMode, localRelayUrl, isLocalRelayUrl, localFetchMissing } from '../local-relay.ts';
 import { recordSeen } from './seen-relays.ts';
 import { recordLatency, relayBudget } from './relay-latency.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
@@ -20,12 +20,21 @@ export interface SubHandlers {
     oneose?: () => void;
 }
 
+// Read policy opts, layered on the private-relay routing:
+//  - direct:   query EXACTLY these relays, ignore the private-relay policy (e.g. trust assertions).
+//  - complete: union the private relay in even in Only mode - for your OWN replaceable lists, so a read
+//              sees every version (private-only writes AND your NIP-65 copies) and a modify can't clobber.
+//  - resolve:  in Only mode + "fetch missing" ON, try the private relay first, then fall back to these
+//              (real) relays for what it lacks (other people's profiles / notes / quoted+replied events).
+export interface ReadOpts { fast?: boolean; profile?: boolean; budget?: 'page' | 'adaptive'; direct?: boolean; complete?: boolean; resolve?: boolean }
+
 const normUrl = (u: string) => u.replace(/\/+$/, '').toLowerCase();
 
 // NIP-46 bunker RPC transport kind. Publishes of this kind are the signer channel (connect / sign
 // requests) and must reach EXACTLY the bunker's relays - the local-relay write policy must never
 // redirect or mirror them, or bunker signing breaks. Kept local to avoid a pool<->signer import.
 const NIP46_KIND = 24133;
+const GIFTWRAP_KIND = 1059; // NIP-59 gift wrap (NIP-17 DMs + private replies): strict recipient-inbox targets
 
 // Reliability caps so one slow/dead relay can't stall a render: a query returns
 // whatever arrived by the deadline instead of waiting for EVERY relay to EOSE.
@@ -152,6 +161,21 @@ export class Pool {
         return !!url && this.authedLocal.has(normUrl(url));
     }
 
+    /** Live status of the private relay for the Settings status line: can we open a socket, and does a
+     * quick REQ get anything back? 'off' when it isn't in use, 'unreachable' when the socket won't open,
+     * 'serving' when a probe REQ returns an event, 'connected' when it's reachable but returned nothing
+     * (a fresh/empty relay, or one still awaiting auth - the Authenticate prompt covers that case). */
+    async probeLocalRelay(): Promise<'off' | 'unreachable' | 'connected' | 'serving'> {
+        const url = localRelayUrl();
+        if (!url || (localReadMode() === 'off' && localWriteMode() === 'off')) return 'off';
+        try {
+            const relay = await this.raw.ensureRelay(toPoolUrl(url), { connectionTimeout: CONNECT_MAX_WAIT }) as unknown as { connected: boolean };
+            if (!relay.connected) return 'unreachable';
+            const evs = await this.query([url], { kinds: [1], limit: 1 }, { direct: true, fast: true });
+            return evs.length ? 'serving' : 'connected';
+        } catch { return 'unreachable'; }
+    }
+
     /** A NIP-42 onauth for subscriptions/gets. Bunker (server-side signer) signs the challenge for OUR
      * relays + the local relay, so a query auto-auths and RETRIES within the same request (fixes the
      * first-query-empty lag on lazy relays). nip07 can't sign in the background: for the local relay it
@@ -198,17 +222,32 @@ export class Pool {
      * 'add' unions the local relay in, EXCEPT for the profiled feed shards (profile=true) - those
      * pull the local relay via an explicit full-coverage route in feeds.ts, so per-relay latency
      * profiling stays single-relay. 'off'/unset leaves the set untouched. */
-    private withLocalRead(relays: string[], profile?: boolean): string[] {
+    private withLocalRead(relays: string[], opts: { profile?: boolean; complete?: boolean } = {}): string[] {
         const mode = localReadMode();
         const url = localRelayUrl();
         if (mode === 'off' || !url) return relays;
+        const union = (): string[] => relays.some((r) => normUrl(r) === normUrl(url)) ? relays : [...relays, url];
+        if (opts.complete) return union(); // own lists: full set (never confine/skip), newest wins
         if (mode === 'only') return [url];
-        if (profile) return relays;
-        return relays.some((r) => normUrl(r) === normUrl(url)) ? relays : [...relays, url];
+        if (opts.profile) return relays;
+        return union();
     }
 
-    query(relays: string[], filter: Filter, opts: { fast?: boolean; profile?: boolean; budget?: 'page' | 'adaptive' } = {}): Promise<NostrEvent[]> {
-        relays = this.withLocalRead(relays, opts.profile);
+    query(relays: string[], filter: Filter, opts: ReadOpts = {}): Promise<NostrEvent[]> {
+        if (opts.resolve && localFetchMissing()) return this.resolveQuery(relays, filter, opts);
+        return this.queryOnce(relays, filter, opts);
+    }
+
+    /** Only mode + "fetch missing" ON: try the private relay, then fetch what it lacks from the given
+     * (real) relays. localFetchMissing() already gates on Only mode, so this never fires in add/off. */
+    private async resolveQuery(relays: string[], filter: Filter, opts: ReadOpts): Promise<NostrEvent[]> {
+        const first = await this.queryOnce(relays, filter, opts); // withLocalRead -> [private] in Only mode
+        if (first.length) return first;
+        return this.queryOnce(relays, filter, { ...opts, direct: true }); // the misses, from the real relays
+    }
+
+    private queryOnce(relays: string[], filter: Filter, opts: ReadOpts = {}): Promise<NostrEvent[]> {
+        if (!opts.direct) relays = this.withLocalRead(relays, opts);
         const tor = relaysViaTor();
         const base = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
         // maxWait = the hard cap. Default (no budget) keeps today's fixed cap. 'page' = a tight first-paint cap;
@@ -269,8 +308,18 @@ export class Pool {
     // `maxWait` (clearnet only) lets a best-effort caller shorten the wait - a decorative quote
     // preview shouldn't hold a relay connection for the full 6s when the event isn't there. Tor keeps
     // its own (longer) cap since circuits are slow and a too-short wait would just always miss.
-    get(relays: string[], filter: Filter, maxWait?: number): Promise<NostrEvent | null> {
-        relays = this.withLocalRead(relays);
+    get(relays: string[], filter: Filter, maxWait?: number, opts: ReadOpts = {}): Promise<NostrEvent | null> {
+        if (opts.resolve && localFetchMissing()) return this.resolveGet(relays, filter, maxWait, opts);
+        return this.getOnce(relays, filter, maxWait, opts);
+    }
+
+    private async resolveGet(relays: string[], filter: Filter, maxWait: number | undefined, opts: ReadOpts): Promise<NostrEvent | null> {
+        const first = await this.getOnce(relays, filter, maxWait, opts);
+        return first ?? this.getOnce(relays, filter, maxWait, { ...opts, direct: true });
+    }
+
+    private getOnce(relays: string[], filter: Filter, maxWait?: number, opts: ReadOpts = {}): Promise<NostrEvent | null> {
+        if (!opts.direct) relays = this.withLocalRead(relays, opts);
         const tor = relaysViaTor();
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
         return (this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : (maxWait ?? GET_MAX_WAIT), onauth: this.onauth } as never) as Promise<NostrEvent | null>)
@@ -284,9 +333,12 @@ export class Pool {
      * requested target, so anyAccepted()/index-zipping still hold - a self-hosted blaster relay
      * then re-broadcasts. 'off'/unset publishes to `relays` unchanged. */
     async publish(relays: string[], event: NostrEvent): Promise<PromiseSettledResult<string>[]> {
-        // Bunker RPC transport (NIP-46) bypasses the local-relay write policy entirely: it must reach
-        // exactly the bunker's relays. Redirecting ('only') or mirroring ('add') it breaks signing.
-        if (event.kind === NIP46_KIND) return Promise.allSettled(this.raw.publish(toPoolUrls(relays), event as never));
+        // Bunker RPC transport (NIP-46) AND gift-wrapped DMs / private replies (NIP-59, kind 1059) bypass
+        // the local-relay write policy entirely: both carry STRICT targets - the bunker's relays, or the
+        // recipient's NIP-17 inbox relays. Redirecting ('only') would break signing / silently drop a DM to
+        // a relay the recipient never reads (the fabricated per-target results would still report "sent");
+        // mirroring ('add') would leak an extra copy of a private message. Always send to exactly `relays`.
+        if (event.kind === NIP46_KIND || event.kind === GIFTWRAP_KIND) return Promise.allSettled(this.raw.publish(toPoolUrls(relays), event as never));
         const url = localWriteMode() !== 'off' ? localRelayUrl() : null;
         if (url && localWriteMode() === 'only') {
             const res = await Promise.allSettled(this.raw.publish(toPoolUrls([url]), event as never));

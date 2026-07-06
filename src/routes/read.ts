@@ -17,7 +17,8 @@ import type { NostrEvent } from '../nostr/types.ts';
 import { html, join, type SafeHtml } from '../html.ts';
 import { profileHeader, noteCard, noteList, naddrFor, pagerSentinel, embedFallback, pinnedStrip, articlesStrip } from '../render/note.ts';
 import { renderEvent, prepareEvents, handlerFor } from '../manifest/registry.ts';
-import { emptyItem, quoteEmpty } from '../render/svg.ts';
+import { emptyItem, quoteEmpty, gapNotice } from '../render/svg.ts';
+import { localIsolated } from '../local-relay.ts';
 import { quote } from '../render/quotes.ts';
 import { npub, type ProfileMap } from '../render/util.ts';
 import { requireLogin, ensureProfiles, notePubkeys, chromeFor } from './common.ts';
@@ -87,7 +88,7 @@ export async function getProfile(ctx: Ctx): Promise<void> {
 
     const profile = s.profiles.get(pubkey);
     const list = notes.length === 0
-        ? html`<ul class="feed">${quoteEmpty(quote('empty'))}</ul>`
+        ? html`<ul class="feed">${localIsolated() ? gapNotice() : quoteEmpty(quote('empty'))}</ul>`
         : html`<ul class="feed">${noteList(notes, s.profiles, s, { faces: true })}${more}</ul>`;
 
     // Pinned (NIP-51) + articles strips load LAZILY (helmjs `load`) so the pin-list
@@ -184,7 +185,7 @@ export async function getThread(ctx: Ctx): Promise<void> {
     ]);
 
     if (!focused) {
-        sendPage(ctx, html`<ul class="feed">${emptyItem('Note not found.')}</ul>`, chromeFor(ctx, s, { title: 'Thread' }));
+        sendPage(ctx, html`<ul class="feed">${localIsolated() ? gapNotice() : emptyItem('Note not found.')}</ul>`, chromeFor(ctx, s, { title: 'Thread' }));
         return;
     }
 

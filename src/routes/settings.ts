@@ -5,8 +5,8 @@
 // here; nip07 sign-and-continues. A relay save also updates s.myRelays + invalidates
 // the routed-feed caches and persists, so the whole app uses the new list.
 
-import { settingsPage, relaySection, localRelaySection, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, SETTINGS_TABS, type SettingsView, type SettingsTab } from '../render/settings.ts';
-import { localRelay, setLocalRelay, localRelayUrl, RELAY_USES, type RelayUse } from '../local-relay.ts';
+import { settingsPage, relaySection, localRelaySection, localRelayStatusLine, dmRelaySection, mediaSection, relayScoreChip, searchRelayEditor, privacySection, warmingDone, savedTick, contentFiltersForm, backupSection, relaysTwoPane, RELAY_PANES, SETTINGS_TABS, type SettingsView, type SettingsTab, type RelayPane } from '../render/settings.ts';
+import { localRelay, setLocalRelay, localRelayUrl } from '../local-relay.ts';
 import { getFilters, saveFilters } from '../data/filters.ts';
 import { getContentPrefs, saveContentPrefs, timelineEntries, CONTENT_TYPES } from '../data/content-prefs.ts';
 import { privacyMode, setPrivacyMode, isPrivacyMode } from '../privacy.ts';
@@ -28,6 +28,7 @@ import { BACKUP_KINDS, BACKUP_VERSION, gatherBackup, restoreTemplate, restoreTar
 import { anyAccepted } from '../data/pool.ts';
 import { SEARCH_NOTE_RELAYS, SEARCH_PROFILE_RELAYS } from '../data/search.ts';
 import { readForm, readUpload, readBatchResults, sendPage, sendFragment, sendSignRequest, notFound, redirect, type Ctx } from '../http.ts';
+import { isSingleUser } from '../access.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
 import type { RelayEntry, RelayList, NostrEvent } from '../nostr/types.ts';
@@ -85,15 +86,15 @@ function normalizeMediaInput(rawUrl: string): string | null {
 /** Build the whole settings view, fetching whatever a draft override doesn't
  * supply (the media-server list needs a relay query). Used for zero-JS full-page
  * re-renders; the helmjs path swaps just one section and skips the other fetch. */
-async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView> = {}, active: SettingsTab = 'general'): Promise<SettingsView> {
+async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView> = {}, active: SettingsTab = 'general', pane: RelayPane = 'general'): Promise<SettingsView> {
     const a = readAppearance(ctx);
     const relayDraft = ov.relayDraft ?? draftFromList(s.myRelays);
-    // Only fetch what the ACTIVE tab renders: media servers live on General, DM relays on Relays; the other
-    // tabs render neither, so skip both uncached relay round-trips (a tab GET, and helmjs hover-prefetch across
-    // the tab bar, would otherwise re-pay them for panels that never use the result).
+    // Only fetch what the ACTIVE panel renders: media servers on General, DM relays only on the Relays >
+    // DMs pane; everything else skips both uncached relay round-trips (a tab/pane GET, and helmjs hover-
+    // prefetch across the nav, would otherwise re-pay them for panels that never use the result).
     const [mediaDraft, dmRelayDraft] = await Promise.all([
         ov.mediaDraft !== undefined ? Promise.resolve(ov.mediaDraft) : active === 'general' ? fetchBlossomServers(s.pool, s.me, s.myRelays).catch(() => []) : Promise.resolve([] as string[]),
-        ov.dmRelayDraft !== undefined ? Promise.resolve(ov.dmRelayDraft) : active === 'relays' ? fetchMyDmRelays(s.pool, s.me, s.myRelays?.read ?? []).catch(() => []) : Promise.resolve([] as string[]),
+        ov.dmRelayDraft !== undefined ? Promise.resolve(ov.dmRelayDraft) : (active === 'relays' && pane === 'dm') ? fetchMyDmRelays(s.pool, s.me, s.myRelays?.read ?? []).catch(() => []) : Promise.resolve([] as string[]),
     ]);
     const searchNoteDraft = ov.searchNoteDraft ?? a.searchNoteRelays;
     const searchProfileDraft = ov.searchProfileDraft ?? a.searchProfileRelays;
@@ -141,8 +142,8 @@ export async function postContentFilters(ctx: Ctx): Promise<void> {
 
 /** A zero-JS full-page re-render, landing on `active` so a no-JS save (or nav) stays on its
  * own tab instead of snapping back to General. `active` defaults to General (the bare /settings). */
-async function sendFullPage(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView>, active: SettingsTab = 'general'): Promise<void> {
-    sendPage(ctx, settingsPage(await buildView(ctx, s, ov, active), active), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
+async function sendFullPage(ctx: Ctx, s: Session & { me: string }, ov: Partial<SettingsView>, active: SettingsTab = 'general', pane: RelayPane = 'general'): Promise<void> {
+    sendPage(ctx, settingsPage(await buildView(ctx, s, ov, active, pane), active, pane), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
 }
 
 /** GET /settings - the settings page, General tab (the bare entry point). */
@@ -160,11 +161,24 @@ export async function getSettingsTab(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     const slug = ctx.params.tab;
+    if (slug === 'search') { redirect(ctx, '/settings/relays/search'); return; } // Search folded into Relays > Search
     const tab = SETTINGS_TABS.find((t) => t.slug === slug)?.slug;
     if (!tab) { redirect(ctx, '/settings'); return; }
     const view = await buildView(ctx, s, {}, tab);
     if (ctx.isPartial) sendFragment(ctx, settingsPage(view, tab));
     else sendPage(ctx, settingsPage(view, tab), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
+}
+
+/** GET /settings/relays/:pane - the Relays tab's two-pane hub (General / DMs / Search / Private). A
+ * left-nav link partial-swaps #relays-two-pane and pushes /settings/relays/<pane>; a reload / deep-link
+ * renders the whole settings page on the Relays tab with that pane active. */
+export async function getRelaysPane(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const pane = RELAY_PANES.find((p) => p.slug === ctx.params.pane)?.slug ?? 'general';
+    const view = await buildView(ctx, s, {}, 'relays', pane);
+    if (ctx.isPartial) sendFragment(ctx, relaysTwoPane(view, pane));
+    else sendPage(ctx, settingsPage(view, 'relays', pane), chromeFor(ctx, s, { active: 'settings', title: 'Settings' }));
 }
 
 /** GET /settings/relay-score?url= - lazily resolve a relay's trust assertion (kind 30385, read off
@@ -234,7 +248,7 @@ export async function getPrivacyStatus(ctx: Ctx): Promise<void> {
 
 async function respondRelays(ctx: Ctx, s: Session & { me: string }, draft: RelayEntry[], status?: string, err = false): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, relaySection(draft, status, err));
-    else await sendFullPage(ctx, s, { relayDraft: draft, relayStatus: status, relayErr: err }, 'relays');
+    else await sendFullPage(ctx, s, { relayDraft: draft, relayStatus: status, relayErr: err }, 'relays', 'general');
 }
 
 /** After a relay list changes: invalidate routed feeds (their outbox routing is
@@ -310,7 +324,7 @@ function applyNewDmRelays(s: Session & { me: string }): void {
 
 async function respondDmRelays(ctx: Ctx, s: Session & { me: string }, draft: string[], status?: string, err = false): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, dmRelaySection(draft, status, err));
-    else await sendFullPage(ctx, s, { dmRelayDraft: draft, dmRelayStatus: status, dmRelayErr: err }, 'relays');
+    else await sendFullPage(ctx, s, { dmRelayDraft: draft, dmRelayStatus: status, dmRelayErr: err }, 'relays', 'dm');
 }
 
 /** POST /settings/dm-relays/edit - add (newurl) / remove (op="remove:<url>") a row. */
@@ -481,7 +495,7 @@ const searchKind = (form: URLSearchParams): 'note' | 'profile' => (form.get('kin
 
 async function respondSearch(ctx: Ctx, s: Session & { me: string }, kind: 'note' | 'profile', urls: string[], status?: string): Promise<void> {
     if (ctx.isPartial) sendFragment(ctx, searchRelayEditor(kind, urls, status));
-    else await sendFullPage(ctx, s, kind === 'note' ? { searchNoteDraft: urls } : { searchProfileDraft: urls }, 'search');
+    else await sendFullPage(ctx, s, kind === 'note' ? { searchNoteDraft: urls } : { searchProfileDraft: urls }, 'relays', 'search');
 }
 
 /** POST /settings/search/edit - add (newurl) / remove (op="remove:<url>") a row. */
@@ -515,51 +529,50 @@ export async function postSearchSave(ctx: Ctx): Promise<void> {
     await respondSearch(ctx, s, kind, saved, 'Saved ✓');
 }
 
-// --- local relay (daemon-side aggregator/outbox/blaster, NOT published) ------
-// One private relay with a 3-way Read + Write policy (off/add/only). Persisted server-side
+// --- private relay (daemon-side aggregator/outbox/blaster, NOT published) -----
+// One private relay: a master `use` on/off, then Read + Write each add|only. Persisted server-side
 // (local-relay.ts), kept OUT of your published NIP-65 list. "only" routes exclusively here.
 
-const localUse = (form: URLSearchParams, name: 'read' | 'write'): RelayUse => {
-    const v = form.get(name) ?? '';
-    return (RELAY_USES as string[]).includes(v) ? (v as RelayUse) : 'add';
-};
+const localUse = (form: URLSearchParams, name: 'read' | 'write'): 'add' | 'only' => (form.get(name) === 'only' ? 'only' : 'add');
 
-/** POST /settings/local-relay - set (or clear) the private local relay + its read/write policy.
+/** POST /settings/local-relay - set (or clear) the private relay + its use/read/write policy.
  * An invalid URL leaves the current config untouched (a typo mustn't wipe it). On any real change
  * we drop the routed-feed cache + recycle sockets so it takes effect on the next fetch/publish. */
 export async function postLocalRelay(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
+    if (!isSingleUser()) { notFound(ctx); return; } // single-user only: don't let a shared instance clobber the global config
     const form = await readForm(ctx.req);
     const rawUrl = (form.get('url') ?? '').trim();
+    const enabled = form.get('use') === 'on';
     const read = localUse(form, 'read');
     const write = localUse(form, 'write');
+    const fetchMissing = form.get('fetchmissing') === 'on';
     let status: string;
     let err = false;
     if (!rawUrl) {
-        setLocalRelay('', 'off', 'off');
-        status = 'Local relay disabled ✓';
+        setLocalRelay('', false, 'add', 'add', false);
+        status = 'Private relay removed ✓';
     } else if (!normalizeRelayUrl(rawUrl, { assumeWss: true })) {
         status = 'Not a valid relay URL (use ws://, wss:// or a host).';
         err = true; // leave the current config untouched
     } else {
-        setLocalRelay(rawUrl, read, write);
-        const parts = [read !== 'off' ? `read: ${read}` : '', write !== 'off' ? `write: ${write}` : ''].filter(Boolean);
-        status = parts.length ? `Saved ✓ (${parts.join(', ')})` : 'Saved ✓ (read + write off)';
+        setLocalRelay(rawUrl, enabled, read, write, fetchMissing);
+        status = enabled ? `Saved ✓ (read: ${read}, write: ${write})` : 'Saved ✓ (off)';
     }
     if (!err) {
         s.followsRoute = null;
         s.followersRoute = null;
-        s.pool.recycle();      // re-dial (or drop) the local relay now, like the Privacy toggle
+        s.pool.recycle();      // re-dial (or drop) the private relay now, like the Privacy toggle
         s.signer?.reconnect(); // recycle tore down the bunker subscription; rebuild it (no-op for nip07)
     }
-    // Fold NIP-42 auth into Save (nip07, JS path): the moment you save a private relay is exactly when an
-    // auth prompt makes sense, so a nip07 user never lands on a silently-blank feed. If the just-saved,
-    // in-use relay issues a challenge, chain into the sign round-trip now. Bunker auto-auths (skip); a relay
-    // that needs no auth returns no challenge, so we just save. No-JS can't sign, so it falls through too.
-    if (!err && rawUrl && ctx.isPartial && signsOnClient(s)) {
+    // Fold NIP-42 auth into Save (nip07, JS path) when the relay is ON: the moment you turn it on is exactly
+    // when an auth prompt makes sense, so a nip07 user never lands on a silently-blank feed. If it issues a
+    // challenge, chain into the sign round-trip now. Bunker auto-auths (skip); a relay that needs no auth
+    // returns no challenge, so we just save. No-JS can't sign, so it falls through too.
+    if (!err && rawUrl && enabled && ctx.isPartial && signsOnClient(s)) {
         const lr = localRelay();
-        if (lr && (lr.read !== 'off' || lr.write !== 'off')) {
+        if (lr && lr.enabled) {
             const challenge = await s.pool.localRelayChallenge();
             if (challenge) {
                 const template = { kind: 22242, created_at: Math.floor(Date.now() / 1000), tags: [['relay', lr.url], ['challenge', challenge]], content: '', pubkey: s.me };
@@ -569,7 +582,7 @@ export async function postLocalRelay(ctx: Ctx): Promise<void> {
         }
     }
     if (ctx.isPartial) { sendFragment(ctx, localRelaySection(localRelay(), status, err, localAuthUI(s))); return; }
-    await sendFullPage(ctx, s, { localRelayStatus: status, localRelayErr: err }, 'relays');
+    await sendFullPage(ctx, s, { localRelayStatus: status, localRelayErr: err }, 'relays', 'private');
 }
 
 // --- local relay NIP-42 auth (nip07 only; bunker auto-auths via automaticallyAuth) ---
@@ -580,7 +593,7 @@ const PLACE_LOCAL_RELAY = { 'H-Reswap': 'outer', 'H-Retarget': '#local-relay-sec
 function localAuthUI(s: Session): { needsAuth: boolean; authed: boolean } {
     const lr = localRelay();
     return {
-        needsAuth: signsOnClient(s) && !!lr && (lr.read !== 'off' || lr.write !== 'off'),
+        needsAuth: signsOnClient(s) && !!lr && lr.enabled,
         authed: s.pool.isLocalRelayAuthed(),
     };
 }
@@ -627,6 +640,15 @@ export async function postLocalRelayAuthComplete(ctx: Ctx): Promise<void> {
     if (ok) { s.followsRoute = null; s.followersRoute = null; } // re-route reads over the now-authed socket
     if (reauth) { await landOnFeed(); return; }
     sendFragment(ctx, localRelaySection(localRelay(), ok ? 'Authenticated ✓' : 'The relay rejected the authentication.', !ok, localAuthUI(s)), PLACE_LOCAL_RELAY, ok ? 200 : 502);
+}
+
+/** GET /settings/local-relay/status - a live probe (reachable? serving?) for the status line, fetched on
+ * pane load and by the "recheck" link. */
+export async function getLocalRelayStatus(ctx: Ctx): Promise<void> {
+    const s = requireLogin(ctx);
+    if (!s) return;
+    const state = await s.pool.probeLocalRelay();
+    sendFragment(ctx, localRelayStatusLine(state));
 }
 
 // --- media servers (kind:10063) --------------------------------------------

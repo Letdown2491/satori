@@ -48,7 +48,7 @@ export async function fetchProfiles(pool: Pool, relays: string[], pubkeys: strin
     const map = new Map<string, Profile>();
     if (pubkeys.length === 0) return map;
     const newest = new Map<string, number>();
-    const events = await pool.query(relays, { kinds: [0], authors: pubkeys }, { fast: true });
+    const events = await pool.query(relays, { kinds: [0], authors: pubkeys }, { fast: true, resolve: true });
     for (const ev of events) {
         if ((newest.get(ev.pubkey) ?? -1) >= ev.created_at) continue;
         const prof = parseProfile(ev.content, ev.tags);
@@ -60,7 +60,7 @@ export async function fetchProfiles(pool: Pool, relays: string[], pubkeys: strin
 /** Fetch one pubkey's latest kind:0 RAW content (all fields), for editing - so we
  * preserve fields the app doesn't render (banner, website, lud06, …). */
 export async function fetchProfileContent(pool: Pool, relays: string[], pubkey: string): Promise<Record<string, unknown>> {
-    const events = await pool.query(relays, { kinds: [0], authors: [pubkey] }).catch(() => []);
+    const events = await pool.query(relays, { kinds: [0], authors: [pubkey] }, { resolve: true }).catch(() => []);
     let newest: NostrEvent | null = null;
     for (const ev of events) if (!newest || ev.created_at > newest.created_at) newest = ev;
     if (!newest) return {};

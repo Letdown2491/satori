@@ -4,19 +4,54 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - unreleased
+## [0.6.0] - 2026-07-06
 
 ### Added
 
-- Local relay. At the top of Settings > Relays you can point Satori at one personal relay of your own,
-  an aggregator, outbox, or blaster, by ws://, wss://, or .onion URL. Read and Write are each set to
-  Off, Add, or Only: Add uses the relay alongside your normal relays, while Only routes exclusively to
-  it and skips the outbox and your published NIP-65 relays, so you can run your whole feed and posting
-  through a relay of your own. The local relay is kept private and is never added to your published
-  relay list, so no one else's client tries to reach it. Private relays that require NIP-42
-  authentication are supported: a bunker login authenticates on its own, and with a browser extension
-  you authenticate in one click (a prompt appears under the bar whenever it's needed) to sign a
-  one-time challenge, after which the daemon reuses that connection.
+- Private relay. In Settings > Relays, point Satori at one personal relay of your own (an aggregator,
+  outbox, or blaster) by ws://, wss://, or .onion URL. A live status line tells you whether it's
+  reachable and serving. Turn it on with Enable, then set Read and Write to
+  Add or Only: Add uses it alongside your normal relays; Only routes exclusively to it, skipping the
+  outbox and your NIP-65 relays, so your whole feed and posting run through a relay you control. It
+  stays private, never added to your published relay list. Private relays that require NIP-42 auth work
+  on both signing families: a bunker login authenticates itself; with a browser extension you click
+  Authenticate once (a prompt appears when it's needed). In Only mode, an off-by-default Fetch missing
+  toggle fills gaps from your normal relays (a non-follow's profile, a quoted note, reply avatars) so
+  pages aren't blank; your own mutes, follows, and relay lists always read completely.
+
+### Changed
+
+- Following feeds route around dead relays. Satori already tracks which of your follows' relays actually
+  return notes; it now uses that when choosing which relays to read from. A relay that always comes back
+  empty loses its place to one that delivers, and a follow whose relays get crowded out is read from
+  their own relays instead of the shared indexers. The result is fewer missing notes and less time spent
+  waiting on relays that have nothing for you.
+- The Relays settings tab is now a two-pane hub: a left sidebar (General, DMs, Search, Private) with the
+  chosen section on the right, one URL each (/settings/relays/dm, and so on). Search relays moved here
+  into Relays > Search, so the separate Search settings tab is gone (its old URL redirects).
+
+### Changed (defaults)
+
+- Pictures now has its own timeline by default. The header switcher shows a Pictures entry (picture
+  posts from the people you follow), so you can keep pictures out of your main feed but still browse
+  them in one place. Turn it off in Settings > Content if you don't want it.
+
+### Removed
+
+- The Followers timeline. The header switcher now lists Following plus your promoted content-type
+  timelines; the "who follows you" view has been dropped from it.
+
+### Fixed
+
+- Bookmarks and pins now remember the note's author and where it was seen, not just its id, so they
+  still load later even after the note leaves the relays you saw it on. Bookmarks saved before this
+  update stored only the id, so some of them may not load; the Bookmarks count now reflects what
+  actually loads instead of the raw number saved, so it no longer claims more than you can see.
+- Picture posts that also carry the image URL in their caption no longer show the image twice: the
+  caption renders as text and the picture shows once.
+- Relay trust score chips in Settings load reliably again, fetching as soon as the list renders. They
+  also resolve correctly while a private relay is routing reads, since trust lookups always go to the
+  scoring provider's relays.
 
 ## [0.5.0] - 2026-07-03
 

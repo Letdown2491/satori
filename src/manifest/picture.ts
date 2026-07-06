@@ -23,7 +23,13 @@ import type { NostrEvent } from '../nostr/types.ts';
  * tag shows as a quiet dateline. NIP-68 content-warning (NSFW) blurs the visual behind the same zero-JS
  * tap-to-reveal notes use - the title stays visible (context for the reveal); the imagery is hidden. */
 function pictureBody(ev: NostrEvent, profiles: ProfileMap | undefined, media: SafeHtml): SafeHtml {
-    const caption = ev.content ? renderContent(ev.content, profiles, false) : null;
+    // The image(s) already render as the figure (from the imeta tags). Some picture clients ALSO put the
+    // image URL in the content, so renderContent would show it a SECOND time as an inline image below the
+    // caption. Strip the imeta urls from the caption text so it stays just the description.
+    let text = ev.content;
+    for (const [url] of parseImeta(ev)) text = text.split(url).join('');
+    text = text.trim();
+    const caption = text ? renderContent(text, profiles, false) : null;
     const visual = pictureFigure(media, caption, tag1(ev, 'location'));
     // A blank-title picture derives its NIP-68 `title` tag from the caption's first line (see signPicture),
     // so the tag is present for other clients. Showing it HERE would duplicate that first line above the

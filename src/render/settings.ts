@@ -9,7 +9,8 @@ import { html, raw, join, type SafeHtml } from '../html.ts';
 import { shortRelay, shortHash } from './util.ts';
 import { DEFAULT_BLOSSOM_SERVER } from '../upload.ts';
 import { privacyMode, torAvailable, type PrivacyMode } from '../privacy.ts';
-import type { LocalRelay, RelayUse } from '../local-relay.ts';
+import type { LocalRelay } from '../local-relay.ts';
+import { isSingleUser } from '../access.ts';
 import type { RelayEntry } from '../nostr/types.ts';
 import type { Appearance, Theme } from '../theme.ts';
 import type { FeedFilters, SurfaceFlags } from '../data/filters.ts';
@@ -338,30 +339,55 @@ export function privacySection(): SafeHtml {
 
 /** The six settings tabs, one URL per tab (`/settings/<slug>`). The active tab is in the
  * URL, not client-side radio state, so tabs are deep-linkable and reload-stable. */
-export type SettingsTab = 'general' | 'backup' | 'content' | 'privacy' | 'relays' | 'search';
+export type SettingsTab = 'general' | 'backup' | 'content' | 'privacy' | 'relays';
 export const SETTINGS_TABS: { slug: SettingsTab; label: string }[] = [
     { slug: 'general', label: 'General' },
     { slug: 'backup', label: 'Backup' },
     { slug: 'content', label: 'Content' },
     { slug: 'privacy', label: 'Privacy' },
     { slug: 'relays', label: 'Relays' },
-    { slug: 'search', label: 'Search' },
 ];
 
-/** Only the active tab's sections. The Relays tab pairs NIP-65 + NIP-17 DM relays; the
- * General tab folds appearance + media + feed/posting behaviour together. */
-function settingsPanel(v: SettingsView, active: SettingsTab): SafeHtml {
+/** The Relays tab's left-pane sub-nav: four relay purposes, one URL each (/settings/relays/<slug>). */
+export type RelayPane = 'general' | 'dm' | 'search' | 'private';
+export const RELAY_PANES: { slug: RelayPane; label: string }[] = [
+    { slug: 'general', label: 'General' },
+    { slug: 'dm', label: 'DMs' },
+    { slug: 'search', label: 'Search' },
+    { slug: 'private', label: 'Private' },
+];
+
+/** The active relay pane's content. General = NIP-65; DMs = NIP-17; Search = NIP-50 search relays
+ * (a local pref, not published); Private = your personal relay. */
+function relayPaneContent(v: SettingsView, pane: RelayPane): SafeHtml {
+    switch (pane) {
+        case 'dm': return dmRelaySection(v.dmRelayDraft, v.dmRelayStatus, v.dmRelayErr);
+        case 'search': return html`${searchRelayEditor('note', v.searchNoteDraft)}${searchRelayEditor('profile', v.searchProfileDraft)}`;
+        case 'private': return localRelaySection(v.localRelay ?? null, v.localRelayStatus, v.localRelayErr, v.localRelayAuth);
+        case 'general':
+        default: return relaySection(v.relayDraft, v.relayStatus, v.relayErr);
+    }
+}
+
+/** The Relays tab's two-pane: a left sub-nav (four relay purposes) + the active pane. The nav links
+ * swap the whole two-pane (so the active item updates too) and push /settings/relays/<slug>. */
+export function relaysTwoPane(v: SettingsView, pane: RelayPane): SafeHtml {
+    const nav = RELAY_PANES.map((p) => html`<a href="/settings/relays/${p.slug}" class="relay-nav-item${p.slug === pane ? ' active' : ''}"${p.slug === pane ? raw(' aria-current="page"') : raw('')} h-get h-target="#relays-two-pane" h-swap="outer" h-push-url="true" h-prefetch="hover">${p.label}</a>`);
+    return html`
+      <div class="relays-two-pane" id="relays-two-pane">
+        <nav class="relay-nav" aria-label="Relay categories">${join(nav)}</nav>
+        <div class="relay-pane" id="relay-pane">${relayPaneContent(v, pane)}</div>
+      </div>`;
+}
+
+/** Only the active tab's sections. The Relays tab is a two-pane hub (General/DMs/Search/Private);
+ * the General tab folds appearance + media + feed/posting behaviour together. */
+function settingsPanel(v: SettingsView, active: SettingsTab, pane: RelayPane = 'general'): SafeHtml {
     switch (active) {
         case 'backup': return backupSection(v.backupStatus, v.backupErr);
         case 'content': return contentTabPanel(v.contentPrefs, v.filters);
         case 'privacy': return privacySection();
-        case 'relays': return html`
-          ${localRelaySection(v.localRelay ?? null, v.localRelayStatus, v.localRelayErr, v.localRelayAuth)}
-          ${relaySection(v.relayDraft, v.relayStatus, v.relayErr)}
-          ${dmRelaySection(v.dmRelayDraft, v.dmRelayStatus, v.dmRelayErr)}`;
-        case 'search': return html`
-          ${searchRelayEditor('note', v.searchNoteDraft)}
-          ${searchRelayEditor('profile', v.searchProfileDraft)}`;
+        case 'relays': return relaysTwoPane(v, pane);
         case 'general':
         default: return html`
           ${appearanceSection(v.a)}
@@ -379,13 +405,13 @@ function settingsPanel(v: SettingsView, active: SettingsTab): SafeHtml {
  * `#settings-page` (outer) and pushes the tab URL (with hover-prefetch); no-JS does a full-page
  * nav to that tab. Only the ACTIVE tab's panel is rendered, so a reload / deep-link lands on it.
  * Within-tab forms keep their own section-id partial swaps (each form is only present on its tab). */
-export function settingsPage(v: SettingsView, active: SettingsTab): SafeHtml {
+export function settingsPage(v: SettingsView, active: SettingsTab, pane: RelayPane = 'general'): SafeHtml {
     const label = SETTINGS_TABS.find((t) => t.slug === active)?.label ?? 'General';
     const tabs = SETTINGS_TABS.map((t) => html`<a href="/settings/${t.slug}" class="tabset-tab${t.slug === active ? ' active' : ''}"${t.slug === active ? raw(' aria-current="page"') : raw('')} role="tab" h-get h-target="#settings-page" h-swap="outer" h-push-url="true" h-prefetch="hover">${t.label}</a>`);
     return html`
       <div class="settings-page view-pad" id="settings-page">
         <div class="tabset-list" role="tablist">${join(tabs)}</div>
-        <div class="tabset-panel" role="tabpanel" aria-label="${label}">${settingsPanel(v, active)}</div>
+        <div class="tabset-panel" role="tabpanel" aria-label="${label}">${settingsPanel(v, active, pane)}</div>
       </div>`;
 }
 
@@ -415,21 +441,51 @@ function scoreTitle(s: TrustScore): string {
  * score (unevaluated/unreachable); an evaluated assertion colours by tier and tooltips the breakdown. */
 export function relayScoreChip(url: string, score?: TrustScore | null, id: string = scoreId(url)): SafeHtml {
     if (score === undefined) {
-        return html`<span class="relay-score score-unknown" id="${raw(id)}" h-get="/settings/relay-score?url=${encodeURIComponent(url)}&id=${encodeURIComponent(id)}" h-trigger="intersect once" h-target="#${raw(id)}" h-swap="outer" h-push-url="false" title="Trust score (trustedrelays)">?</span>`;
+        return html`<span class="relay-score score-unknown" id="${raw(id)}" h-get="/settings/relay-score?url=${encodeURIComponent(url)}&id=${encodeURIComponent(id)}" h-trigger="load" h-target="#${raw(id)}" h-swap="outer" h-push-url="false" title="Trust score (trustedrelays)">?</span>`;
     }
     if (score === null) return html`<span class="relay-score score-unknown" id="${raw(id)}" title="No trust score">?</span>`;
     const tier = score.score >= 75 ? 'high' : score.score >= 50 ? 'mid' : 'low';
     return html`<span class="relay-score score-${tier}" id="${raw(id)}" title="${scoreTitle(score)}">${String(score.score)}</span>`;
 }
 
-/** The local-relay section (top of the Relays tab): ONE private relay - a self-hosted aggregator/
- * outbox/blaster - the daemon reads from and mirrors writes to, kept OUT of your published NIP-65
- * list. Read and Write are each a 3-way (Off / Add / Only); "Only" routes EXCLUSIVELY here, the way
- * to test a custom relay in isolation. Not form-as-state (a single relay), just a plain save. */
+/** A live connection indicator for the private relay (rendered by the status endpoint): just a colour-coded
+ * dot beside the URL, with the verdict in its tooltip. 'off' when the relay isn't in use. Re-probes on pane
+ * load and on every Save, so it needs no recheck control. */
+export function localRelayStatusLine(state: 'off' | 'unreachable' | 'connected' | 'serving'): SafeHtml {
+    const map = {
+        off: { cls: 'off', text: 'Not in use' },
+        unreachable: { cls: 'err', text: "Can't reach this relay - check the URL or that it's running" },
+        connected: { cls: 'wait', text: 'Connected, no events yet' },
+        serving: { cls: 'good', text: 'Connected and serving' },
+    } as const;
+    const s = map[state];
+    return html`<span id="local-relay-status" class="lr-dot lr-dot-${raw(s.cls)}" title="${s.text}"></span>`;
+}
+
+/** Placeholder that probes the relay on render (swapped by localRelayStatusLine). Kept separate so the
+ * result has no `load` trigger and can't re-fetch in a loop. */
+function localRelayStatusProbe(): SafeHtml {
+    return html`<span id="local-relay-status" class="lr-dot lr-dot-checking" title="Checking connection…" h-get="/settings/local-relay/status" h-trigger="load" h-target="#local-relay-status" h-swap="outer" h-push-url="false"></span>`;
+}
+
+/** The private-relay section (Relays > Private): ONE relay - a self-hosted aggregator/outbox/blaster -
+ * the daemon reads from and mirrors writes to, kept OUT of your published NIP-65 list. You enter the URL,
+ * a live status line reports whether it's reachable and serving, then Use turns it on and Read/Write each
+ * pick Add (alongside your normal relays) or Only (exclusively here). Not form-as-state (a single relay),
+ * just a plain save. */
 export function localRelaySection(lr: LocalRelay | null, status?: string, statusErr = false, auth?: { needsAuth: boolean; authed: boolean }): SafeHtml {
-    const uses: { v: RelayUse; label: string }[] = [{ v: 'off', label: 'Off' }, { v: 'add', label: 'Add' }, { v: 'only', label: 'Only' }];
-    const seg = (name: 'read' | 'write', current: RelayUse): SafeHtml => html`<div class="rw-group">${join(uses.map((u) =>
+    // Single-user only: the config is process-global, so on a shared instance it stays off (a note, no form)
+    // rather than letting one account route another's traffic. A normal self-host is single-user.
+    if (!isSingleUser()) {
+        return html`<section id="local-relay-section"><h3>Private relay</h3>
+          <p class="filter-help">A private relay is available on single-user instances only. This one allows more than one account, so it stays off, since its routing would apply to everyone.</p></section>`;
+    }
+    // Per-direction is add|only; the master "Use" (on|off) enables/disables the whole relay.
+    const seg = (name: string, current: string, opts: { v: string; label: string }[]): SafeHtml => html`<div class="rw-group">${join(opts.map((u) =>
         html`<label class="rw-chip"><input type="radio" name="${name}" value="${u.v}"${u.v === current ? raw(' checked') : raw('')}>${u.label}</label>`))}</div>`;
+    const ON_OFF = [{ v: 'on', label: 'On' }, { v: 'off', label: 'Off' }];
+    const ADD_ONLY = [{ v: 'add', label: 'Add' }, { v: 'only', label: 'Only' }];
+    const enabled = lr?.enabled ?? false;
     // nip07 + a private (auth-required) relay: the browser signs a one-time NIP-42 challenge and the daemon
     // keeps that connection. Bunker logins auth automatically (server-side), so no button there.
     const authBlock = auth?.needsAuth
@@ -443,17 +499,29 @@ export function localRelaySection(lr: LocalRelay | null, status?: string, status
         : html``;
     return html`
       <section id="local-relay-section">
-        <h3>Local relay</h3>
-        <p class="filter-help">One personal relay (aggregator / outbox / blaster) the daemon reads from and mirrors your posts to. It’s never added to your published relay list. <b>Add</b> uses it alongside your normal relays; <b>Only</b> routes exclusively here, skipping the outbox and your NIP-65 relays - the way to test whether a custom relay serves your whole feed and accepts your posts. Accepts ws://, wss:// or a .onion URL; leave the URL blank to disable.</p>
+        <h3>Private relay</h3>
+        <p class="filter-help">A relay that only you use. Satori keeps it off your published list, so no one else connects to it. Set Read and Write to Only and your feed and posts go through just this relay, so the relays you'd normally use don't see your reads or posts, as long as it pulls in other people's posts and forwards yours.</p>
         <form action="/settings/local-relay" method="post" h-post h-target="#local-relay-section" h-swap="outer">
+          <div class="lr-routing">
+            <span class="luse-row lr-use-row"><span class="luse-label">Enable</span>${seg('use', enabled ? 'on' : 'off', ON_OFF)}</span>
+            <div class="lr-routing-config">
+              <div class="local-relay-dirs">
+                <div class="luse-rw">
+                  <span class="luse-row"><span class="luse-label">Read</span>${seg('read', lr?.read ?? 'add', ADD_ONLY)}</span>
+                  <span class="luse-row"><span class="luse-label">Write</span>${seg('write', lr?.write ?? 'add', ADD_ONLY)}</span>
+                </div>
+              </div>
+              <div class="lr-fetch-missing-row">
+                <span class="luse-row"><span class="luse-label">Fetch missing</span>${seg('fetchmissing', (lr?.fetchMissing ?? false) ? 'on' : 'off', ON_OFF)}</span>
+                <p class="filter-help lr-fm-hint">Backfill what your relay doesn't have from your normal relays. Off stays isolated.</p>
+              </div>
+            </div>
+          </div>
           <div class="add-relay">
+            ${lr?.url ? localRelayStatusProbe() : html``}
             <input type="text" name="url" value="${lr?.url ?? ''}" placeholder="ws://localhost:4869 (or wss:// / .onion)" autocomplete="off" spellcheck="false">
           </div>
-          <div class="local-relay-dirs">
-            <span class="luse-row"><span class="luse-label">Read</span>${seg('read', lr?.read ?? 'add')}</span>
-            <span class="luse-row"><span class="luse-label">Write</span>${seg('write', lr?.write ?? 'add')}</span>
-          </div>
-          ${relaySaveFooter(status, statusErr, 'Save local relay')}
+          ${relaySaveFooter(status, statusErr, 'Save private relay')}
         </form>
         ${authBlock}
       </section>`;

@@ -19,6 +19,7 @@ const ALPHA = 0.3;      // EWMA weight for a new sample (moderate smoothing over
 // also cold-start/low-confidence).
 const N_MIN = 5;        // min samples before the profile is trusted enough to adapt off the default
 const EV_EMPTY = 1;     // avg events/query below this (i.e. ~0) = empty FOR YOUR FEED → bail fast to `floor`
+const EMPTY_Q = 0.15;   // selection weight for a known-empty relay (see relayQuality): deprioritized, not banned
 const TRUNC_HI = 0.3;   // a DELIVERING relay truncating above this rate looks budget-starved
 const RICH_EV = 20;     // ...and only if it delivers this many events/query (a real backlog) is more time worth it
 const FILE = process.env.SATORI_RELAY_LATENCY_FILE || join(process.cwd(), '.data', 'relay-latency.json');
@@ -79,4 +80,16 @@ export function relayBudget(relay: string, floor: number, base: number, ceiling:
     if (truncRate >= TRUNC_HI && s.ev >= RICH_EV)                          // rich but cut off → more rope
         return Math.min(ceiling, Math.round(base + truncRate * (ceiling - base)));
     return base;                                                           // delivers, finishes in time → default
+}
+
+/** Selection weight in (0,1] for outbox routing (used by routeAuthorsToRelays). A relay we've LEARNED
+ * delivers ~nothing for your feed is a wasted slot - its authors' notes come from their other relays, or not
+ * at all - so weight it DOWN, but never to zero: it's still picked when it's an author's only relay. Unknown
+ * or low-confidence relays are neutral (1): don't penalize one we haven't profiled - it may be great. Keys on
+ * `ev` (the module's primary signal), the same cut relayBudget uses to bail empty relays' timeouts. */
+export function relayQuality(relay: string): number {
+    const s = stats.get(norm(relay));
+    if (!s || s.n < N_MIN) return 1;        // not enough evidence yet → neutral
+    if (s.ev < EV_EMPTY) return EMPTY_Q;    // empty for your feed → deprioritize (still pickable)
+    return 1;                               // delivers → full weight
 }

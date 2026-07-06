@@ -48,7 +48,7 @@ export interface ChromeOpts {
  * silently blank). One click signs the challenge via the extension and reloads. Bunker never sees this. */
 function localAuthBanner(): SafeHtml {
     return html`<div class="local-auth-banner" role="alert">
-        <span>Your local relay needs authentication before it can load your feed.</span>
+        <span>Your private relay needs authentication before it can load your feed.</span>
         <form action="/settings/local-relay/auth?reauth=1" method="post" h-post h-swap="none">
           <button type="submit" class="busy-btn"><span class="btn-label">Authenticate</span><span class="btn-busy">Authenticating…</span><span class="btn-done">✓</span></button>
         </form>
@@ -62,7 +62,6 @@ const pollTrigger = (everyS: number, initial: boolean): string =>
 
 const FEED_TABS: { tab: FeedTab; label: string; href: string }[] = [
     { tab: 'following', label: 'Following', href: '/' },
-    { tab: 'followers', label: 'Followers', href: '/followers' },
 ];
 
 

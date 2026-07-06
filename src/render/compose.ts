@@ -37,13 +37,13 @@ export function relayPickerRow(relays: string[]): SafeHtml {
         return html`<input type="checkbox" id="relays-toggle" class="relays-check">
         <div class="relays-row">
           <div class="relays-row-head">Post to relays</div>
-          <p class="relay-local-note">Local relay only: every post routes to <b>${relayLabel(localUrl)}</b>, skipping your other relays. Change in <a href="/settings/relays">Settings</a>.</p>
+          <p class="relay-local-note">Private relay only: every post routes to <b>${relayLabel(localUrl)}</b>, skipping your other relays. Change in <a href="/settings/relays">Settings</a>.</p>
         </div>`;
     }
     if (!relays.length) return raw('');
     // 'add': the pool ALSO mirrors every post to the local relay, on top of whatever you pick here.
     const mirrorNote = (localMode === 'add' && localUrl)
-        ? html`<p class="relay-local-note">Also mirroring to your local relay (<b>${relayLabel(localUrl)}</b>).</p>`
+        ? html`<p class="relay-local-note">Also mirroring to your private relay (<b>${relayLabel(localUrl)}</b>).</p>`
         : raw('');
     return html`<input type="checkbox" id="relays-toggle" class="relays-check">
         <div class="relays-row">

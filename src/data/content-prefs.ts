@@ -42,7 +42,7 @@ export const CONTENT_TYPES: ContentType[] = [
     // kind:1 reply, so it's fetched with notes and shown unless you hide replies (see filters.ts hideReplies).
     { id: 'note', label: 'Notes', kinds: [1, KIND_COMMENT], feed: true, profile: true, timeline: false },
     { id: 'poll', label: 'Polls', kinds: [KIND_POLL], feed: true, profile: true, timeline: false },
-    { id: 'picture', label: 'Pictures', kinds: [KIND_PICTURE], feed: false, profile: true, timeline: false },
+    { id: 'picture', label: 'Pictures', kinds: [KIND_PICTURE], feed: false, profile: true, timeline: true },
     { id: 'video', label: 'Videos', kinds: VIDEO_KINDS, feed: false, profile: true, timeline: false },
     { id: 'article', label: 'Articles', kinds: [KIND_ARTICLE], feed: false, profile: true, timeline: true },
     { id: 'podcast', label: 'Podcasts', kinds: [KIND_PODCAST_EPISODE], feed: false, profile: true, timeline: false },

@@ -482,10 +482,29 @@
         }
         .add-relay input[type=text]:focus { outline: none; border-color: var(--accent); }
         .relay-save { display: flex; align-items: center; gap: 10px; }
-        /* Local-relay Read/Write direction rows (each a 3-way Off/Add/Only rw-chip group). */
-        .local-relay-dirs { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 4px 0 12px; }
-        .luse-row { display: inline-flex; align-items: center; gap: 8px; }
-        .luse-label { font-size: 13px; color: var(--muted); min-width: 40px; }
+        .lr-fm-hint { margin-top: 6px; }
+        /* Live connection indicator: a coloured dot beside the URL, verdict in its tooltip (probed on load +
+           on save). Colours - green serving, amber connected-but-empty, red unreachable, muted off/checking. */
+        .lr-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; cursor: default; }
+        .lr-dot-checking { animation: lr-pulse 1s ease-in-out infinite; }
+        .lr-dot-good { background: #2ea043; box-shadow: 0 0 0 3px color-mix(in srgb, #2ea043 22%, transparent); }
+        .lr-dot-wait { background: #d29922; box-shadow: 0 0 0 3px color-mix(in srgb, #d29922 22%, transparent); }
+        .lr-dot-err { background: #e5534b; box-shadow: 0 0 0 3px color-mix(in srgb, #e5534b 22%, transparent); }
+        .lr-dot-off { background: var(--muted); }
+        @keyframes lr-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+        /* The routing block - grouped under the master Use toggle. */
+        .lr-use-row { display: inline-flex; align-items: center; gap: 10px; }
+        .lr-routing-config { margin-top: 14px; }
+        .local-relay-dirs { margin-bottom: 4px; }
+        .luse-rw { display: flex; flex-wrap: wrap; gap: 12px 30px; }
+        .luse-row { display: inline-flex; align-items: center; gap: 10px; }
+        .luse-label { font-size: 13px; color: var(--muted); min-width: 42px; }
+        /* Use Off -> the routing controls don't apply; collapse them so only the URL + Use remain. */
+        form:has(input[name="use"][value="off"]:checked) .lr-routing-config { display: none; }
+        /* Fetch-missing only applies in Only read mode (Add already resolves via the outbox); hide otherwise. */
+        .lr-fetch-missing-row { margin-top: 16px; }
+        .lr-fetch-missing-row .filter-help { margin-top: 6px; }
+        form:not(:has(input[name="read"][value="only"]:checked)) .lr-fetch-missing-row { display: none; }
         /* Local-relay NIP-42 auth row (nip07): status + Authenticate button + help. */
         .local-relay-auth { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
         .local-relay-auth > form { display: inline; }
@@ -1149,6 +1168,19 @@
         .settings-page .tabset-panel { display: block; }
         .settings-page .tabset-tab.active { color: var(--text); border-bottom-color: var(--accent); }
         .settings-page .tabset-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        /* Relays tab: a left sub-nav (four relay purposes) + the active pane. Stacks on narrow screens. */
+        .relays-two-pane { display: grid; grid-template-columns: 136px 1fr; gap: 22px; align-items: start; }
+        .relay-nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 12px; }
+        .relay-nav-item { padding: 8px 12px; border-radius: 8px; font-size: 14px; color: var(--muted); text-decoration: none; }
+        .relay-nav-item:hover { background: var(--panel); color: var(--text); }
+        .relay-nav-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-weight: 600; }
+        .relay-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .relay-pane { min-width: 0; }
+        .relay-pane > section:first-child { margin-top: 0; }
+        @media (max-width: 640px) {
+          .relays-two-pane { grid-template-columns: 1fr; gap: 12px; }
+          .relay-nav { flex-direction: row; flex-wrap: wrap; position: static; gap: 6px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        }
         .search-people { list-style: none; padding: 0; margin: 0; }
         .search-person { border-bottom: 1px solid var(--border); }
         .search-person-link { display: flex; gap: 12px; align-items: flex-start; padding: 12px 2px; text-decoration: none; color: inherit; }

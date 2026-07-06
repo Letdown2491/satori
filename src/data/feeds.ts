@@ -5,6 +5,7 @@
 import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, routeAuthorsToRelays } from '../nostr/nip65.ts';
+import { relayQuality } from './relay-latency.ts';
 import { HEX64, isAddressable, tag1 } from '../nostr/tags.ts';
 import { notFakePodcast } from '../nostr/nipf4.ts';
 import { coalesceOne } from './coalesce.ts';
@@ -44,8 +45,10 @@ function mergeNewest(lists: NostrEvent[][], limit: number): NostrEvent[] {
 
 /** People you follow → their write relays, grouped per relay (computed once). */
 export async function buildFollowsRoute(pool: Pool, me: string, myRelays: RelayList): Promise<FeedRoute> {
-    let contacts = await pool.get(myRelays.write, { kinds: [3], authors: [me] }).catch(() => null);
-    if (!contacts) contacts = await pool.get(INDEXER_RELAYS, { kinds: [3], authors: [me] }).catch(() => null);
+    // Your OWN follow list (kind:3): read the COMPLETE set (private relay unioned in) so Only mode can't
+    // serve a partial/stale copy that would mis-route the feed - and a future edit can't clobber it.
+    let contacts = await pool.get(myRelays.write, { kinds: [3], authors: [me] }, undefined, { complete: true }).catch(() => null);
+    if (!contacts) contacts = await pool.get(INDEXER_RELAYS, { kinds: [3], authors: [me] }, undefined, { complete: true }).catch(() => null);
     if (!contacts) return { authors: [], route: new Map() };
     const authors = contacts.tags
         .filter((t) => t[0] === 'p' && HEX64.test(t[1] || ''))
@@ -82,7 +85,7 @@ async function routeFor(pool: Pool, authors: string[]): Promise<FeedRoute> {
         return { authors, route: new Map([[local, new Set(authors)]]) };
     }
     const relayLists = await fetchRelayLists(pool, INDEXER_RELAYS, authors);
-    const route = routeAuthorsToRelays(relayLists, authors, { fallbackRelays: INDEXER_RELAYS });
+    const route = routeAuthorsToRelays(relayLists, authors, { fallbackRelays: INDEXER_RELAYS, relayScore: relayQuality });
     // 'add': the local relay covers everyone alongside the outbox - queried ONCE for all authors (not
     // per shard), so an aggregator can serve the whole feed from one socket while the outbox fills gaps.
     if (local && localReadMode() === 'add') route.set(local, new Set(authors));
@@ -138,6 +141,15 @@ export async function fetchEvent(pool: Pool, id: string, relayHints: string[] = 
     return coalesceOne(inflightEvents, id, () => resolveEvent(pool, id, relayHints, author, opts.maxWait));
 }
 
+/** Cache-only lookup of a recently-seen event (NO network fetch). Used at write time to enrich a
+ * bookmark/pin tag with the note's author, so it resolves via outbox later. Null on a miss or an
+ * expired entry. */
+export function cachedEvent(id: string): NostrEvent | null {
+    const hit = eventCache.get(id);
+    if (!hit) return null;
+    return Date.now() - hit.at < (hit.ev ? EVENT_TTL : EVENT_MISS_TTL) ? hit.ev : null;
+}
+
 async function resolveEvent(pool: Pool, id: string, relayHints: string[], author: string | undefined, maxWait?: number): Promise<NostrEvent | null> {
     // Outbox model (NIP-65): the author's OWN write relays are the canonical home of their events, so
     // query those (+ any nevent relay hints) FIRST - the big indexers are a best-effort aggregator that
@@ -147,19 +159,19 @@ async function resolveEvent(pool: Pool, id: string, relayHints: string[], author
         // ...plus relays we've empirically seen this author on (finds events on relays they don't advertise).
         const primary = [...new Set([...relayHints, ...writes, ...seenRelaysFor(author)])].filter(Boolean);
         if (primary.length) {
-            const ev = await pool.get(primary, { ids: [id] }, maxWait).catch(() => null);
+            const ev = await pool.get(primary, { ids: [id] }, maxWait, { resolve: true }).catch(() => null);
             if (ev) return rememberEvent(id, ev);
         }
     }
     const relays = [...new Set([...relayHints, ...INDEXER_RELAYS])].filter(Boolean);
-    return rememberEvent(id, await pool.get(relays, { ids: [id] }, maxWait).catch(() => null));
+    return rememberEvent(id, await pool.get(relays, { ids: [id] }, maxWait, { resolve: true }).catch(() => null));
 }
 
 /** Fetch many events by id (e.g. bookmarked notes), deduped. */
 export async function fetchEventsByIds(pool: Pool, ids: string[], relayHints: string[] = []): Promise<NostrEvent[]> {
     if (ids.length === 0) return [];
     const relays = [...new Set([...relayHints, ...INDEXER_RELAYS])].filter(Boolean);
-    const raw = await pool.query(relays, { ids }).catch(() => []);
+    const raw = await pool.query(relays, { ids }, { resolve: true }).catch(() => []);
     const seen = new Set<string>();
     return raw.filter((e) => (seen.has(e.id) ? false : seen.add(e.id)));
 }
@@ -173,8 +185,8 @@ export async function fetchReplies(pool: Pool, noteId: string, relayHints: strin
     // (direct children of this note/comment) and by uppercase `E` (the whole comment subtree rooted here -
     // catches nested comments whose immediate `e` parent is another comment). Merge + dedupe across both.
     const [direct, rooted] = await Promise.all([
-        pool.query(relays, { kinds: [1, 1111], '#e': [noteId], limit: 100 }, { fast: true }).catch(() => [] as NostrEvent[]),
-        pool.query(relays, { kinds: [1111], '#E': [noteId], limit: 100 }, { fast: true }).catch(() => [] as NostrEvent[]),
+        pool.query(relays, { kinds: [1, 1111], '#e': [noteId], limit: 100 }, { fast: true, resolve: true }).catch(() => [] as NostrEvent[]),
+        pool.query(relays, { kinds: [1111], '#E': [noteId], limit: 100 }, { fast: true, resolve: true }).catch(() => [] as NostrEvent[]),
     ]);
     const seen = new Set<string>();
     return [...direct, ...rooted]
@@ -190,6 +202,6 @@ export async function fetchAuthorNotes(pool: Pool, pubkey: string, kinds: number
     const relays = write.length ? write : INDEXER_RELAYS;
     // `kinds` is the VIEWER's profile content-type prefs (notes/polls + whichever rich kinds they enabled).
     // The manifest renders each kind's card, so no per-kind branch here - just the viewer-chosen query.
-    const raw = await pool.query(relays, { kinds, authors: [pubkey], limit, ...(until ? { until } : {}) }, { fast: true }).catch(() => []);
+    const raw = await pool.query(relays, { kinds, authors: [pubkey], limit, ...(until ? { until } : {}) }, { fast: true, resolve: true }).catch(() => []);
     return dedupeNewest(raw.filter(notFakePodcast), limit);
 }

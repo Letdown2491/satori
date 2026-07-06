@@ -34,7 +34,10 @@ const isListKind = (k: number): boolean => k === KIND_BOOKMARK || k === KIND_MUT
  * Exported (with listEmpty) so the /act collapse handler refreshes the count + empty state from the
  * SAME source as the page - no drift between the page render and the live unbookmark/unmute update. */
 export function listCount(s: Session & { me: string }, kind: number): number {
-    return kind === KIND_MUTE ? mutedPubkeys(s).size : bookmarkCount(s);
+    // Mutes are always fully resolved (pubkeys need no fetch), so the tag count is the shown count. Bookmarks
+    // can fail to resolve (deleted / bare tags), so use the RESOLVED count carried from the last page render
+    // (bookmarkShown), falling back to the tag count before the page has rendered this session.
+    return kind === KIND_MUTE ? mutedPubkeys(s).size : (s.bookmarkShown ?? bookmarkCount(s));
 }
 /** The empty-state line for a list (single source of truth for both the page render and the collapse-
  * to-empty on the last removal). */
@@ -79,16 +82,16 @@ function muteRow(s: Session & { me: string }, pubkey: string): SafeHtml {
 
 /** The inner rows of a list (banner + items), with profiles/likes hydrated. Shared
  * by the full-page render and the post-decrypt re-render. */
-async function listInner(s: Session & { me: string }, kind: number): Promise<SafeHtml> {
-    // Hold the whole list on the loader until private items decrypt (no partial list).
-    if (decryptPending(s, kind)) return decryptLoader(kind);
+async function listInner(s: Session & { me: string }, kind: number): Promise<{ inner: SafeHtml; shown: number }> {
+    // Hold the whole list on the loader until private items decrypt (no partial list). Nothing resolved yet.
+    if (decryptPending(s, kind)) return { inner: decryptLoader(kind), shown: 0 };
     const banner = privacyBanner(s, kind);
     if (kind === KIND_MUTE) {
         const muted = [...mutedPubkeys(s)];
         await ensureProfiles(s, muted);
-        if (!muted.length) return banner ?? emptyItem(listEmpty(kind));
+        if (!muted.length) return { inner: banner ?? emptyItem(listEmpty(kind)), shown: 0 };
         // Count lives in the bar (chrome titleCount), refreshed OOB on unmute - not an in-list row.
-        return html`${banner}${join(muted.map((pk) => muteRow(s, pk)))}`;
+        return { inner: html`${banner}${join(muted.map((pk) => muteRow(s, pk)))}`, shown: muted.length };
     }
     const relays = [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? []), ...INDEXER_RELAYS])];
     const { notes, articles } = await resolveListItems(s.pool, listTags(s, kind), relays);
@@ -101,11 +104,12 @@ async function listInner(s: Session & { me: string }, kind: number): Promise<Saf
     ]);
     await ensureProfiles(s, replierPubkeys(articles.map(naddrFor))); // real avatars for the faces
     const items = [...notes, ...articles].sort((a, b) => b.created_at - a.created_at); // newest first
-    if (!items.length) return banner ?? emptyItem(listEmpty(kind));
-    // The count lives in the bar (chrome titleCount, OOB-refreshed on unbookmark), not a list row.
-    // Unbookmarking collapses the card in place via the #list-10003 grid-rows CSS (mirrors the mutes
-    // page); the reconcile swap returns the now-un-filled button, keeping it collapsed.
-    return html`${banner}${join(items.map((ev) => noteCard(ev, s.profiles, s)))}`;
+    if (!items.length) return { inner: banner ?? emptyItem(listEmpty(kind)), shown: 0 };
+    // `shown` = items we could actually RESOLVE, so the header count matches the page (bare/old bookmarks
+    // whose notes are gone aren't counted). The count lives in the bar (chrome titleCount, OOB-refreshed on
+    // unbookmark), not a list row. Unbookmarking collapses the card in place via the #list-10003 grid-rows
+    // CSS (mirrors the mutes page); the reconcile swap returns the now-un-filled button, keeping it collapsed.
+    return { inner: html`${banner}${join(items.map((ev) => noteCard(ev, s.profiles, s)))}`, shown: items.length };
 }
 
 /** GET /bookmarks - your saved notes + articles (public + private). */
@@ -113,8 +117,9 @@ export async function getBookmarks(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     await ensureLists(s, ['bookmark', 'pin', 'mute']); // list (+private, bunker) + action-bar state + mute filter
-    const inner = await listInner(s, KIND_BOOKMARK); // resolves the list (so bookmarkCount sees decrypted private tags)
-    sendPage(ctx, html`<ul class="feed" id="list-${KIND_BOOKMARK}">${inner}</ul>`, chromeFor(ctx, s, { active: 'bookmarks', title: 'Bookmarks', titleCount: bookmarkCount(s) }));
+    const { inner, shown } = await listInner(s, KIND_BOOKMARK); // resolves the list; shown = items we could fetch
+    s.bookmarkShown = shown; // carry the resolved count to the live unbookmark update
+    sendPage(ctx, html`<ul class="feed" id="list-${KIND_BOOKMARK}">${inner}</ul>`, chromeFor(ctx, s, { active: 'bookmarks', title: 'Bookmarks', titleCount: shown }));
 }
 
 /** GET /muted - people you've muted (public + private), each with an unmute. */
@@ -122,7 +127,8 @@ export async function getMuted(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     await ensureLists(s, ['mute']);
-    sendPage(ctx, html`<ul class="feed mute-list" id="list-${KIND_MUTE}">${await listInner(s, KIND_MUTE)}</ul>`, chromeFor(ctx, s, { active: 'muted', title: 'Muted', titleCount: listCount(s, KIND_MUTE) }));
+    const { inner, shown } = await listInner(s, KIND_MUTE);
+    sendPage(ctx, html`<ul class="feed mute-list" id="list-${KIND_MUTE}">${inner}</ul>`, chromeFor(ctx, s, { active: 'muted', title: 'Muted', titleCount: shown }));
 }
 
 /** GET /list/:kind/decrypt - return a nip44_decrypt sign-request for the list's
@@ -135,7 +141,7 @@ export async function getListDecrypt(ctx: Ctx): Promise<void> {
     if (!ctx.isPartial) { redirect(ctx, pageOf(kind)); return; }
     await ensureLists(s, kind === KIND_BOOKMARK ? ['bookmark', 'pin', 'mute'] : ['mute']);
     const content = s.lists.get(kind)?.content;
-    if (!content) { sendFragment(ctx, html`${await listInner(s, kind)}${titleCount(listCount(s, kind), true)}`, place(kind)); return; } // nothing private
+    if (!content) { const { inner, shown } = await listInner(s, kind); if (kind === KIND_BOOKMARK) s.bookmarkShown = shown; sendFragment(ctx, html`${inner}${titleCount(shown, true)}`, place(kind)); return; } // nothing private
     sendSignRequest(ctx, { pubkey: s.me, ciphertext: content }, `/list/${kind}/decrypted`, 'nip44_decrypt');
 }
 
@@ -151,6 +157,8 @@ export async function postListDecrypted(ctx: Ctx): Promise<void> {
     try { const j = JSON.parse(String(await readSignResult(ctx.req))); if (Array.isArray(j)) priv = j as string[][]; } catch { /* unreadable */ }
     s.privateTags.set(kind, priv);
     // Re-render the list AND OOB-refresh the header count: the private items just decrypted, so the
-    // count set at first paint (public-only for nip07) was low. Covers both /bookmarks and /muted.
-    sendFragment(ctx, html`${await listInner(s, kind)}${titleCount(listCount(s, kind), true)}`, place(kind));
+    // count set at first paint (0 while the loader held) was low. Covers both /bookmarks and /muted.
+    const { inner, shown } = await listInner(s, kind);
+    if (kind === KIND_BOOKMARK) s.bookmarkShown = shown; // resolved count for the live unbookmark update
+    sendFragment(ctx, html`${inner}${titleCount(shown, true)}`, place(kind));
 }

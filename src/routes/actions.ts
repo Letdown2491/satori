@@ -6,7 +6,7 @@
 import { html } from '../html.ts';
 import {
     isActionName, isValidTarget, actionKind, ensureList, ensurePrivate, isOn, buildToggle, applyPublished,
-    isPrivateList, buildPrivateToggle, applyPrivatePublished, resolveTarget, writeRelays, published, type ActionName,
+    isPrivateList, buildPrivateToggle, applyPrivatePublished, resolveTarget, addTag, writeRelays, published, type ActionName,
 } from '../actions.ts';
 import { actionButton } from '../render/actions.ts';
 import { titleCount } from '../render/layout.ts';
@@ -64,6 +64,9 @@ function fromListPage(ctx: Ctx, action: ActionName, on: boolean): boolean {
  * mutes via .mute-row max-height); no per-card ids or DOM removal needed. */
 function afterListToggle(ctx: Ctx, s: Session & { me: string }, action: ActionName, target: string): void {
     const kind = actionKind(action);
+    // Unbookmarking from the list page removes a RESOLVED (visible) item, so the shown count drops by one.
+    // (Mutes count pubkeys, which always resolve, so listCount already reflects the removal for them.)
+    if (action === 'bookmark' && typeof s.bookmarkShown === 'number') s.bookmarkShown = Math.max(0, s.bookmarkShown - 1);
     const n = listCount(s, kind);
     const count = titleCount(n, true);
     if (n === 0) { sendFragment(ctx, html`${emptyItem(listEmpty(kind))}${count}`, { 'H-Reswap': 'inner', 'H-Retarget': `#list-${kind}` }); return; }
@@ -143,8 +146,7 @@ export async function postAction(ctx: Ctx): Promise<void> {
             sendSignRequest(ctx, { pubkey: s.me, ciphertext: content }, `/act/private/dec?${privQuery(action, target, undefined, card, relist)}`, 'nip44_decrypt');
         } else {
             s.privateTags.set(kind, []); // nothing private yet → on is known, encrypt directly
-            const { tag, value } = resolveTarget(action, target);
-            sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(on ? [[tag, value]] : []) }, `/act/private/enc?${privQuery(action, target, on, card, relist)}`, 'nip44_encrypt');
+            sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(on ? [addTag(action, target)] : []) }, `/act/private/enc?${privQuery(action, target, on, card, relist)}`, 'nip44_encrypt');
         }
         return;
     }
@@ -208,7 +210,7 @@ export async function postActPrivateDec(ctx: Ctx): Promise<void> {
     const on = !isOn(s, p.action, p.target);
     const { tag, value } = resolveTarget(p.action, p.target);
     const next = priv.filter((t) => !(t[0] === tag && t[1] === value));
-    if (on) next.push([tag, value]);
+    if (on) next.push(addTag(p.action, p.target));
     sendSignRequest(ctx, { pubkey: s.me, plaintext: JSON.stringify(next) }, `/act/private/enc?${privQuery(p.action, p.target, on, dismissCard(ctx), p.relist)}`, 'nip44_encrypt');
 }
 

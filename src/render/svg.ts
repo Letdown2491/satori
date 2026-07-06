@@ -45,6 +45,13 @@ export function quoteEmpty(line: string): SafeHtml {
     return html`<li class="empty"><span>“${line}”</span>${enso(40, true)}</li>`;
 }
 
+/** Shown in place of an empty timeline / not-found card when the private relay is isolating reads (Only
+ * mode, "fetch missing" off): the content probably exists elsewhere, so point at the toggle instead of a
+ * dead end. Used only when localIsolated() is true. */
+export function gapNotice(): SafeHtml {
+    return html`<li class="empty gap-notice">${enso(40, true)}<span>Your private relay doesn't have this.</span><span class="empty-sub"><a href="/settings/relays/private">Turn on “Fetch events not on your private relay”</a> to load it from your normal relays.</span></li>`;
+}
+
 /** The brush-texture filter + dry-brush mask the ensō references. Inlined once
  * per page (position:absolute, zero-size). Verbatim from Satori's index.html. */
 export const ENSO_DEFS: SafeHtml = raw(`<svg width="0" height="0" class="enso-defs" aria-hidden="true">

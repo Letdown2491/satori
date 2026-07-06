@@ -50,6 +50,10 @@ export interface Session {
     // on every page load (it would otherwise stay "pending" forever and re-pop the "waiting for signer"
     // toast each refresh). Reset on a fresh session (sign out/in retries once).
     primerTried: Set<number>;
+    // /bookmarks: how many items the last page render actually RESOLVED (notes + articles we could fetch),
+    // so the header chip shows what's on screen, not the raw tag count - old/bare bookmarks whose notes are
+    // gone don't inflate it. Carried from the page render to the live unbookmark update (decremented there).
+    bookmarkShown?: number;
     // NIP-25 like + reply/repost AND NIP-57 zapped state now ALL live in the persistent
     // engagement cache (data/engagement-cache.ts), synced once and read as set lookups - not
     // per-session. (Zaps used to be a per-session Map here; folded in for one source of truth.)

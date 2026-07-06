@@ -16,6 +16,8 @@
 import { decode } from 'nostr-tools/nip19';
 import { INDEXER_RELAYS, writeRelaysFor } from './nostr/nip65.ts';
 import { normalizeRelayUrl } from './data/relay-favorites.ts';
+import { cachedEvent } from './data/feeds.ts';
+import { seenRelaysFor } from './data/seen-relays.ts';
 import { HEX64 } from './nostr/tags.ts';
 import type { NostrEvent, UnsignedEvent } from './nostr/types.ts';
 import type { Session } from './session.ts';
@@ -101,6 +103,20 @@ export function resolveTarget(name: ActionName, target: string): { tag: string; 
     return { tag: 'e', value: HEX64.test(target) ? target.toLowerCase() : target };
 }
 
+/** The tag to ADD when toggling something ON, enriched per NIP-51 so it can be found again. For a note
+ * bookmark/pin (`e`) we record the author (t[3]) and a relay hint (t[2]) - `["e", id, relay, author]` -
+ * so resolveListItems can route to the author's write relays via outbox even after the note leaves your
+ * own relays. Bare `[tag, value]` for follows/mutes (`p`) and articles (`a`, whose author is in the
+ * coordinate already), or when the note isn't in the event cache (best-effort: no worse than before).
+ * Single source for every write path (public, bunker-private, nip07-private chain). */
+export function addTag(name: ActionName, target: string): string[] {
+    const { tag, value } = resolveTarget(name, target);
+    if (tag !== 'e') return [tag, value];
+    const author = cachedEvent(value)?.pubkey;
+    if (!author) return [tag, value];              // note not cached → bare, can't invent an author
+    return [tag, value, seenRelaysFor(author)[0] ?? '', author];
+}
+
 /** Validate a URL target for an action (pubkey hex, note id hex, or article naddr). */
 export function isValidTarget(name: ActionName, target: string): boolean {
     if (name === 'follow' || name === 'mute') return HEX64.test(target);
@@ -170,7 +186,7 @@ export async function ensureList(s: Session, kind: number): Promise<NostrEvent |
     if (inf) return inf;
     const p = (async (): Promise<NostrEvent | null> => {
         const relays = [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? []), ...INDEXER_RELAYS])];
-        const events = await s.pool.query(relays, { kinds: [kind], authors: [s.me!] }).catch(() => [] as NostrEvent[]);
+        const events = await s.pool.query(relays, { kinds: [kind], authors: [s.me!] }, { complete: true }).catch(() => [] as NostrEvent[]);
         const newest = events.sort((a, b) => b.created_at - a.created_at)[0] ?? null;
         // Don't clobber a value that arrived while we queried (e.g. a toggle publish set a
         // newer event, or the relay copy is older/absent) - the publish is the source of truth.
@@ -202,7 +218,7 @@ export function isOn(s: Session, name: ActionName, target: string): boolean {
 export function buildToggle(name: ActionName, prev: NostrEvent | null, target: string, on: boolean, me: string): UnsignedEvent {
     const { tag, value } = resolveTarget(name, target);
     const tags = (prev?.tags ?? []).filter((t) => !(t[0] === tag && t[1] === value));
-    if (on) tags.push([tag, value]);
+    if (on) tags.push(addTag(name, target));
     return { kind: actionKind(name), created_at: Math.floor(Date.now() / 1000), tags, content: prev?.content ?? '', pubkey: me };
 }
 
@@ -222,7 +238,7 @@ export async function buildPrivateToggle(s: Session, name: ActionName, target: s
     if (priv === null) throw new Error('couldn’t read your private list, so it wasn’t overwritten');
     const { tag, value } = resolveTarget(name, target);
     const next = (priv ?? []).filter((t) => !(t[0] === tag && t[1] === value));
-    if (on) next.push([tag, value]);
+    if (on) next.push(addTag(name, target));
     const content = await s.signer!.nip44Encrypt(s.me!, JSON.stringify(next));
     // Drop the target from PUBLIC tags too, so toggling off an item saved publicly
     // (by an older client / our old public toggle) actually removes it; new items
@@ -236,6 +252,6 @@ export function applyPrivatePublished(s: Session, signed: NostrEvent, name: Acti
     s.lists.set(signed.kind, signed);
     const { tag, value } = resolveTarget(name, target);
     const next = (s.privateTags.get(signed.kind) ?? []).filter((t) => !(t[0] === tag && t[1] === value));
-    if (on) next.push([tag, value]);
+    if (on) next.push(addTag(name, target));
     s.privateTags.set(signed.kind, next);
 }

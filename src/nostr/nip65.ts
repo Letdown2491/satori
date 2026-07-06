@@ -25,6 +25,10 @@ const MAX_RELAYS_PER_AUTHOR = 3;
 // so the cap has headroom to avoid truncating real coverage back onto the indexer fallback. The
 // persistent daemon pools/reuses sockets (SimplePool), so the extra connections are mild.
 const MAX_RELAYS = 70;
+// Hard ceiling for the orphan tail: orphans are recovered to their OWN relays (past the soft cap above), but
+// a pathological follow graph (everyone on a unique rare relay) shouldn't explode sockets - past this, the
+// remaining orphans fall back to the indexers. Generous headroom over MAX_RELAYS; the daemon pools sockets.
+const HARD_MAX_RELAYS = MAX_RELAYS * 2;
 // Redundancy: route each author to up to this many of their write relays (not just one), so a note
 // they published to only ONE of their relays still surfaces. A note has to be absent from BOTH chosen
 // relays to vanish. Capped by the author's relay count and by MAX_RELAYS (the tail keeps 1x coverage).
@@ -36,7 +40,12 @@ export const MAX_AUTHORS_PER_FILTER = 200;
 export function normalizeRelayUrl(url: string, opts: { assumeWss?: boolean } = {}): string | null {
     try {
         let raw = url.trim();
-        if (opts.assumeWss && raw && !/^wss?:\/\//i.test(raw)) raw = 'wss://' + raw;
+        // Only prepend wss:// to a BARE host (no scheme at all). A wrong scheme (http://relay.onion) must NOT
+        // be rewritten - prepending wss:// gave `wss://http://relay.onion`, which new URL() then parses with
+        // host "http" into a dead `wss://http//relay.onion` that still got dialed. Now it falls through to the
+        // protocol check below and is rejected.
+        const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
+        if (opts.assumeWss && raw && !hasScheme) raw = 'wss://' + raw;
         const u = new URL(raw);
         if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return null;
         let s = u.toString();
@@ -80,16 +89,25 @@ export function parseRelayList(event: NostrEvent): RelayList {
 /**
  * Route authors to the relays they write to. Each author gets up to 3 write
  * relays; authors with none go to `fallbackRelays`. A greedy set-cover then
- * bounds the relay set (highest coverage first) to MAX_RELAYS, routing each author
- * to up to RELAYS_PER_AUTHOR_TARGET (2) of their relays for redundancy - so a note
- * they put on only one of their relays still surfaces. Any author with ZERO chosen
- * relays when the cap is hit is NOT dropped - they're swept onto the fallback
- * (indexer) relays so their notes still surface. Returns Map<relayUrl, Set<pubkey>>.
+ * bounds the relay set to MAX_RELAYS, routing each author to up to
+ * RELAYS_PER_AUTHOR_TARGET (2) of their relays for redundancy - so a note they put
+ * on only one of their relays still surfaces. Returns Map<relayUrl, Set<pubkey>>.
+ *
+ * QUALITY-AWARE: `relayScore` (default: neutral 1) weights each relay's coverage by
+ * how well it actually delivers for your feed (fed from relay-latency). The greedy
+ * picks by coverage x score, so a relay we've LEARNED is empty/useless loses to a
+ * smaller relay that delivers - its authors get covered by their better relays, and
+ * the empty relay is only picked when it's someone's ONLY option. Wasting fewer
+ * slots on dead relays also fits more real authors under the cap.
+ *
+ * ORPHAN RECOVERY: an author whose relays didn't make the cut is NOT dumped on the
+ * indexers (which may not mirror their notes) - they're routed to their OWN best
+ * relay (by score). Only an author with no relay list at all falls to the indexers.
  */
 export function routeAuthorsToRelays(
     relayLists: Map<string, RelayList>,
     authors: string[],
-    { fallbackRelays = [] as string[] } = {},
+    { fallbackRelays = [] as string[], relayScore = (_r: string) => 1 }: { fallbackRelays?: string[]; relayScore?: (relay: string) => number } = {},
 ): Map<string, Set<string>> {
     const fallback = fallbackRelays.map((u) => normalizeRelayUrl(u)).filter((u): u is string => !!u);
 
@@ -122,10 +140,14 @@ export function routeAuthorsToRelays(
         }
         if (coverage.size === 0) break;
 
+        // Pick by coverage WEIGHTED by relay quality: a big empty relay (score ~0.15) loses to a smaller
+        // one that delivers. With the default neutral score (1) this is exactly highest-coverage-first.
         let best: string | null = null;
+        let bestScore = 0;
         let bestAuthors: string[] = [];
         for (const [relay, covered] of coverage) {
-            if (covered.length > bestAuthors.length) { best = relay; bestAuthors = covered; }
+            const score = covered.length * relayScore(relay);
+            if (score > bestScore) { best = relay; bestScore = score; bestAuthors = covered; }
         }
         if (!best) break;
         chosen.set(best, new Set(bestAuthors));
@@ -136,16 +158,25 @@ export function routeAuthorsToRelays(
         }
     }
 
-    // Don't silently drop the tail: any author with ZERO chosen relays (theirs didn't make the
-    // MAX_RELAYS cut) is queried from the fallback (indexer) relays, which mirror most notes.
-    // Better an imperfect relay than the author vanishing from the feed.
-    const orphaned = authors.filter((a) => (authorRelays.get(a)?.length ?? 0) > 0 && !everCovered.has(a));
-    if (orphaned.length > 0 && fallback.length > 0) {
-        for (const relay of fallback) {
-            const set = chosen.get(relay) ?? new Set<string>();
-            for (const author of orphaned) set.add(author);
-            chosen.set(relay, set);
+    // Don't silently drop the tail: any author with ZERO chosen relays (theirs didn't make the cut) is
+    // recovered. Their notes live on THEIR write relays, so route them to their best one (by score) rather
+    // than dumping them on the indexers, which may not mirror the note - better their real relay than an
+    // approximation. Only an author with no relay list at all has nowhere else to look → the indexers.
+    const addAuthor = (relay: string, author: string): void => {
+        const set = chosen.get(relay) ?? new Set<string>();
+        set.add(author);
+        chosen.set(relay, set);
+    };
+    for (const author of authors) {
+        if (everCovered.has(author)) continue;
+        const write = (relayLists.get(author)?.write ?? []).slice(0, MAX_RELAYS_PER_AUTHOR);
+        if (write.length) {
+            let best = write[0]!;
+            for (const r of write) if (relayScore(r) > relayScore(best)) best = r;
+            // Recover to their real relay - unless it'd be a NEW socket past the hard ceiling, then indexers.
+            if (chosen.has(best) || chosen.size < HARD_MAX_RELAYS) { addAuthor(best, author); continue; }
         }
+        for (const relay of fallback) addAuthor(relay, author); // no relay list, or past the ceiling
     }
 
     return chosen;

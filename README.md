@@ -51,8 +51,8 @@ search, zaps, notifications, drafts, bookmarks, follows, and mutes. Pictures, vi
 calendar events, classifieds, podcasts, highlights, and custom NIPs render as proper cards instead of
 sending you off to another app. Media goes through the daemon so your browser never
 connects to a stranger's host (and a dead image can be refetched by its hash), anything
-the server fetches can be routed over Tor, and a short undo window holds a post before it
-is actually sent.
+the server fetches can be routed over Tor, your reads and posts can go through a private
+relay only you run, and a short undo window holds a post before it is actually sent.
 
 ## Run it
 
