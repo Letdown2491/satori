@@ -8,7 +8,7 @@ import { fetchPinnedItems, fetchAuthorArticles } from '../data/profile-extras.ts
 import { INDEXER_RELAYS, myRelayUrls } from '../nostr/nip65.ts';
 import { fetchRelayLists } from '../data/relays.ts';
 import { seenRelaysFor } from '../data/seen-relays.ts';
-import { coordinateOf, isAddressable, tag1, HEX64 } from '../nostr/tags.ts';
+import { coordinateOf, isAddressable, tag1, HEX64, displayTime } from '../nostr/tags.ts';
 import { fetchArticleComments } from '../data/comments.ts';
 import { commentSection } from '../render/comments.ts';
 import { buildThreadTree, type TreeNode } from '../nostr/thread.ts';
@@ -79,6 +79,9 @@ export async function getProfile(ctx: Ctx): Promise<void> {
     await Promise.all([ensureProfiles(s, notePubkeys(notes)), ensureLikes(s, notes.map((n) => n.id)), ensureEngaged(s, notes.map((n) => n.id)), ensureZaps(s), prepareEvents(notes, s)]);
 
     const more = lastRaw >= PAGE && oldest != null ? pagerSentinel(`/u/${entity}?until=${oldest - 1}`) : null;
+    // Render by DISPLAY time (published_at for long-form, else created_at); pagination stays created_at-based
+    // (oldest/`more` above), matching the feed. Keeps a re-edited old article at its publish date.
+    notes.sort((a, b) => displayTime(b) - displayTime(a));
 
     // Infinite-scroll partial (helmjs): just the next notes + a fresh sentinel.
     if (ctx.isPartial && ctx.hTarget === '#more') {

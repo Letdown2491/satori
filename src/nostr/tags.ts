@@ -19,6 +19,16 @@ export const isHex64 = (s: string): boolean => HEX64.test(s);
 /** Current unix time in SECONDS (Nostr's `created_at` unit). */
 export const nowSec = (): number => Math.floor(Date.now() / 1000);
 
+/** The timestamp to DISPLAY / order an event by. Long-form kinds (NIP-23 articles, NIP-54 wikis, custom
+ * NIPs) carry a `published_at` tag = the original first-publish time, which stays FIXED across edits while
+ * `created_at` bumps on every re-sign. Ordering a timeline by this keeps a re-edited old article at its
+ * publish date instead of jumping to the top of the feed on every edit. Plain events (notes) have no such
+ * tag, so this is simply their created_at. Mirrors the fallback in parseArticle/parseCustomNip/parseWiki. */
+export const displayTime = (ev: NostrEvent): number => {
+    const p = Number(tag1(ev, 'published_at'));
+    return Number.isFinite(p) && p > 0 ? p : ev.created_at;
+};
+
 /** The addressable coordinate `kind:pubkey:dtag` for an event. */
 export const coordinateOf = (ev: NostrEvent): string => `${ev.kind}:${ev.pubkey}:${tag1(ev, 'd')}`;
 

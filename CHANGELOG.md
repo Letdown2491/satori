@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-07-06
+
+### Fixed
+
+- Article timelines are ordered by publish date again. Long-form posts (articles, wikis, custom NIPs)
+  carry two dates: when they were first published and when they were last edited. The timeline was
+  sorting by last edit, so when someone re-saved or re-broadcast a batch of old articles those posts
+  jumped to the top of the feed while still showing their original dates. You'd see a run of a
+  year-old, then months-old, then recent posts from one person before everyone else appeared in order.
+  Feeds and profiles now sort long-form posts by their publish date, so they land where their dates
+  say they should. Regular notes are unaffected.
+
 ## [0.6.0] - 2026-07-06
 
 ### Added

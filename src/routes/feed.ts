@@ -11,7 +11,7 @@ import { relayFeedBar, relayPicker, relayPickerBody, relayPickerPage, favStar } 
 import { html, join, type SafeHtml } from '../html.ts';
 import { noteList, pagerSentinel, feedClearing, facesOOB } from '../render/note.ts';
 import { ensureReplies, ensureArticleReplies, replierPubkeys } from '../replies.ts';
-import { HEX64 } from '../nostr/tags.ts';
+import { HEX64, displayTime } from '../nostr/tags.ts';
 import { quoteEmpty } from '../render/svg.ts';
 import { quote } from '../render/quotes.ts';
 import { page, notesHome, feedSwitch } from '../render/layout.ts';
@@ -214,14 +214,18 @@ async function fillPage(s: Session & { me: string }, src: FeedSource, until?: nu
             if (have.has(e.id) || !keep(e)) continue;
             allRaw.push(e); visible.push(e); recovered++;
         }
-        visible.sort((a, b) => b.created_at - a.created_at);
-        if (visible.length) newestRaw = Math.max(newestRaw, visible[0]!.created_at); // high-water covers folded events
+        if (visible.length) newestRaw = Math.max(newestRaw, ...visible.map((e) => e.created_at)); // high-water covers folded events (order-independent)
     }
     // Enrich only what we render (not the filtered-out raw). prepareEvents fans the reply-presence
     // prefetch out per kind (notes warm by id, articles by naddr) and hydrates the replier avatars,
     // so this stays free of `kind ===` branching.
     await Promise.all([ensureProfiles(s, [s.me, ...notePubkeys(visible)]), ensureLikes(s, visible.map((e) => e.id)), ensureEngaged(s, visible.map(engageTarget)), ensureZaps(s), prepareEvents(visible, s)]);
     const more = !exhausted ? srcSentinel(src, cursor!) : null;
+    // Order the RENDERED page by DISPLAY time (published_at for long-form, else created_at). Pagination stays
+    // created_at-based (the cursor/`more` above are computed from the raw fetch order and untouched here); only
+    // the visible order flips, so a re-edited old article sits at its publish date instead of pinning to the
+    // top of the feed. A no-op for notes, which carry no published_at.
+    visible.sort((a, b) => displayTime(b) - displayTime(a));
     return { visible, allRaw, more, newestRaw, recovered };
 }
 
@@ -300,7 +304,9 @@ async function followingFirstView(s: Session & { me: string }, boundary: number)
     recordFollowingLanding(newVisible.length, recovered); // measure how much the slow-relay backfill actually rescued
     const reached = visible.some((e) => e.created_at <= boundary) || more === null; // saw all the new in one window
     const moreExists = more !== null || visible.length > newVisible.length; // more pages, or older notes held in this window
-    const contFrom = (newVisible.length ? newVisible[newVisible.length - 1]!.created_at : newestRaw) - 1;
+    // Continue from the OLDEST created_at shown (relays page by created_at). visible is display-sorted now,
+    // so take the min explicitly rather than the last element.
+    const contFrom = (newVisible.length ? Math.min(...newVisible.map((e) => e.created_at)) : newestRaw) - 1;
     const clearing = feedClearing({ caughtUp: reached, markTs: newestRaw || undefined, more: moreExists && contFrom > 0 ? contFrom : undefined });
     return { inner: html`${noteList(newVisible, s.profiles, s, { faces: true })}${clearing}`, newestTs: newestRaw, events: allRaw };
 }
@@ -323,7 +329,7 @@ async function serveFollowing(ctx: Ctx, s: Session & { me: string }, until?: num
     // (the first clearing already did); no new/old split (you've chosen to keep reading older notes).
     if (batch) {
         const { visible, more } = await fillPage(s, { tab: 'following' }, until);
-        const oldest = visible.length ? visible[visible.length - 1]!.created_at : undefined;
+        const oldest = visible.length ? Math.min(...visible.map((e) => e.created_at)) : undefined; // oldest created_at shown (visible is display-sorted)
         wrapPage(html`${noteList(visible, s.profiles, s, { faces: true })}${feedClearing({ caughtUp: false, more: more !== null && oldest ? oldest - 1 : undefined })}`);
         return;
     }
