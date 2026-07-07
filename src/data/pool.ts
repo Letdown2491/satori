@@ -59,6 +59,11 @@ const TOR_LIST_MAX_WAIT = 12000;
 const TOR_GET_MAX_WAIT = 12000;
 const TOR_CONNECT_MAX_WAIT = 11000;
 
+// Sleep watchdog (see the `watchdog` field): tick every 30s; a tick that lands 60s+ after the last one
+// means the event loop was frozen that long - a real OS suspend, not GC/load jitter (which is sub-second).
+const WATCHDOG_TICK = 30_000;
+const SLEEP_GAP = 60_000;
+
 export class Pool {
     readonly raw = new SimplePool();
     // NIP-42 AUTH: sign the kind:22242 challenge - but only for relays in your own
@@ -76,10 +81,26 @@ export class Pool {
     // Warm-up tracking for the Privacy Mode indicator: which relays are dialing and
     // which have settled (connected OR failed), so the widget shows real progress.
     private warming: { urls: Set<string>; settled: Set<string> } | null = null;
+    // Sleep/suspend detection. A laptop resume leaves ZOMBIE sockets behind: the TCP connection is
+    // dead but the WebSocket still reads as OPEN (half-open), so nostr-tools reuses it and every
+    // subscribe/get hangs to maxWait and returns EMPTY - a silent blank feed, and the "fetch missing"
+    // fallback quietly fetching nothing from the (zombie) real relays. The bunker signer already
+    // self-heals its transport (signer.ts); the read pool didn't. We detect the suspend by wall-clock
+    // DRIFT (see healIfSuspended): the process can't advance the clock while frozen, so a jump far past a
+    // live loop's cadence means we were suspended - recycle every socket so the next read dials fresh.
+    // Checked two ways: the background `watchdog` (proactive, works even on an idle daemon with no reads)
+    // AND lazily at the top of each read (so the FIRST read after waking heals before it hangs, not on the
+    // next tick). `lastTick` is the last time we observed the clock on a live loop. unref'd so the timer
+    // never keeps the process alive.
+    private lastTick = Date.now();
+    private readonly watchdog: ReturnType<typeof setInterval>;
 
     constructor() {
         this.raw.maxWaitForConnection = CONNECT_MAX_WAIT;
         this.raw.trackRelays = true; // populate seenOn so we can learn which relays actually carry an author's events
+
+        this.watchdog = setInterval(() => this.healIfSuspended(), WATCHDOG_TICK);
+        this.watchdog.unref?.(); // don't hold the event loop open for the timer
 
         (this.raw as { automaticallyAuth?: unknown }).automaticallyAuth = (url: string) => {
             // Authenticate (NIP-42) to relays in your own list, PLUS the explicitly-configured local relay -
@@ -161,6 +182,21 @@ export class Pool {
         return !!url && this.authedLocal.has(normUrl(url));
     }
 
+    /** Recycle zombie sockets if a wall-clock jump says we just resumed from an OS suspend. Shared by the
+     * background watchdog (proactive) and the read path (so the first read after waking heals before it
+     * hangs). Idempotent under the daemon's concurrency: whichever caller fires first recycles and resets
+     * lastTick, so the others see no gap. A live loop resets lastTick on every read/tick, so `gap` only
+     * exceeds SLEEP_GAP after the process was actually frozen - never from ordinary idle. */
+    private healIfSuspended(): void {
+        const now = Date.now();
+        const gap = now - this.lastTick;
+        this.lastTick = now;
+        if (gap > SLEEP_GAP && this.raw.listConnectionStatus().size) {
+            if (process.env.SATORI_REQ_LOG) console.log(`[pool] resume after ~${Math.round(gap / 1000)}s suspend: recycling zombie sockets`);
+            this.recycle(); // long-lived subs (the bunker transport) rebuild on their own next request via signer self-heal
+        }
+    }
+
     /** Live status of the private relay for the Settings status line: can we open a socket, and does a
      * quick REQ get anything back? 'off' when it isn't in use, 'unreachable' when the socket won't open,
      * 'serving' when a probe REQ returns an event, 'connected' when it's reachable but returned nothing
@@ -234,6 +270,7 @@ export class Pool {
     }
 
     query(relays: string[], filter: Filter, opts: ReadOpts = {}): Promise<NostrEvent[]> {
+        this.healIfSuspended(); // drop zombie sockets before we subscribe if we just woke from sleep
         if (opts.resolve && localFetchMissing()) return this.resolveQuery(relays, filter, opts);
         return this.queryOnce(relays, filter, opts);
     }
@@ -242,8 +279,21 @@ export class Pool {
      * (real) relays. localFetchMissing() already gates on Only mode, so this never fires in add/off. */
     private async resolveQuery(relays: string[], filter: Filter, opts: ReadOpts): Promise<NostrEvent[]> {
         const first = await this.queryOnce(relays, filter, opts); // withLocalRead -> [private] in Only mode
+        // Id-based query (bookmarks, batched event resolution): the local relay may hold SOME of the ids
+        // but not all, so a boolean "got anything? stop" would strand the rest. Diff the wanted ids against
+        // what came back and fetch EXACTLY the misses from the real relays, then merge.
+        const wanted = filter.ids;
+        if (wanted?.length) {
+            const have = new Set(first.map((e) => e.id));
+            const missing = wanted.filter((id) => !have.has(id));
+            if (!missing.length) return first;
+            const rest = await this.queryOnce(relays, { ...filter, ids: missing }, { ...opts, direct: true });
+            return [...first, ...rest];
+        }
+        // Open-ended query (author timeline, replies by #e): no id set to diff against, so completeness is
+        // unknowable - supplement from the real relays only when the local relay returned nothing at all.
         if (first.length) return first;
-        return this.queryOnce(relays, filter, { ...opts, direct: true }); // the misses, from the real relays
+        return this.queryOnce(relays, filter, { ...opts, direct: true });
     }
 
     private queryOnce(relays: string[], filter: Filter, opts: ReadOpts = {}): Promise<NostrEvent[]> {
@@ -309,6 +359,7 @@ export class Pool {
     // preview shouldn't hold a relay connection for the full 6s when the event isn't there. Tor keeps
     // its own (longer) cap since circuits are slow and a too-short wait would just always miss.
     get(relays: string[], filter: Filter, maxWait?: number, opts: ReadOpts = {}): Promise<NostrEvent | null> {
+        this.healIfSuspended(); // drop zombie sockets before we subscribe if we just woke from sleep
         if (opts.resolve && localFetchMissing()) return this.resolveGet(relays, filter, maxWait, opts);
         return this.getOnce(relays, filter, maxWait, opts);
     }
@@ -433,6 +484,7 @@ export class Pool {
     }
 
     closeAll(): void {
+        clearInterval(this.watchdog);
         try { this.raw.destroy(); } catch { /* ignore */ }
     }
 }

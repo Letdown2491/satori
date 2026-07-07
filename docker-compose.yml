@@ -53,6 +53,12 @@ services:
     depends_on:
       - tor
     restart: unless-stopped
+    # `default` keeps satori on its own compose network (reaching the `tor` sidecar);
+    # `nostr-shared` is an external bus it shares with a local relay (e.g. the `torii`
+    # aggregator), so the local-relay URL can be ws://<relay-container>:<port>.
+    networks:
+      - default
+      - nostr-shared
 
   # Tor SOCKS5 proxy sidecar — reachable only on the internal compose network (no
   # published port). satori dials .onion relays through it. Swap the image
@@ -61,3 +67,9 @@ services:
     image: dperson/torproxy
     container_name: satori-tor
     restart: unless-stopped
+
+# Shared bus with a local relay running in another compose project. Created outside
+# this file (`docker network create nostr-shared`), so declared external here.
+networks:
+  nostr-shared:
+    external: true

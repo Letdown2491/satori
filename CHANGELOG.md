@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-07-07
+
+### Fixed
+
+- The feed no longer comes back empty after your computer sleeps. When a laptop suspends, its
+  connections to relays die quietly, and Satori kept trying to use those dead connections after you
+  woke it back up, so pages loaded blank and Private relay's Fetch missing pulled nothing from your
+  normal relays. Satori now notices the gap and reopens fresh connections as soon as you're back, so
+  the feed fills in like usual.
+- Private relay in Only mode with Fetch missing on now fills every gap in a batch. Opening a set of
+  bookmarks would stop short if your private relay held even one of them, leaving the rest blank. It
+  now fetches whichever ones your private relay is missing from your normal relays.
+
 ## [0.6.1] - 2026-07-06
 
 ### Fixed
