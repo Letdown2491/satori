@@ -61,12 +61,21 @@ export async function signNote(
     // our own neventFor emits none) we resolve the quoted author's NIP-65 write relay,
     // exactly as the reply path does below, so the quote is self-resolving for clients.
     const quoteRef = quote?.address || quote?.id;
+    // The quote's and reply's relay-hint targets are independent: resolve both lists in ONE batched
+    // call, instead of the two sequential awaits that stacked two indexer round-trips onto a
+    // quote-reply to two uncached authors.
+    const hintPks = [...new Set([
+        quoteRef && quote!.pubkey && !quote!.relays?.[0] ? quote!.pubkey : null,
+        replyTo?.id ? replyTo.pubkey : null,
+    ].filter((p): p is string => !!p))];
+    const hintLists = hintPks.length
+        ? await fetchRelayLists(pool, INDEXER_RELAYS, hintPks).catch(() => new Map<string, RelayList>())
+        : new Map<string, RelayList>();
     if (quoteRef) {
         let qWriteHint = quote!.relays?.[0] ?? '';
         let qReadHint = '';
         if (quote!.pubkey && !qWriteHint) {
-            const lists = await fetchRelayLists(pool, INDEXER_RELAYS, [quote!.pubkey]).catch(() => new Map<string, RelayList>());
-            const list = lists.get(quote!.pubkey);
+            const list = hintLists.get(quote!.pubkey);
             qWriteHint = list?.write[0] ?? '';
             qReadHint = list?.read[0] ?? '';
         }
@@ -75,11 +84,7 @@ export async function signNote(
     }
 
     if (replyTo?.id) {
-        let recipientList: RelayList | null = null;
-        if (replyTo.pubkey) {
-            const lists = await fetchRelayLists(pool, INDEXER_RELAYS, [replyTo.pubkey]).catch(() => new Map<string, RelayList>());
-            recipientList = lists.get(replyTo.pubkey) ?? null;
-        }
+        const recipientList: RelayList | null = replyTo.pubkey ? hintLists.get(replyTo.pubkey) ?? null : null;
         const writeHint = recipientList?.write[0] ?? '';
         const readHint = recipientList?.read[0] ?? '';
 
@@ -263,8 +268,13 @@ export async function signArticle(signer: Signer, me: string, myRelays: RelayLis
 export async function publishSigned(pool: Pool, prepared: Prepared): Promise<{ write: DeliveryReport[]; inbox: DeliveryReport[] }> {
     const { signed, writeTargets, inboxTargets } = prepared;
     const targets = [...writeTargets, ...inboxTargets];
-    const results = await pool.publish(targets, signed);
-    const report: DeliveryReport[] = results.map((r, i) => ({ url: targets[i]!, ok: r.status === 'fulfilled' }));
+    // A relay shared by your writes and the recipient's inbox (common) must only be sent once:
+    // nostr-tools rejects a duplicate url outright, which mis-reported the inbox delivery as
+    // failed (+ a warn) on every such reply. Publish per unique relay, report per role.
+    const unique = [...new Set(targets)];
+    const results = await pool.publish(unique, signed);
+    const okByUrl = new Map(unique.map((u, i) => [u, results[i]?.status === 'fulfilled']));
+    const report: DeliveryReport[] = targets.map((url) => ({ url, ok: okByUrl.get(url) ?? false }));
     report.forEach((r) => { if (!r.ok) console.warn(`[publish] ${r.url} rejected`); });
     const write = report.slice(0, writeTargets.length);
     const inbox = report.slice(writeTargets.length);

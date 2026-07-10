@@ -9,6 +9,7 @@ import { relaysViaTor } from '../privacy.ts';
 import { localReadMode, localWriteMode, localRelayUrl, isLocalRelayUrl, localFetchMissing } from '../local-relay.ts';
 import { recordSeen } from './seen-relays.ts';
 import { recordLatency, relayBudget } from './relay-latency.ts';
+import { isExpired } from '../nostr/nip40.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 
 /** True if at least one relay accepted a publish (a settled fan-out succeeds on any acceptance). Lives
@@ -41,7 +42,7 @@ const GIFTWRAP_KIND = 1059; // NIP-59 gift wrap (NIP-17 DMs + private replies): 
 // Healthy relays answer well under these, so a complete result is the norm - the
 // cap only bites when a relay is actually sick (exactly when you want to cut it).
 const LIST_MAX_WAIT = 4000;     // multi-event queries (feed/thread/profile/lists); also the DEFAULT/cold-start budget
-const GET_MAX_WAIT = 6000;      // single-event get: null = a broken page, so more rope (resolves instantly when found)
+const GET_MAX_WAIT = 6000;      // single-event get: null = a broken page, so more rope (id gets resolve on first hit; replaceable gets wait out EOSE for the newest version)
 const CONNECT_MAX_WAIT = 4000;  // don't chase an unreachable relay's socket longer than this
 // Adaptive per-relay budgets (feed reliability). `budget:'page'` = a TIGHT cap for the latency-critical first
 // paint (the new-notes dot + scroll backfill what a fast paint misses). `budget:'adaptive'` scales a single
@@ -342,7 +343,7 @@ export class Pool {
             try {
                 sub = this.raw.subscribeMany(toPoolUrls(relays), filter as never, {
                     onevent: (e: NostrEvent) => {
-                        if (events.has(e.id)) return;
+                        if (events.has(e.id) || isExpired(e)) return; // NIP-40: expired events are ignored
                         events.set(e.id, e);
                         lastEventAt = Date.now();
                         if (opts.fast) { clearTimeout(quietTimer); quietTimer = setTimeout(finish, quiet); }
@@ -355,9 +356,10 @@ export class Pool {
         });
     }
 
-    // `maxWait` (clearnet only) lets a best-effort caller shorten the wait - a decorative quote
-    // preview shouldn't hold a relay connection for the full 6s when the event isn't there. Tor keeps
-    // its own (longer) cap since circuits are slow and a too-short wait would just always miss.
+    // `maxWait` lets a best-effort caller shorten the wait - a decorative quote preview shouldn't
+    // hold a relay connection for the full 6s when the event isn't there. Under Tor the caller's cap
+    // is doubled (circuits are slow; a too-short wait would just always miss) but still honored, so
+    // a 3s best-effort fetch is 6s on Tor, not the full 12s default.
     get(relays: string[], filter: Filter, maxWait?: number, opts: ReadOpts = {}): Promise<NostrEvent | null> {
         this.healIfSuspended(); // drop zombie sockets before we subscribe if we just woke from sleep
         if (opts.resolve && localFetchMissing()) return this.resolveGet(relays, filter, maxWait, opts);
@@ -372,9 +374,39 @@ export class Pool {
     private getOnce(relays: string[], filter: Filter, maxWait?: number, opts: ReadOpts = {}): Promise<NostrEvent | null> {
         if (!opts.direct) relays = this.withLocalRead(relays, opts);
         const tor = relaysViaTor();
+        const cap = tor ? (maxWait ? Math.min(maxWait * 2, TOR_GET_MAX_WAIT) : TOR_GET_MAX_WAIT) : (maxWait ?? GET_MAX_WAIT);
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
-        return (this.raw.get(toPoolUrls(relays), filter, { maxWait: tor ? TOR_GET_MAX_WAIT : (maxWait ?? GET_MAX_WAIT), onauth: this.onauth } as never) as Promise<NostrEvent | null>)
-            .then((ev) => { if (ev) this.recordSeenOn([ev]); return ev; });
+        if (filter.ids?.length) return this.getById(relays, filter, cap);
+        return (this.raw.get(toPoolUrls(relays), filter, { maxWait: cap, onauth: this.onauth } as never) as Promise<NostrEvent | null>)
+            .then((ev) => { if (!ev || isExpired(ev)) return null; this.recordSeenOn([ev]); return ev; }); // NIP-40
+    }
+
+    // An id filter names an IMMUTABLE event, so the first copy to arrive IS the answer - resolve on
+    // it instead of riding raw.get's contract (all-relay EOSE), which prices every hit at the slowest
+    // relay in the set. Only a MISS still waits out EOSE/cap: absence needs every relay's word.
+    // Replaceable-kind gets stay on raw.get, where all-EOSE is what finds the newest version.
+    private getById(relays: string[], filter: Filter, maxWait: number): Promise<NostrEvent | null> {
+        return new Promise((resolve) => {
+            let settled = false;
+            let sub: { close: (reason?: string) => void } | undefined;
+            const finish = (ev: NostrEvent | null): void => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                try { sub?.close(); } catch { /* already closed */ }
+                if (ev) this.recordSeenOn([ev]);
+                resolve(ev);
+            };
+            const timer = setTimeout(() => finish(null), maxWait);
+            try {
+                sub = this.raw.subscribeMany(toPoolUrls(relays), filter as never, {
+                    onevent: (e: NostrEvent) => { if (!isExpired(e)) finish(e); }, // NIP-40: an expired copy doesn't count as found
+                    oneose: () => finish(null),
+                    onauth: this.onauth,
+                    maxWait,
+                } as never) as { close: (reason?: string) => void };
+            } catch { finish(null); }
+        });
     }
 
     /** Publish with the local-relay WRITE policy. 'add' publishes to `relays` as usual AND
@@ -414,7 +446,7 @@ export class Pool {
         // trackRelays populates seenOn for these events too, but only query()/get() drain it - so a
         // long-lived subscription (e.g. the NIP-46 bunker) would accumulate seenOn entries forever.
         // receivedEvent runs before onevent (relay.js), so seenOn is ready here: record + drain per event.
-        const wrapped: SubHandlers = { ...handlers, onevent: (e) => { this.recordSeenOn([e]); handlers.onevent?.(e); } };
+        const wrapped: SubHandlers = { ...handlers, onevent: (e) => { if (isExpired(e)) return; this.recordSeenOn([e]); handlers.onevent?.(e); } }; // NIP-40
         return this.raw.subscribeMany(toPoolUrls(relays), filter as never, wrapped as never);
     }
 

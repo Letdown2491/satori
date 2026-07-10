@@ -61,11 +61,14 @@ services:
       - nostr-shared
 
   # Tor SOCKS5 proxy sidecar — reachable only on the internal compose network (no
-  # published port). satori dials .onion relays through it. Swap the image
-  # for any Tor proxy that serves SOCKS5 on 9050.
+  # published port). satori dials .onion relays through it. Built from tor/ (current
+  # Alpine tor; see tor/Dockerfile for why an off-the-shelf image went stale). The
+  # volume keeps the consensus cache warm across recreates, so bootstrap is quick.
   tor:
-    image: dperson/torproxy
+    build: ./tor
     container_name: satori-tor
+    volumes:
+      - tor-data:/var/lib/tor
     restart: unless-stopped
 
 # Shared bus with a local relay running in another compose project. Created outside
@@ -73,3 +76,6 @@ services:
 networks:
   nostr-shared:
     external: true
+
+volumes:
+  tor-data:

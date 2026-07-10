@@ -3,7 +3,7 @@
 
 import { decode, neventEncode, naddrEncode } from 'nostr-tools/nip19';
 import { pubkeyFromBech, neventFromId } from '../nostr/nip19.ts';
-import { fetchEvent, fetchReplies, fetchAuthorNotes } from '../data/feeds.ts';
+import { fetchEvent, fetchAddressable, fetchReplies, fetchAuthorNotes } from '../data/feeds.ts';
 import { fetchPinnedItems, fetchAuthorArticles } from '../data/profile-extras.ts';
 import { INDEXER_RELAYS, myRelayUrls } from '../nostr/nip65.ts';
 import { fetchRelayLists } from '../data/relays.ts';
@@ -63,22 +63,32 @@ export async function getProfile(ctx: Ctx): Promise<void> {
     const filt = compileFilters(getFilters(s.me), 'profile');
     const profKinds = profileKinds(s.me); // the viewer's per-kind visibility prefs for profiles
     const notes: NostrEvent[] = [];
-    let cursor = until, lastRaw = 0, oldest: number | undefined;
+    // When filtering, the first window over-fetches (the feed's fillPage idiom) so a thinned page
+    // usually fills in ONE round-trip instead of 2-4 serial ones. Events are consumed one-by-one up
+    // to PAGE, the cursor advancing to the LAST CONSUMED event - so over-fetching never renders an
+    // oversized page nor opens a pagination gap (the unconsumed tail is re-read by the next window).
+    const OVERFETCH = 3;
+    let cursor = until, oldest: number | undefined, hasMore = false;
     for (let i = 0; i < PROFILE_FILL && notes.length < PAGE; i++) {
-        const page = await fetchAuthorNotes(s.pool, pubkey, profKinds, PAGE, cursor).catch(() => [] as NostrEvent[]);
-        lastRaw = page.length;
-        if (!page.length) break;
-        oldest = page[page.length - 1]!.created_at;
-        for (const e of page) if (!filt.hide(e)) notes.push(e);
-        cursor = oldest - 1;
-        if (page.length < PAGE) break;
+        const lim = i === 0 && filt.active ? PAGE * OVERFETCH : PAGE;
+        const page = await fetchAuthorNotes(s.pool, pubkey, profKinds, lim, cursor).catch(() => [] as NostrEvent[]);
+        if (!page.length) { hasMore = false; break; }
+        hasMore = page.length >= lim; // a full raw window → likely more history below it
+        for (let j = 0; j < page.length; j++) {
+            const e = page[j]!;
+            oldest = e.created_at;
+            if (!filt.hide(e)) notes.push(e);
+            if (notes.length >= PAGE) { if (j < page.length - 1) hasMore = true; break; }
+        }
+        cursor = (oldest ?? 0) - 1;
+        if (page.length < lim) break;
     }
     await meta;
     // prepareEvents warms reply-presence + replier avatars per kind (notes by id), so the profile
     // feed needs no `kind === 1` branch here; poll/picture rows just don't warm, as before.
     await Promise.all([ensureProfiles(s, notePubkeys(notes)), ensureLikes(s, notes.map((n) => n.id)), ensureEngaged(s, notes.map((n) => n.id)), ensureZaps(s), prepareEvents(notes, s)]);
 
-    const more = lastRaw >= PAGE && oldest != null ? pagerSentinel(`/u/${entity}?until=${oldest - 1}`) : null;
+    const more = hasMore && oldest != null ? pagerSentinel(`/u/${entity}?until=${oldest - 1}`) : null;
     // Render by DISPLAY time (published_at for long-form, else created_at); pagination stays created_at-based
     // (oldest/`more` above), matching the feed. Keeps a re-edited old article at its publish date.
     notes.sort((a, b) => displayTime(b) - displayTime(a));
@@ -364,7 +374,9 @@ export async function getEmbed(ctx: Ctx): Promise<void> {
         const { kind, pubkey, identifier, relays } = { ...decoded.data, relays: decoded.data.relays ?? [] };
         const writes = (await fetchRelayLists(s.pool, INDEXER_RELAYS, [pubkey]).catch(() => null))?.get(pubkey)?.write ?? [];
         const queryRelays = [...new Set([...relays, ...writes, ...seenRelaysFor(pubkey), ...myRelayUrls(s.myRelays), ...INDEXER_RELAYS])]; // author's write relays (outbox) + where we've seen them + your own, then indexers
-        const ev = await s.pool.get(queryRelays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }, EMBED_MAX_WAIT).catch(() => null);
+        // Cached + coalesced (fetchAddressable): a feed's naddr embeds re-fire on every revisit, and the
+        // uncached direct get here was the naddr twin of the note-embed storm.
+        const ev = await fetchAddressable(s.pool, kind, pubkey, identifier, queryRelays, { maxWait: EMBED_MAX_WAIT }).catch(() => null);
         if (!ev) { sendFragment(ctx, embedFallback(`/a/${entity}`, `↗ ${kindLabel(kind).toLowerCase()}`)); return; }
         await ensureProfiles(s, notePubkeys([ev]));
         sendFragment(ctx, renderEvent(ev, 'embed', { profiles: s.profiles, bech: entity, naddr: entity }));

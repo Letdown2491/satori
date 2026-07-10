@@ -20,8 +20,12 @@ export function raw(value: string): SafeHtml {
     return { [SAFE]: true, value };
 }
 
-/** HTML-escape a string for text/attribute contexts. */
+/** HTML-escape a string for text/attribute contexts. Runs on every interpolated value (thousands
+ * of times per page), and most inputs contain nothing escapable - one combined test skips the five
+ * per-character replace passes for those. */
+const NEEDS_ESCAPE = /[&<>"']/;
 export function escape(s: string): string {
+    if (!NEEDS_ESCAPE.test(s)) return s;
     return s
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')

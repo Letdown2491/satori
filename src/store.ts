@@ -8,8 +8,8 @@
 // it never leaves the bunker. nip07 sessions persist only the pubkey (no secret).
 // File is written 0600 (owner-only); it's a local single-user daemon.
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import { jsonStore } from './data/json-store.ts';
 import type { RelayList } from './nostr/types.ts';
 
 export interface PersistedSession {
@@ -24,19 +24,12 @@ export interface PersistedSession {
 
 const FILE = process.env.SATORI_SESSION_FILE || join(process.cwd(), '.data', 'sessions.json');
 
-function readAll(): Record<string, PersistedSession> {
-    try { return JSON.parse(readFileSync(FILE, 'utf8')) as Record<string, PersistedSession>; }
-    catch { return {}; }
-}
-
-function writeAll(all: Record<string, PersistedSession>): void {
-    try {
-        mkdirSync(dirname(FILE), { recursive: true });
-        writeFileSync(FILE, JSON.stringify(all), { mode: 0o600 });
-    } catch (e) {
-        console.warn('[store] could not persist sessions:', (e as Error)?.message ?? e);
-    }
-}
+// The shared jsonStore replaces a hand-rolled read/write pair: its mtime cache means a request
+// with a DEAD session cookie (which falls through to loadPersisted every time) no longer re-reads
+// and re-parses the file per request.
+const store = jsonStore<Record<string, PersistedSession>>(FILE, 'store');
+const readAll = (): Record<string, PersistedSession> => store.readAll();
+const writeAll = (all: Record<string, PersistedSession>): void => store.writeAll(all);
 
 export function loadPersisted(sid: string): PersistedSession | undefined {
     return readAll()[sid];

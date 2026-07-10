@@ -303,8 +303,16 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, path: stri
             c = { mtimeMs, raw: body, gz: gzipSync(body) };
             staticCache.set(entry.file, c);
         }
+        // ETag (mtime-keyed, already in hand) gives `no-cache` its validator: without one, every hard
+        // load re-downloads all ~37KB of assets in full; with it, an unchanged asset is a 304.
+        const etag = `"${entry.file}-${mtimeMs}"`;
+        if (req.headers['if-none-match'] === etag) {
+            res.writeHead(304, { 'ETag': etag, 'Cache-Control': 'no-cache', 'Vary': 'Accept-Encoding' });
+            res.end();
+            return true;
+        }
         const gzip = (req.headers['accept-encoding'] ?? '').includes('gzip');
-        const headers: Record<string, string> = { 'Content-Type': entry.type, 'Cache-Control': 'no-cache', 'Vary': 'Accept-Encoding' };
+        const headers: Record<string, string> = { 'Content-Type': entry.type, 'Cache-Control': 'no-cache', 'Vary': 'Accept-Encoding', 'ETag': etag };
         if (gzip) headers['Content-Encoding'] = 'gzip';
         res.writeHead(200, headers);
         res.end(gzip ? c.gz : c.raw);

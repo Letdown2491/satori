@@ -49,5 +49,21 @@ export function parseDraft(decrypted: string): UnsignedEvent | null {
 export const draftId = (ev: NostrEvent): string => ev.tags.find((t) => t[0] === 'd')?.[1] ?? '';
 export const isDeletedDraft = (ev: NostrEvent): boolean => ev.content.trim() === '';
 
-/** Parse a kind:10013 draft-relay list into relay urls (`relay` tags), capped. */
-export const parseDraftRelays = (ev: NostrEvent): string[] => relayTags(ev);
+/** Parse a kind:10013 draft-relay list into relay urls, capped. Per NIP-37 the list is
+ * PRIVATE: `.content` = nip44-to-self of JSON.stringify([['relay', url], ...]) with empty tags
+ * (your draft-relay set shouldn't itself be public). Pass the decrypted content when available;
+ * plaintext `relay` tags are kept as a lenient fallback for non-spec publishers. */
+export function parseDraftRelays(ev: NostrEvent, decrypted?: string | null): string[] {
+    if (decrypted) {
+        try {
+            const arr = JSON.parse(decrypted) as unknown;
+            if (Array.isArray(arr)) {
+                const urls = [...new Set(arr
+                    .filter((t): t is [string, string] => Array.isArray(t) && t[0] === 'relay' && typeof t[1] === 'string' && !!t[1])
+                    .map((t) => t[1]))].slice(0, 8); // same cap as relayTags
+                if (urls.length) return urls;
+            }
+        } catch { /* malformed plaintext → fall through to tags */ }
+    }
+    return relayTags(ev);
+}

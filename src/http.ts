@@ -2,6 +2,7 @@
 // form-body reading, and response helpers (HTML, redirect, fragment). No framework.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { gzipSync } from 'node:zlib';
 import { renderToString, type SafeHtml } from './html.ts';
 import { torStrict } from './privacy.ts';
 import type { Session } from './session.ts';
@@ -192,17 +193,30 @@ export function sendPage<C>(ctx: Ctx, content: SafeHtml, chrome: C, status = 200
     // error re-renders the <body> instead: H-Retarget points the error swap at the
     // body (classic "re-render the form with the error + preserved input"). The
     // header is ignored on a no-JS full navigation, which just renders this page.
-    const errorHeaders = status >= 400 ? { 'H-Retarget': 'body', 'H-Reswap': 'inner' } : {};
+    const errorHeaders: Record<string, string> = status >= 400 ? { 'H-Retarget': 'body', 'H-Reswap': 'inner' } : {};
     if (!pageRenderer) throw new Error('sendPage: no page renderer registered (call setPageRenderer at boot).');
     const body = renderToString(pageRenderer(content, chrome));
-    ctx.res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders(), ...errorHeaders });
-    ctx.res.end(body);
+    writeHtml(ctx, status, { 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders(), ...errorHeaders }, body);
 }
 
 /** Send a bare HTML fragment (helmjs partial swap target), with optional H-* headers. */
 export function sendFragment(ctx: Ctx, content: SafeHtml, extraHeaders: Record<string, string> = {}, status = 200): void {
-    ctx.res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders(), ...extraHeaders });
-    ctx.res.end(renderToString(content));
+    writeHtml(ctx, status, { 'Content-Type': 'text/html; charset=utf-8', ...securityHeaders(), ...extraHeaders }, renderToString(content));
+}
+
+// Dynamic HTML is unique per request, so unlike serveStatic's precompressed cache it's gzipped
+// inline. Feed/thread pages gzip 5-10x and the .onion deployment feels every KB; a couple of ms
+// of zlib beats hundreds of KB on the wire. The size floor skips bodies too small to pay for it.
+const GZIP_MIN_BYTES = 1024;
+function writeHtml(ctx: Ctx, status: number, headers: Record<string, string>, body: string): void {
+    const buf = Buffer.from(body);
+    if (buf.byteLength >= GZIP_MIN_BYTES && /\bgzip\b/.test(String(ctx.req.headers['accept-encoding'] ?? ''))) {
+        ctx.res.writeHead(status, { ...headers, 'Content-Encoding': 'gzip', 'Vary': 'Accept-Encoding' });
+        ctx.res.end(gzipSync(buf));
+        return;
+    }
+    ctx.res.writeHead(status, headers);
+    ctx.res.end(buf);
 }
 
 export function redirect(ctx: Ctx, location: string, status = 303): void {

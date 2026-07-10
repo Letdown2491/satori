@@ -6,8 +6,9 @@
 
 import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { debouncedFlush } from './json-store.ts';
 
 const DIR = process.env.SATORI_AVATAR_CACHE || join(process.cwd(), '.data', 'avatars');
 const INDEX = join(DIR, 'index.json');
@@ -23,22 +24,29 @@ let hits = 0, misses = 0;
         const raw = JSON.parse(readFileSync(INDEX, 'utf8')) as Record<string, Meta>;
         for (const [h, m] of Object.entries(raw)) if (m?.size) { index.set(h, m); totalBytes += m.size; }
     } catch { /* no cache yet */ }
+    // Reconcile the dir against the index: blob bytes hit disk immediately but the index rides a
+    // debounced flush, so a restart inside that window leaves ORPHAN files - invisible to totalBytes
+    // (the cap under-counts and never reclaims them) and guaranteed re-fetch misses anyway. They're
+    // plain cache blobs, so drop them; the next request re-fetches and re-indexes.
+    try {
+        let dropped = 0;
+        for (const f of readdirSync(DIR)) {
+            if (f === 'index.json' || index.has(f)) continue;
+            try { unlinkSync(join(DIR, f)); dropped++; } catch { /* best effort */ }
+        }
+        if (dropped) console.log(`[avatar-cache] dropped ${dropped} orphaned files (index lagged a restart)`);
+    } catch { /* no dir yet */ }
 })();
 
 const hashUrl = (url: string) => createHash('sha256').update(url).digest('hex');
 const fileFor = (h: string) => join(DIR, h);
 
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleFlush(): void {
-    if (flushTimer) return;
-    flushTimer = setTimeout(() => {
-        flushTimer = null;
-        void (async () => {
-            try { await mkdir(DIR, { recursive: true }); await writeFile(INDEX, JSON.stringify(Object.fromEntries(index)), { mode: 0o600 }); }
-            catch (e) { console.warn('[avatar-cache] flush failed:', (e as Error)?.message ?? e); }
-        })();
-    }, 8000);
-}
+// Shared debounced flusher (sync write, small index) so the exit hook covers it - the hand-rolled
+// async timer this replaced wasn't exit-hooked, which is exactly what minted the orphans above.
+const flusher = debouncedFlush(() => {
+    try { mkdirSync(DIR, { recursive: true }); writeFileSync(INDEX, JSON.stringify(Object.fromEntries(index)), { mode: 0o600 }); }
+    catch (e) { console.warn('[avatar-cache] flush failed:', (e as Error)?.message ?? e); }
+}, 8000);
 
 async function evictIfNeeded(): Promise<void> {
     if (totalBytes <= CAP_BYTES) return;
@@ -70,7 +78,7 @@ export async function putAvatarBytes(url: string, bytes: Buffer, ct: string): Pr
     index.set(h, { ct, size: bytes.length, lastUsed: Date.now() });
     totalBytes += bytes.length;
     await evictIfNeeded();
-    scheduleFlush();
+    flusher.schedule();
 }
 
 export function avatarCacheStats(): { count: number; mb: number; hits: number; misses: number; hitRate: number } {

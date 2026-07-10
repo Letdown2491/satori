@@ -42,10 +42,11 @@ function normalize(text: string): string {
 // callers tokenizing a fragment pass normalize=false.
 // A small bounded memo: one note's content is tokenized a few times per render (renderContent +
 // mediaLightboxes, plus mention-hydration), all with the same input. The returned token array is
-// treated as read-only by every caller, so sharing it is safe. CAP covers a feed page's distinct
-// notes; oldest-inserted is evicted (good enough - a page's contents are all inserted together).
+// treated as read-only by every caller, so sharing it is safe. CAP covers a page's distinct
+// contents - sized for a large thread (focused note + ~100 replies + embeds), where a too-small
+// cap made FIFO eviction defeat the memo mid-render; oldest-inserted is evicted.
 const memo = new Map<string, ContentToken[]>();
-const MEMO_CAP = 64;
+const MEMO_CAP = 256;
 export function tokenize(text: string, normalizeWhitespace = true): ContentToken[] {
     const key = (normalizeWhitespace ? '1' : '0') + text;
     const hit = memo.get(key);
@@ -62,15 +63,25 @@ export function tokenize(text: string, normalizeWhitespace = true): ContentToken
 // fall back to literal text via the caller shortening `consumed`.
 const TRAIL_PUNCT = new Set([...'.,;:!?\'"‘’“”']);
 function urlEnd(url: string): number {
+    // Tally each bracket pair in ONE pass, then walk the tail decrementing as closers are trimmed -
+    // the balance check stays O(1) per trimmed char. (The per-char full rescan this replaced was
+    // O(n^2): a link followed by a long run of ')' - one adversarial note - could block the event
+    // loop for seconds.)
+    const opens: Record<string, number> = { ')': 0, ']': 0, '}': 0 };
+    const closes: Record<string, number> = { ')': 0, ']': 0, '}': 0 };
+    for (let k = 0; k < url.length; k++) {
+        const ch = url[k]!;
+        if (ch === '(') opens[')']!++;
+        else if (ch === '[') opens[']']!++;
+        else if (ch === '{') opens['}']!++;
+        else if (ch === ')' || ch === ']' || ch === '}') closes[ch]!++;
+    }
     let end = url.length;
     while (end > 0) {
         const c = url[end - 1]!;
         if (TRAIL_PUNCT.has(c)) { end--; continue; }
         if (c === ')' || c === ']' || c === '}') {
-            const open = c === ')' ? '(' : c === ']' ? '[' : '{';
-            let opens = 0, closes = 0;
-            for (let k = 0; k < end; k++) { if (url[k] === open) opens++; else if (url[k] === c) closes++; }
-            if (closes > opens) { end--; continue; } // unbalanced closer → not part of the url
+            if (closes[c]! > opens[c]!) { closes[c]!--; end--; continue; } // unbalanced closer → not part of the url
         }
         break;
     }

@@ -1,0 +1,7 @@
+# SOCKS for the satori daemon (.onion relays + Privacy Mode routing). Listens on all
+# interfaces because the container is reachable ONLY on the compose-internal network -
+# nothing here is published to the host or the internet.
+User tor
+DataDirectory /var/lib/tor
+SocksPort 0.0.0.0:9050
+Log notice stdout

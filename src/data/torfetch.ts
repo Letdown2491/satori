@@ -17,6 +17,10 @@ export interface HttpResp { status: number; headers: http.IncomingHttpHeaders; b
 // each host its own circuit, so one exit can't correlate fetches to different hosts.
 type SocksAgentCls = new (url: string) => unknown;
 let spaP: Promise<SocksAgentCls | null> | null = null;
+// Bounded: media/preview fetches hit arbitrary hosts, and each agent retains keep-alive sockets -
+// unbounded, a long-lived daemon browsing media-heavy feeds accretes agents (and sockets) forever.
+// FIFO eviction; an evicted host just pays a fresh circuit on its next fetch.
+const AGENT_CAP = 64;
 const agentByHost = new Map<string, unknown>();
 async function socksAgent(host: string): Promise<unknown | null> {
     const proxy = process.env.TOR_SOCKS?.trim();
@@ -30,6 +34,7 @@ async function socksAgent(host: string): Promise<unknown | null> {
         let purl: URL; try { purl = new URL(proxy); } catch { return null; }
         purl.username = `h-${key}`; purl.password = 'x'; // per-host SOCKS auth → isolated circuit
         try { agent = new Cls(purl.href); } catch { return null; }
+        if (agentByHost.size >= AGENT_CAP) { const oldest = agentByHost.keys().next().value; if (oldest !== undefined) agentByHost.delete(oldest); }
         agentByHost.set(key, agent);
     }
     return agent;

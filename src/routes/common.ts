@@ -101,11 +101,17 @@ export async function ensureProfiles(s: Session, pubkeys: Iterable<string>): Pro
         for (const pk of missing) { const c = getCachedProfile(pk); if (c) s.profiles.set(pk, c); }
     }
     if (stale.length) {
-        // Fire-and-forget refresh; update both the shared cache and this session so a
-        // later render in the same session also sees the fresh data.
-        void relaysFor(stale)
-            .then((relays) => fetchProfiles(s.pool, relays, stale))
-            .then((m) => { for (const [pk, prof] of m) { putProfile(pk, prof); s.profiles.set(pk, prof); } })
-            .catch(() => { /* keep serving the stale copy */ });
+        // Fire-and-forget refresh; update both the shared cache and this session so a later render in
+        // the same session also sees the fresh data. Registered in the in-flight map like the missing
+        // branch: a landing fires several near-simultaneous partials, and unregistered refreshes had
+        // each re-querying the same stale set.
+        const refresh = stale.filter((pk) => !inflightProfile(pk));
+        if (refresh.length) {
+            const p = relaysFor(refresh)
+                .then((relays) => fetchProfiles(s.pool, relays, refresh))
+                .then((m) => { for (const [pk, prof] of m) { putProfile(pk, prof); s.profiles.set(pk, prof); } })
+                .catch(() => { /* keep serving the stale copy */ });
+            registerInflight(refresh, p);
+        }
     }
 }

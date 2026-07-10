@@ -39,10 +39,13 @@ services:
   # Tor sidecar: SOCKS5 on 9050 (the daemon's OUTBOUND, Privacy Mode) AND a v3 hidden service that
   # bridges onion:80 -> satori:8787 over the internal network. 8787 is never published to the
   # internet; Tor is the only way in. The volume persists the .onion address + keys + client auth.
+  # Built from tor/ (current Alpine tor; see tor/Dockerfile for why the off-the-shelf image it
+  # replaced went stale). The torrc keeps the same HiddenServiceDir layout, so an existing
+  # tor-data volume keeps its .onion address, keys, and client auth across the swap.
   tor:
-    image: dperson/torproxy
+    build: ./tor
     container_name: satori-tor
-    command: ["-s", "80;satori:8787"]
+    command: ["tor", "-f", "/etc/tor/torrc-hidden-service"]
     volumes:
       - tor-data:/var/lib/tor
     restart: unless-stopped

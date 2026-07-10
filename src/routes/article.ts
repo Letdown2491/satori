@@ -13,7 +13,7 @@ import { chosenTargets, appendRelayTargets, parseScheduleAt } from '../actions.t
 import { titleCount } from '../render/layout.ts';
 import { saveDraft, listDrafts, getDraft, deleteDraft, type ArticleDraft, type Draft } from '../drafts.ts';
 import { holdScheduled, SCHEDULE_FULL_MSG, listScheduled } from '../data/scheduled.ts';
-import { syncDraft, unsyncDraft, fetchSyncedDrafts, draftToEvent, publishDraftWrap, fetchDraftWraps, draftFromDecrypted } from '../data/draft-sync.ts';
+import { syncDraft, unsyncDraft, fetchSyncedDrafts, draftToEvent, publishDraftWrap, fetchDraftWraps, draftFromDecrypted, applyDecryptedDraftRelays } from '../data/draft-sync.ts';
 import { serializeDraft, draftWrapTemplate, KIND_DRAFT } from '../nostr/nip37.ts';
 import { page } from '../render/layout.ts';
 import { html, type SafeHtml } from '../html.ts';
@@ -248,26 +248,35 @@ export async function postDraftSyncPublish(ctx: Ctx): Promise<void> {
 }
 
 // nip07 decrypt-on-load chain state: chainId -> the wrap identifiers (order-matched to the
-// decrypt batch we send), TTL'd so an abandoned chain self-evicts.
-const draftChains = new Map<string, { ids: string[]; at: number }>();
+// decrypt batch we send) + whether item 0 is the 10013 draft-relay ciphertext, TTL'd so an
+// abandoned chain self-evicts.
+const draftChains = new Map<string, { ids: string[]; relayItem: boolean; at: number }>();
 const CHAIN_TTL = 2 * 60_000;
-function newChain(ids: string[]): string {
+function newChain(ids: string[], relayItem: boolean): string {
     const now = Date.now();
     for (const [k, v] of draftChains) if (now - v.at > CHAIN_TTL) draftChains.delete(k);
     const chainId = randomBytes(9).toString('base64url');
-    draftChains.set(chainId, { ids, at: now });
+    draftChains.set(chainId, { ids, relayItem, at: now });
     return chainId;
 }
 
-/** nip07 GET /drafts/sync - fetch your wraps, batch-decrypt their contents via the extension. */
+/** nip07 GET /drafts/sync - fetch your wraps, batch-decrypt their contents via the extension.
+ * A pending 10013 draft-relay ciphertext (NIP-37 keeps that list encrypted; the server can't
+ * decrypt for nip07) rides the same batch as item 0, so this load also resolves WHERE future
+ * saves/unsyncs publish. */
 export async function getDraftsSync(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     if (!signsOnClient(s)) { sendFragment(ctx, draftsListWithCount(s.me), PLACE_LIST); return; }
     const wraps = await fetchDraftWraps(s).catch(() => []);
-    if (!wraps.length) { sendFragment(ctx, draftsListWithCount(s.me), PLACE_LIST); return; }
-    const chainId = newChain(wraps.map((w) => w.tags.find((t) => t[0] === 'd')?.[1] ?? ''));
-    sendSignRequest(ctx, { items: wraps.map((w) => ({ pubkey: s.me, ciphertext: w.content })) }, `/drafts/sync/apply?chain=${chainId}`, 'nip44_decrypt_batch');
+    const relayCipher = s.draftRelaysCipher; // set by draftRelays() during the fetch above, if any
+    if (!wraps.length && !relayCipher) { sendFragment(ctx, draftsListWithCount(s.me), PLACE_LIST); return; }
+    const chainId = newChain(wraps.map((w) => w.tags.find((t) => t[0] === 'd')?.[1] ?? ''), !!relayCipher);
+    const items = [
+        ...(relayCipher ? [{ pubkey: s.me, ciphertext: relayCipher }] : []),
+        ...wraps.map((w) => ({ pubkey: s.me, ciphertext: w.content })),
+    ];
+    sendSignRequest(ctx, { items }, `/drafts/sync/apply?chain=${chainId}`, 'nip44_decrypt_batch');
 }
 
 /** nip07 continuation: decrypted contents in -> merge into local, re-render the list. */
@@ -277,8 +286,13 @@ export async function postDraftsSyncApply(ctx: Ctx): Promise<void> {
     const key = ctx.query.get('chain') ?? '';
     const chain = draftChains.get(key);
     draftChains.delete(key);
-    const results = await readBatchResults(ctx.req);
+    let results = await readBatchResults(ctx.req);
     if (chain && results) {
+        if (chain.relayItem) {
+            const r = results[0];
+            if (r?.ok && typeof r.value === 'string') applyDecryptedDraftRelays(s, r.value);
+            results = results.slice(1); // the rest line up with chain.ids
+        }
         const synced: Draft[] = [];
         results.forEach((r, i) => {
             const id = chain.ids[i];

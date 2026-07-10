@@ -29,8 +29,16 @@ export function parseArticle(ev: NostrEvent): Article {
     };
 }
 
-/** Estimated reading time in whole minutes (≥1), at ~220 wpm. */
+/** Estimated reading time in whole minutes (≥1), at ~220 wpm. Counted with a char walk: the
+ * split() this replaced materialized a throwaway array of every word in the full body, per card
+ * render (a 100KB article = a ~15k-element array per feed card). */
 export function readingMinutes(markdown: string): number {
-    const words = markdown.trim().split(/\s+/).filter(Boolean).length;
+    let words = 0;
+    let inWord = false;
+    for (let i = 0; i < markdown.length; i++) {
+        const ws = markdown.charCodeAt(i) <= 32; // space/tab/newline - close enough for an estimate
+        if (!ws && !inWord) words++;
+        inWord = !ws;
+    }
     return Math.max(1, Math.round(words / 220));
 }

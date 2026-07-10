@@ -7,7 +7,7 @@ import { coalesceBatch } from './coalesce.ts';
 import { anyAccepted, type Pool, type ReadOpts } from './pool.ts';
 import type { Signer } from './signer.ts';
 import type { RelayList, RelayEntry, UnsignedEvent, NostrEvent } from '../nostr/types.ts';
-import { INDEXER_RELAYS, parseRelayList } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, chunk, parseRelayList } from '../nostr/nip65.ts';
 import { localFetchMissing } from '../local-relay.ts';
 
 // Relay lists (NIP-65) are public and change rarely, yet they route nearly every read (feed outbox,
@@ -20,6 +20,11 @@ interface RelayCacheEntry { list: RelayList; at: number; lastUsed: number }
 const FILE = process.env.SATORI_RELAY_CACHE || join(process.cwd(), '.data', 'relays.json');
 const CAP = 10_000;
 const STALE_MS = 12 * 60 * 60 * 1000; // 12h → serve cached, refresh in the background
+// Tombstones (queried, no kind:10002 found) re-check sooner: "no list" might really be a transient
+// indexer miss, and pinning a follow to the fallback route for 12h over one bad query would misroute
+// them. 1h bounds that damage while still killing the per-render blocking re-query.
+const EMPTY_STALE_MS = 60 * 60 * 1000;
+const isEmptyList = (l: RelayList): boolean => !l.read.length && !l.write.length;
 const relayListCache = new Map<string, RelayCacheEntry>();
 
 (function load(): void {
@@ -47,11 +52,26 @@ const inflight = new Map<string, Promise<void>>();
  * fallback), and your own list passes { complete } so it reads the full set. */
 async function doFetch(pool: Pool, indexerRelays: string[], pubkeys: string[], read: ReadOpts = {}): Promise<void> {
     const newest = new Map<string, number>();
-    const events = await pool.query(indexerRelays, { kinds: [10002], authors: pubkeys }, read);
-    for (const ev of events) {
+    // Chunk like the feed fan-out does (feeds.ts): one 200+-author filter risks relay-side truncation,
+    // and every author silently dropped there would look listless.
+    const batches = await Promise.all(chunk(pubkeys, MAX_AUTHORS_PER_FILTER).map((c) =>
+        pool.query(indexerRelays, { kinds: [10002], authors: c }, read)));
+    for (const ev of batches.flat()) {
         if ((newest.get(ev.pubkey) ?? -1) >= ev.created_at) continue;
         newest.set(ev.pubkey, ev.created_at);
         relayListCache.set(ev.pubkey, { list: parseRelayList(ev), at: Date.now(), lastUsed: Date.now() });
+    }
+    // Tombstone the queried-but-listless (empty list + fresh `at`): without one, an author with no
+    // published kind:10002 is a permanent cache miss - every render touching them re-blocks on a fresh
+    // indexer query, and a stale entry that keeps returning nothing re-fires the background refresh on
+    // every call, forever. Also bump `at` on existing entries that returned nothing newer, for the
+    // same reason.
+    const now = Date.now();
+    for (const pk of pubkeys) {
+        if (newest.has(pk)) continue;
+        const e = relayListCache.get(pk);
+        if (e) e.at = now;
+        else relayListCache.set(pk, { list: { read: [], write: [] }, at: now, lastUsed: now });
     }
     lruEvictByLastUsed(relayListCache, CAP);
     flusher.schedule();
@@ -73,17 +93,28 @@ async function ensureFetched(pool: Pool, indexerRelays: string[], pubkeys: strin
 export async function fetchRelayLists(pool: Pool, indexerRelays: string[], authors: string[], read: ReadOpts = { direct: localFetchMissing() }): Promise<Map<string, RelayList>> {
     const map = new Map<string, RelayList>();
     const need: string[] = [];   // not cached → must fetch before returning
-    const stale: string[] = [];  // cached but past STALE_MS → serve now, refresh in the background
+    const stale: string[] = [];  // cached but past its staleness window → serve now, refresh in the background
     const now = Date.now();
     for (const pk of authors) {
         const e = relayListCache.get(pk);
-        if (e) { e.lastUsed = now; map.set(pk, e.list); if (now - e.at > STALE_MS) stale.push(pk); }
-        else need.push(pk);
+        // A tombstone (queried before, no list found) is served like a miss (absent from the map, so
+        // callers' fallback routing is unchanged) but doesn't block - it re-checks on the EMPTY_STALE_MS
+        // cadence in the background. EXCEPT under `complete` (your OWN lists): there a stale/tombstoned
+        // answer risks routing writes off a partial copy, so re-fetch before returning.
+        const empty = e ? isEmptyList(e.list) : false;
+        if (e && !(empty && read.complete)) {
+            e.lastUsed = now;
+            if (!empty) map.set(pk, e.list);
+            if (now - e.at > (empty ? EMPTY_STALE_MS : STALE_MS)) stale.push(pk);
+        } else need.push(pk);
     }
     if (stale.length) void ensureFetched(pool, indexerRelays, stale, read); // serve-then-refresh (non-blocking)
     if (need.length) {
         await ensureFetched(pool, indexerRelays, need, read);
-        for (const pk of need) { const e = relayListCache.get(pk); if (e) map.set(pk, e.list); }
+        for (const pk of need) {
+            const e = relayListCache.get(pk);
+            if (e && !isEmptyList(e.list)) map.set(pk, e.list);
+        }
     }
     return map;
 }

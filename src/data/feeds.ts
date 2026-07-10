@@ -4,10 +4,11 @@
 
 import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
-import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, routeAuthorsToRelays } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, chunk, routeAuthorsToRelays } from '../nostr/nip65.ts';
 import { relayQuality } from './relay-latency.ts';
 import { HEX64, isAddressable, tag1 } from '../nostr/tags.ts';
 import { notFakePodcast } from '../nostr/nipf4.ts';
+import { isExpired } from '../nostr/nip40.ts';
 import { coalesceOne } from './coalesce.ts';
 import { fetchRelayLists } from './relays.ts';
 import { seenRelaysFor } from './seen-relays.ts';
@@ -19,12 +20,6 @@ export interface FeedRoute {
 }
 
 const MAX_FOLLOWERS = 200; // cap follower discovery for performance
-
-function chunk<T>(arr: T[], size: number): T[][] {
-    const out: T[][] = [];
-    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-    return out;
-}
 
 /** Newest-first, deduped, capped. Addressable kinds (30000-39999) collapse by their (kind,pubkey,d)
  * COORDINATE keeping the newest edit - the outbox fan-out merges across relays, so a stale version and the
@@ -137,7 +132,9 @@ const inflightEvents = new Map<string, Promise<NostrEvent | null>>();
  * concurrent fetches for the same id are coalesced. */
 export async function fetchEvent(pool: Pool, id: string, relayHints: string[] = [], author?: string, opts: { maxWait?: number } = {}): Promise<NostrEvent | null> {
     const hit = eventCache.get(id);
-    if (hit && Date.now() - hit.at < (hit.ev ? EVENT_TTL : EVENT_MISS_TTL)) return hit.ev;
+    // NIP-40 re-check on hits: the pool never returns expired events, but a cached one can
+    // cross its expiration inside the 30-min TTL.
+    if (hit && Date.now() - hit.at < (hit.ev ? EVENT_TTL : EVENT_MISS_TTL)) return hit.ev && isExpired(hit.ev) ? null : hit.ev;
     return coalesceOne(inflightEvents, id, () => resolveEvent(pool, id, relayHints, author, opts.maxWait));
 }
 
@@ -146,7 +143,7 @@ export async function fetchEvent(pool: Pool, id: string, relayHints: string[] = 
  * expired entry. */
 export function cachedEvent(id: string): NostrEvent | null {
     const hit = eventCache.get(id);
-    if (!hit) return null;
+    if (!hit || (hit.ev && isExpired(hit.ev))) return null; // NIP-40 re-check (see fetchEvent)
     return Date.now() - hit.at < (hit.ev ? EVENT_TTL : EVENT_MISS_TTL) ? hit.ev : null;
 }
 
@@ -165,6 +162,29 @@ async function resolveEvent(pool: Pool, id: string, relayHints: string[], author
     }
     const relays = [...new Set([...relayHints, ...INDEXER_RELAYS])].filter(Boolean);
     return rememberEvent(id, await pool.get(relays, { ids: [id] }, maxWait, { resolve: true }).catch(() => null));
+}
+
+// Addressable (kind:pubkey:d) fetches, the naddr twin of the id cache above. Addressables are
+// EDITABLE - the newest version wins - so a hit lives minutes, not the immutable 30: long enough to
+// stop every feed revisit re-paying a relay round-trip per quoted article/wiki (the same storm the
+// id cache fixed for notes), short enough that an edit surfaces promptly. Reader pages (/a/) stay
+// uncached - a full read wants the freshest version.
+const ADDR_TTL = 5 * 60_000;
+const ADDR_CAP = 500;
+const addrCache = new Map<string, { ev: NostrEvent | null; at: number }>();
+const inflightAddr = new Map<string, Promise<NostrEvent | null>>();
+
+/** Fetch an addressable event by coordinate (for naddr embeds), cached + coalesced. */
+export async function fetchAddressable(pool: Pool, kind: number, pubkey: string, identifier: string, relays: string[], opts: { maxWait?: number } = {}): Promise<NostrEvent | null> {
+    const key = `${kind}:${pubkey}:${identifier}`;
+    const hit = addrCache.get(key);
+    if (hit && Date.now() - hit.at < (hit.ev ? ADDR_TTL : EVENT_MISS_TTL)) return hit.ev && isExpired(hit.ev) ? null : hit.ev; // NIP-40 re-check
+    return coalesceOne(inflightAddr, key, async () => {
+        const ev = await pool.get(relays, { kinds: [kind], authors: [pubkey], '#d': [identifier] }, opts.maxWait, { resolve: true }).catch(() => null);
+        if (addrCache.size >= ADDR_CAP) { const oldest = addrCache.keys().next().value; if (oldest) addrCache.delete(oldest); }
+        addrCache.set(key, { ev, at: Date.now() });
+        return ev;
+    });
 }
 
 /** Fetch many events by id (e.g. bookmarked notes), deduped. */

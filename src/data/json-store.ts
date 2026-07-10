@@ -24,9 +24,13 @@ export function jsonStore<T extends Record<string, unknown>>(file: string, tag: 
             } catch { parsed = null; return {} as T; }
         },
         writeAll(all: T): void {
-            try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(all), { mode: 0o600 }); }
-            catch (e) { console.warn(`[${tag}] persist failed:`, (e as Error)?.message ?? e); }
-            parsed = null;
+            try {
+                mkdirSync(dirname(file), { recursive: true });
+                writeFileSync(file, JSON.stringify(all), { mode: 0o600 });
+                // Keep the just-written data as the cache - dropping it would force the next readAll
+                // to re-read and re-parse the file this process just wrote.
+                parsed = { mtime: statSync(file).mtimeMs, data: all };
+            } catch (e) { console.warn(`[${tag}] persist failed:`, (e as Error)?.message ?? e); parsed = null; }
         },
     };
 }
@@ -47,16 +51,29 @@ function hookExit(): void {
 }
 
 /** A debounced flusher: `schedule()` (re)arms a write `debounceMs` out; the write itself is `flush`.
- * Registers with the shared exit handler so a pending write is never lost on shutdown. */
-export function debouncedFlush(flush: () => void, debounceMs: number): { schedule(): void } {
+ * Registers with the shared exit handler so a pending write is never lost on shutdown. The trailing
+ * debounce alone would let CONTINUOUS activity (a live subscription rescheduling on every event)
+ * postpone the write for the whole session - leaving hours of accumulation one crash away from lost -
+ * so a pending write older than `maxDelayMs` flushes immediately instead of re-arming. */
+export function debouncedFlush(flush: () => void, debounceMs: number, maxDelayMs = 60_000): { schedule(): void } {
     hookExit();
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const doFlush: Pending = () => { if (timer) { clearTimeout(timer); timer = null; pendingFlushers.delete(doFlush); flush(); } };
+    let pendingSince = 0;
+    const fire = (): void => {
+        if (timer) clearTimeout(timer);
+        timer = null; pendingSince = 0;
+        pendingFlushers.delete(doFlush);
+        flush();
+    };
+    const doFlush: Pending = () => { if (timer) fire(); };
     return {
         schedule(): void {
+            const now = Date.now();
+            if (!pendingSince) pendingSince = now;
+            if (now - pendingSince >= maxDelayMs) { fire(); return; }
             if (timer) clearTimeout(timer);
             pendingFlushers.add(doFlush);
-            timer = setTimeout(() => { timer = null; pendingFlushers.delete(doFlush); flush(); }, debounceMs);
+            timer = setTimeout(fire, debounceMs);
         },
     };
 }

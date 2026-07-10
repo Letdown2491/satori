@@ -36,6 +36,9 @@ export interface Session {
     followsRoute: FeedRoute | null;
     followersRoute: FeedRoute | null;
     draftRelays: string[] | null; // resolved kind:10013 draft-relay list, cached per session (near-static)
+    // nip07 only: an ENCRYPTED 10013 content awaiting the browser decrypt chain (the server can't
+    // nip44-decrypt for a nip07 login); the /drafts sync chain decrypts it into draftRelays.
+    draftRelaysCipher: string | null;
     profiles: Map<string, Profile>;
     // NIP-02/51 list source events (kind:3 follows, 10000 mutes, 10003 bookmarks,
     // 10001 pins), loaded lazily. `has(kind)` ⇒ loaded; value may be null (none).
@@ -95,6 +98,7 @@ function makeSession(mode: SignMode, pool: Pool, signer: BunkerSigner | null, id
         followsRoute: null,
         followersRoute: null,
         draftRelays: null,
+        draftRelaysCipher: null,
         profiles: new Map(),
         lists: new Map(),
         privateTags: new Map(),

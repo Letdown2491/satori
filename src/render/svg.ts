@@ -28,8 +28,15 @@ function buildEnsoPath(): string {
 const ENSO_D = buildEnsoPath();
 
 /** The ensō (Zen circle). `still` renders it static (wordmark / empty states). */
+const ensoMemo = new Map<string, SafeHtml>();
 export function enso(size = 44, still = false): SafeHtml {
-    return html`<svg class="${still ? 'enso still' : 'enso'}" viewBox="0 0 100 100" width="${size}" height="${size}" aria-hidden="true"><path d="${ENSO_D}" filter="url(#enso-brush)" mask="url(#enso-dry)"></path></svg>`;
+    // Fully static per (size, still) - and every coverless article/wiki/NIP card renders one.
+    const key = `${size}${still ? 's' : ''}`;
+    const hit = ensoMemo.get(key);
+    if (hit) return hit;
+    const svg = html`<svg class="${still ? 'enso still' : 'enso'}" viewBox="0 0 100 100" width="${size}" height="${size}" aria-hidden="true"><path d="${ENSO_D}" filter="url(#enso-brush)" mask="url(#enso-dry)"></path></svg>`;
+    ensoMemo.set(key, svg);
+    return svg;
 }
 
 /** A quiet empty-state list item: a still ensō + a line. Mirrors Satori's
@@ -114,10 +121,17 @@ const ICONS: Record<IconName, string[]> = {
     gear: ['<circle cx="12" cy="12" r="3"/>', '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'],
 };
 
-/** A line icon. `filled` fills the shape (active like/bookmark); `more` is solid. */
+/** A line icon. `filled` fills the shape (active like/bookmark); `more` is solid. Memoized: the
+ * output is fully static per (name, filled), and one feed page calls this hundreds of times. */
+const iconMemo = new Map<string, SafeHtml>();
 export function icon(name: IconName, filled = false): SafeHtml {
+    const key = filled ? `${name}+f` : name;
+    const hit = iconMemo.get(key);
+    if (hit) return hit;
     const dots = name === 'more';
     const fill = dots || filled ? 'currentColor' : 'none';
     const stroke = dots ? 'none' : 'currentColor';
-    return raw(`<svg class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="${fill}" stroke="${stroke}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICONS[name].join('')}</svg>`);
+    const svg = raw(`<svg class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="${fill}" stroke="${stroke}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICONS[name].join('')}</svg>`);
+    iconMemo.set(key, svg);
+    return svg;
 }

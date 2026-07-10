@@ -527,8 +527,7 @@ export function noteRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session, opts
  * (image or quiet ensō placeholder) atop a body of kicker · title · summary · meta.
  * `hideAuthor` drops the author from the meta (shown elsewhere), leaving the
  * reading time. The clickable card is an <a> here (Satori used a JS-onClick div). */
-function articleCard(ev: NostrEvent, profiles: ProfileMap | undefined, hideAuthor: boolean): SafeHtml {
-    const a = parseArticle(ev);
+function articleCard(ev: NostrEvent, profiles: ProfileMap | undefined, hideAuthor: boolean, a = parseArticle(ev)): SafeHtml {
     const naddr = naddrFor(ev);
     const href = naddr ? `/a/${naddr}` : '#';
     const mins = `${readingMinutes(a.content)} min read`;
@@ -600,7 +599,8 @@ function addressableEmbed(ev: NostrEvent, naddr: string, label: string, title: s
 
 /** An article as a feed row (Satori's ArticleRow): author head + card + actions. */
 export function articleRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
-    return addressableRow(ev, articleCard(ev, profiles, true), parseArticle(ev).publishedAt, 'Open article', profiles, s);
+    const a = parseArticle(ev); // parsed once, shared with the card
+    return addressableRow(ev, articleCard(ev, profiles, true, a), a.publishedAt, 'Open article', profiles, s);
 }
 
 /** The focused note in a thread - an <li class="note focused"> in the feed list
@@ -724,8 +724,7 @@ function definedKindChips(kinds: { num: string; name: string }[]): SafeHtml | nu
 
 /** A custom NIP preview card (the article-card layout, coverless): kicker · title · summary · defined
  * kinds · reading time. The whole card links to its reader at /a/<naddr>. */
-function customNipCard(ev: NostrEvent): SafeHtml {
-    const c = parseCustomNip(ev);
+function customNipCard(ev: NostrEvent, c = parseCustomNip(ev)): SafeHtml {
     const naddr = naddrFor(ev);
     const href = naddr ? `/a/${naddr}` : '#';
     return html`
@@ -743,7 +742,8 @@ function customNipCard(ev: NostrEvent): SafeHtml {
 
 /** A custom NIP as a feed row: author head + card + the addressable action row (like articleRow). */
 export function customNipRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
-    return addressableRow(ev, customNipCard(ev), parseCustomNip(ev).publishedAt, 'Open custom NIP', profiles, s);
+    const c = parseCustomNip(ev); // parsed once, shared with the card
+    return addressableRow(ev, customNipCard(ev, c), c.publishedAt, 'Open custom NIP', profiles, s);
 }
 
 /** The custom NIP reader (like articleReader, coverless): title, byline, defined-kind chips, the rendered
@@ -771,8 +771,7 @@ export function customNipEmbedPreview(ev: NostrEvent, naddr: string, profiles?: 
 // Rendered like an article (reader + rows + embed) but through renderAsciiDoc. Reuses the article DOM + CSS.
 
 /** A wiki preview card (the article-card layout, coverless): kicker · title · summary · reading time. */
-function wikiCard(ev: NostrEvent): SafeHtml {
-    const w = parseWiki(ev);
+function wikiCard(ev: NostrEvent, w = parseWiki(ev)): SafeHtml {
     const naddr = naddrFor(ev);
     const href = naddr ? `/a/${naddr}` : '#';
     return html`
@@ -789,7 +788,8 @@ function wikiCard(ev: NostrEvent): SafeHtml {
 
 /** A wiki article as a feed row: author head + card + the addressable action row (like articleRow). */
 export function wikiRow(ev: NostrEvent, profiles?: ProfileMap, s?: Session): SafeHtml {
-    return addressableRow(ev, wikiCard(ev), parseWiki(ev).publishedAt, 'Open wiki article', profiles, s);
+    const w = parseWiki(ev); // parsed once, shared with the card
+    return addressableRow(ev, wikiCard(ev, w), w.publishedAt, 'Open wiki article', profiles, s);
 }
 
 /** The wiki reader (like articleReader, coverless): title, byline, the rendered AsciiDoc body, action bar. */

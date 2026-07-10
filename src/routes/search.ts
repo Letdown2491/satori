@@ -61,6 +61,9 @@ export async function getSearch(ctx: Ctx): Promise<void> {
     // search uses only the FREE text (operators are note-scoped); a pure-operator query skips it.
     const sq = parseSearchQuery(q);
     const a = readAppearance(ctx);
+    // Independent of the search results: warm the lists in parallel with the fan-out instead of
+    // serializing a cold session's list round-trip behind it (the await below joins these).
+    void ensureLists(s, ['bookmark', 'pin', 'mute']).catch(() => {});
     const [authors, mentions] = await Promise.all([
         Promise.all(sq.by.map((r) => resolvePubkey(s, a.searchProfileRelays, r))).then((xs) => xs.filter((x): x is string => !!x)),
         Promise.all(sq.p.map((r) => resolvePubkey(s, a.searchProfileRelays, r))).then((xs) => xs.filter((x): x is string => !!x)),

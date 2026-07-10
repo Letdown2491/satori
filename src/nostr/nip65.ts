@@ -35,6 +35,14 @@ const HARD_MAX_RELAYS = MAX_RELAYS * 2;
 const RELAYS_PER_AUTHOR_TARGET = 2;
 export const MAX_AUTHORS_PER_FILTER = 200;
 
+/** Split an array into MAX_AUTHORS_PER_FILTER-sized (or any-sized) slices, for author filters
+ * that would otherwise exceed what relays silently truncate. */
+export function chunk<T>(arr: T[], size: number): T[][] {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+}
+
 /** Normalize a relay URL for dedup/grouping: lowercase, no trailing slash. `assumeWss` prepends wss://
  * to a bare host (for user-entered relay sets), so settings + routing agree on one canonical form. */
 export function normalizeRelayUrl(url: string, opts: { assumeWss?: boolean } = {}): string | null {

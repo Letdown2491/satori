@@ -4,6 +4,72 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-07-09
+
+Performance release: a full review of the hot paths, then fixes across the board. No new features,
+everything just gets faster and leaner.
+
+### Changed
+
+- Pages and partial updates are now gzip-compressed on the wire. Feed and thread HTML shrinks to a
+  fraction of its old size, which matters most over Tor and .onion where every navigation was paying
+  full price.
+- Looking up a single note (a quoted note, a thread parent, an /e/ link) returns as soon as any relay
+  produces it, instead of waiting for the slowest relay in the set to answer. Misses still wait out
+  the full window before giving up, so nothing is declared absent early.
+- People with no published relay list no longer slow you down. Satori now remembers "asked, found
+  none" for an hour instead of re-asking the indexers on every profile view, reply, and embed that
+  touches them.
+- Quoted articles and wiki pages in the feed are cached like quoted notes already were, so revisiting
+  a feed stops re-fetching the same article from relays every time.
+- Styles and scripts revalidate with ETags: an unchanged file is a tiny 304 now, not a full
+  re-download on every hard load.
+- Best-effort fetches keep their short time budget under Tor (doubled, not replaced by the 12-second
+  default), so embed previews fail fast to their fallback link instead of stalling the page.
+- Notifications and search open faster on a fresh session: the list lookups (mutes, bookmarks, pins)
+  run alongside the main query instead of one after another.
+- Zap notifications got cheaper to render: each receipt's signature is verified once and remembered,
+  instead of re-verified several times per page and again on every bell poll.
+- Profiles with content filters fill in one bigger fetch instead of several back-to-back ones, the
+  same way the feed already does.
+- Relay-list discovery for large follow sets is split into chunks, so relays that cap filter sizes
+  can't silently drop authors from the lookup.
+- Assorted per-page rendering work got cheaper: repeated escaping, rebuilt icons, double-parsed
+  article cards, and word-counting whole article bodies per card.
+
+### Fixed
+
+- The Tor sidecar could no longer join the Tor network. The prebuilt image it used
+  (dperson/torproxy) had not been updated since 2020, and a Tor that old no longer recognizes
+  enough of the network's directory authorities to validate the consensus - it hung at 30%
+  bootstrapped, logging "Consensus not signed by sufficient number of requested authorities",
+  and .onion relays, Privacy Mode, and the hidden service went dark with it. The sidecar is now
+  a small image of our own (tor/) on Alpine's current Tor; rebuild it with
+  `docker compose build --no-cache tor` to pick up future Tor releases. Existing .onion
+  addresses, keys, and client authorizations carry over unchanged.
+- The avatar cache no longer grows past its size cap. Files written just before a restart could
+  become invisible to the cache's bookkeeping and pile up forever; startup now cleans up those
+  leftovers and the books stay balanced.
+- Replying to someone who shares a relay with you no longer logs that relay as rejecting the reply.
+  The shared relay was sent the event twice (once as yours, once as theirs) and the duplicate was
+  counted as a failure.
+- A note whose link is followed by a long run of closing brackets no longer freezes rendering.
+  Malformed or malicious text shaped like that could stall the server for seconds.
+- Pending cache writes hit disk within a minute even during constant activity, so a crash loses at
+  most the last minute of learned data (seen relays, profiles) instead of a whole session's worth.
+- Expired events are now honored on read (NIP-40). An event carrying an expiration timestamp in the
+  past is dropped at fetch time everywhere (feeds, threads, embeds, live subscriptions), and cached
+  events are re-checked so one can't linger past its expiry mid-session. Satori already wrote the
+  tag where the spec calls for it (synced drafts); now it respects everyone else's too.
+- Draft-relay lists (NIP-37, kind 10013) are read the way the spec writes them: encrypted. The
+  relay set you designate for private drafts lives NIP-44-encrypted in the event's content, and
+  Satori was only reading plaintext relay tags - so a list published by another client parsed as
+  empty and synced drafts fell back to your public write relays and the indexers, leaking their
+  existence to relays you'd routed around. Bunker sessions decrypt it directly; a NIP-07 session
+  decrypts it in the same browser batch that already unlocks your drafts. Plaintext tags still
+  work as a fallback. Draft reads also now use the own-data policy, so a private relay in Only
+  mode can't hide wraps that live on your designated draft relays.
+
 ## [0.6.2] - 2026-07-07
 
 ### Fixed

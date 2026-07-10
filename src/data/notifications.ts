@@ -10,6 +10,7 @@ import { INDEXER_RELAYS, writeRelaysFor } from '../nostr/nip65.ts';
 import { KIND_POLL, KIND_POLL_RESPONSE } from '../nostr/nip88.ts';
 import { KIND_COMMENT } from '../nostr/nip22.ts';
 import { verifyEvent } from 'nostr-tools/pure';
+import { trimOldest } from './json-store.ts';
 
 export type NotifType = 'reply' | 'mention' | 'pollvote' | 'zap' | 'reaction' | 'privateReply';
 export interface Notif { type: NotifType; event: NostrEvent }
@@ -94,8 +95,23 @@ function msatsFromBolt11(invoice: string): number {
  * request's signature and confirm its p/e/a match the receipt (else the named zapper is spoofable), and take
  * the amount from the bolt11 invoice (what was actually paid), authoritative over the request's self-declared
  * `amount`. An unverifiable request yields an ANONYMOUS zap - real sats from the invoice, no name, the
- * "someone zapped you" path - never a spoofed identity. */
+ * "someone zapped you" path - never a spoofed identity.
+ *
+ * Memoized by event id (receipts are immutable): the verify is a SYNCHRONOUS schnorr check (~ms of
+ * blocked event loop), and one render calls this per zap from the mute filter, the author resolve,
+ * AND the row renderer - plus the bell poller re-parses the same receipts every tick. */
+const zapInfoMemo = new Map<string, ZapInfo>();
+const ZAP_MEMO_CAP = 1000;
 export function parseZapReceipt(ev: NostrEvent): ZapInfo {
+    const hit = zapInfoMemo.get(ev.id);
+    if (hit) return hit;
+    const info = parseZapReceiptUncached(ev);
+    zapInfoMemo.set(ev.id, info);
+    trimOldest(zapInfoMemo, ZAP_MEMO_CAP);
+    return info;
+}
+
+function parseZapReceiptUncached(ev: NostrEvent): ZapInfo {
     const bolt11 = ev.tags.find((t) => t[0] === 'bolt11')?.[1];
     const paid = bolt11 ? msatsFromBolt11(bolt11) : 0;
     const desc = ev.tags.find((t) => t[0] === 'description')?.[1];

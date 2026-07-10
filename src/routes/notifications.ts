@@ -17,8 +17,19 @@ import { allPrivateRepliesNip07 } from '../data/dms-nip07.ts';
 import { signsOnClient, type Session } from '../session.ts';
 import { readReadState, advanceReadState } from '../read-state.ts';
 import { sendPage, sendFragment, redirect, type Ctx } from '../http.ts';
+import { coalesceOne } from '../data/coalesce.ts';
 
 const PAGE = 30;
+
+// Single-flight the kind:1068 poll-id lookup per session: the page open and the bell poller land
+// near-simultaneously on a cold session, and caching only the RESOLVED array (s.myPollIds) let both
+// fire the same relay query.
+const pollIdsInflight = new Map<string, Promise<string[]>>();
+function myPollIds(s: Session & { me: string }): Promise<string[]> {
+    if (s.myPollIds) return Promise.resolve(s.myPollIds);
+    return coalesceOne(pollIdsInflight, s.id, () =>
+        fetchMyPollIds(s.pool, s.me, s.myRelays).then((ids) => (s.myPollIds = ids)).catch(() => [] as string[]));
+}
 
 /** Who acted: the sender for a zap, the event author otherwise (null = unknown). */
 function actorOf(n: Notif): string | null {
@@ -58,7 +69,11 @@ export async function getNotifications(ctx: Ctx): Promise<void> {
     if (!s) return;
     // Don't block on the poll-id lookup: hand fetchNotifications a promise so its tagged-stream query
     // starts immediately and the poll-id round-trip overlaps it (cached on the session once resolved).
-    const pollIdsP = s.myPollIds ?? fetchMyPollIds(s.pool, s.me, s.myRelays).then((ids) => (s.myPollIds = ids)).catch(() => [] as string[]);
+    const pollIdsP = myPollIds(s);
+    // The three list reads are independent of the fetched notifications: warm them in parallel with
+    // the tagged-stream query instead of serializing behind it (prepareNotifs' awaits join these
+    // in-flight fetches via ensureList's coalescing). Cold sessions drop from 3 round-trips to ~1.
+    void ensureLists(s, ['mute', 'bookmark', 'pin']).catch(() => {});
 
     const untilParam = ctx.query.get('until');
     const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;
@@ -116,7 +131,7 @@ export async function getNotifUnread(ctx: Ctx): Promise<void> {
     const s = requireLogin(ctx);
     if (!s) return;
     if (!ctx.isPartial) { redirect(ctx, '/notifications'); return; }
-    const pollIdsP = s.myPollIds ?? fetchMyPollIds(s.pool, s.me, s.myRelays).then((ids) => (s.myPollIds = ids)).catch(() => [] as string[]);
+    const pollIdsP = myPollIds(s);
     const [items] = await Promise.all([
         fetchNotifications(s.pool, s.me, s.myRelays, pollIdsP, { since: readReadState(ctx, s.me).notif + 1, limit: 10 }, !!s.reactionNotifs),
         ensureLists(s, ['mute']),

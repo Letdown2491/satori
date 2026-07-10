@@ -1,0 +1,10 @@
+# Prod: SOCKS (as in torrc) PLUS the v3 .onion hidden service bridging onion:80 to the
+# daemon. HiddenServiceDir matches the layout of the dperson/torproxy image this replaced,
+# so an existing tor-data volume keeps its .onion address, keys, and authorized_clients
+# (client auth) across the swap.
+User tor
+DataDirectory /var/lib/tor
+SocksPort 0.0.0.0:9050
+Log notice stdout
+HiddenServiceDir /var/lib/tor/hidden_service
+HiddenServicePort 80 satori:8787

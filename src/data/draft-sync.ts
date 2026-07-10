@@ -98,12 +98,35 @@ function newestWraps(wraps: NostrEvent[]): NostrEvent[] {
 
 /** Your draft relays (kind:10013), or write relays + indexers if none published. Cached on the
  * session: the 10013 list is near-static, so repeat draft loads/saves don't re-`get` it - a /drafts
- * load drops from 2 round-trips (relay list + wraps) to 1 after the first resolve this session. */
+ * load drops from 2 round-trips (relay list + wraps) to 1 after the first resolve this session.
+ *
+ * The 10013 read is an OWN replaceable list, so it queries the complete set (read + WRITE relays -
+ * the spec publishes 10013 to write relays - + indexers, with the private relay unioned in even in
+ * Only mode) and, per spec, the relay list lives NIP-44-ENCRYPTED in `.content`. Bunker decrypts
+ * here; a nip07 login can't decrypt server-side, so the ciphertext is stashed on the session for
+ * the /drafts decrypt chain (plaintext `relay` tags serve as the lenient fallback until then). */
 async function draftRelays(s: WithMe): Promise<string[]> {
     if (s.draftRelays) return s.draftRelays;
-    const ev = await s.pool.get([...(s.myRelays?.read ?? []), ...INDEXER_RELAYS], { kinds: [KIND_DRAFT_RELAYS], authors: [s.me] }).catch(() => null);
-    const list = ev ? parseDraftRelays(ev) : [];
+    const lookup = [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? []), ...INDEXER_RELAYS])];
+    const ev = await s.pool.get(lookup, { kinds: [KIND_DRAFT_RELAYS], authors: [s.me] }, undefined, { complete: true }).catch(() => null);
+    let list: string[] = [];
+    if (ev) {
+        let decrypted: string | null = null;
+        if (ev.content) {
+            if (s.signer?.nip44Decrypt) decrypted = await s.signer.nip44Decrypt(s.me, ev.content).catch(() => null);
+            else s.draftRelaysCipher = ev.content; // nip07: decrypted by the /drafts chain
+        }
+        list = parseDraftRelays(ev, decrypted);
+    }
     return (s.draftRelays = list.length ? list : [...new Set([...(s.myRelays?.write ?? []), ...INDEXER_RELAYS])]);
+}
+
+/** nip07 chain apply-step: adopt the browser-decrypted 10013 content as the session's draft-relay
+ * list (replacing whatever fallback the first resolve cached). No-op on junk. */
+export function applyDecryptedDraftRelays(s: WithMe, decrypted: string): void {
+    s.draftRelaysCipher = null;
+    const urls = parseDraftRelays({ tags: [], content: '' } as unknown as NostrEvent, decrypted);
+    if (urls.length) s.draftRelays = urls;
 }
 
 /** Publish a draft as an encrypted NIP-37 wrap to your draft relays. Returns true on any accept. */
@@ -123,7 +146,9 @@ export async function unsyncDraft(s: Signed, id: string, kind: number): Promise<
 
 /** Fetch + decrypt your synced drafts (newest wrap per `d`; tombstones skipped). */
 export async function fetchSyncedDrafts(s: Signed): Promise<Draft[]> {
-    const wraps = await s.pool.query(await draftRelays(s), { kinds: [KIND_DRAFT], authors: [s.me] }).catch(() => [] as NostrEvent[]);
+    // { complete }: wraps are OWN data - union the private relay in (never confine), so Only mode
+    // can't hide wraps that live on the real draft relays.
+    const wraps = await s.pool.query(await draftRelays(s), { kinds: [KIND_DRAFT], authors: [s.me] }, { complete: true }).catch(() => [] as NostrEvent[]);
     const out: Draft[] = [];
     for (const w of newestWraps(wraps)) {
         const id = draftId(w);
@@ -148,7 +173,7 @@ export async function publishDraftWrap(s: WithMe, signed: NostrEvent): Promise<b
 /** Fetch your draft wraps (newest per d, tombstones dropped) WITHOUT decrypting - for the
  * nip07 decrypt-on-load chain (the route batch-decrypts the contents via the extension). */
 export async function fetchDraftWraps(s: WithMe): Promise<NostrEvent[]> {
-    const wraps = await s.pool.query(await draftRelays(s), { kinds: [KIND_DRAFT], authors: [s.me] }).catch(() => [] as NostrEvent[]);
+    const wraps = await s.pool.query(await draftRelays(s), { kinds: [KIND_DRAFT], authors: [s.me] }, { complete: true }).catch(() => [] as NostrEvent[]); // own data (see fetchSyncedDrafts)
     return newestWraps(wraps);
 }
 
