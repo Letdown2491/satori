@@ -169,7 +169,9 @@ export function routeAuthorsToRelays(
     // Don't silently drop the tail: any author with ZERO chosen relays (theirs didn't make the cut) is
     // recovered. Their notes live on THEIR write relays, so route them to their best one (by score) rather
     // than dumping them on the indexers, which may not mirror the note - better their real relay than an
-    // approximation. Only an author with no relay list at all has nowhere else to look → the indexers.
+    // approximation. A relayScore of ZERO means "never pick" (read-dead: refuses REQs) - recovering an
+    // orphan to one recovers nothing, so those are excluded here too; an author whose every write relay
+    // is dead falls to the indexers like an author with no list at all.
     const addAuthor = (relay: string, author: string): void => {
         const set = chosen.get(relay) ?? new Set<string>();
         set.add(author);
@@ -177,7 +179,7 @@ export function routeAuthorsToRelays(
     };
     for (const author of authors) {
         if (everCovered.has(author)) continue;
-        const write = (relayLists.get(author)?.write ?? []).slice(0, MAX_RELAYS_PER_AUTHOR);
+        const write = (relayLists.get(author)?.write ?? []).slice(0, MAX_RELAYS_PER_AUTHOR).filter((r) => relayScore(r) > 0);
         if (write.length) {
             let best = write[0]!;
             for (const r of write) if (relayScore(r) > relayScore(best)) best = r;

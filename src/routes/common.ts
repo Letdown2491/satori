@@ -2,6 +2,7 @@
 
 import { fetchProfiles } from '../data/profiles.ts';
 import { fetchRelayLists } from '../data/relays.ts';
+import { isReadDead } from '../data/relay-latency.ts';
 import { getCachedProfile, isProfileStale, putProfile, inflightProfile, registerInflight } from '../data/profile-cache.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
 import { isLoggedIn, type Session } from '../session.ts';
@@ -80,7 +81,9 @@ export async function ensureProfiles(s: Session, pubkeys: Iterable<string>): Pro
     // free for anyone already routed (your follows); strangers cost one batched kind:10002 lookup.
     const relaysFor = async (pks: string[]): Promise<string[]> => {
         const lists = pks.length ? await fetchRelayLists(s.pool, INDEXER_RELAYS, pks).catch(() => null) : null;
-        const writes = lists ? [...new Set(pks.flatMap((pk) => lists.get(pk)?.write ?? []))] : [];
+        // Read-dead relays (blasters in people's write lists) dropped: they refuse REQs, so they can
+        // only slow the profile fetch down.
+        const writes = lists ? [...new Set(pks.flatMap((pk) => lists.get(pk)?.write ?? []))].filter((u) => !isReadDead(u)) : [];
         return [...new Set([...writes, ...INDEXER_RELAYS, ...(s.myRelays?.read ?? [])])];
     };
     if (missing.length) {

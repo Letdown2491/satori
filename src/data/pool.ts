@@ -8,7 +8,7 @@ import { toPoolUrls, toPoolUrl, fromPoolUrl } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
 import { localReadMode, localWriteMode, localRelayUrl, isLocalRelayUrl, localFetchMissing } from '../local-relay.ts';
 import { recordSeen } from './seen-relays.ts';
-import { recordLatency, relayBudget } from './relay-latency.ts';
+import { recordLatency, recordReadDenial, relayBudget } from './relay-latency.ts';
 import { isExpired } from '../nostr/nip40.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 
@@ -36,6 +36,12 @@ const normUrl = (u: string) => u.replace(/\/+$/, '').toLowerCase();
 // redirect or mirror them, or bunker signing breaks. Kept local to avoid a pool<->signer import.
 const NIP46_KIND = 24133;
 const GIFTWRAP_KIND = 1059; // NIP-59 gift wrap (NIP-17 DMs + private replies): strict recipient-inbox targets
+
+// A relay CLOSED our REQ with an explicit refusal: write-only blasters ("does not accept REQs"),
+// auth walls we deliberately won't sign for (stranger relays), paywalls. Feeds the read-dead
+// memory so routing stops spending sockets on them. Matched against the relay's CLOSED reason
+// only - our own close() reasons never look like this.
+const READ_DENIAL_RE = /denied|not accept|restricted|blocked|forbidden|auth-required|payment/i;
 
 // Reliability caps so one slow/dead relay can't stall a render: a query returns
 // whatever arrived by the deadline instead of waiting for EVERY relay to EOSE.
@@ -222,7 +228,11 @@ export class Pool {
         const isTarget = this.authRelays.has(normUrl(relayUrl)) || isLocalRelayUrl(relayUrl);
         if (this.authSign && isTarget) return this.authSign(evt);
         if (isLocalRelayUrl(relayUrl)) this.localAuthObservedRequired = true;
-        return Promise.reject(new Error('no background auth signer'));
+        // nostr-tools logs this rejection verbatim - carry the relay + reason so the log line answers
+        // "which relay demanded AUTH and why did we decline" on its own.
+        return Promise.reject(new Error(this.authSign
+            ? `NIP-42 declined for ${relayUrl || 'unknown relay'}: not one of your relays (authing would reveal your identity to it)`
+            : `NIP-42 unavailable for ${relayUrl || 'unknown relay'}: no background signer (nip07 signs in the browser)`));
     };
 
     /** nip07: the local relay needs the manual Authenticate flow (it required auth on a read and we
@@ -349,6 +359,15 @@ export class Pool {
                         if (opts.fast) { clearTimeout(quietTimer); quietTimer = setTimeout(finish, quiet); }
                     },
                     oneose: () => finish(), // every relay EOSE'd → nothing more is coming
+                    onclose: (reasons: string[]) => {
+                        // Empirical read-health (profiled single-relay shards only, so attribution is
+                        // certain): an explicit refusal with nothing delivered marks the relay read-dead.
+                        // recordReadDenial itself exempts the local relay (pre-auth CLOSEDs are expected).
+                        if (opts.profile && relays.length === 1 && events.size === 0 && reasons?.some((r) => READ_DENIAL_RE.test(r ?? ''))) {
+                            recordReadDenial(relays[0]!);
+                            if (process.env.SATORI_REQ_LOG) console.log(`[relay-latency] read denial from ${relays[0]}: ${reasons.find((r) => READ_DENIAL_RE.test(r ?? ''))}`);
+                        }
+                    },
                     onauth: this.onauth, // NIP-42: bunker auths+retries here; nip07 flags the local relay for re-auth
                     maxWait,
                 } as never) as { close: (reason?: string) => void };

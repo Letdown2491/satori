@@ -252,11 +252,14 @@ async function respondRelays(ctx: Ctx, s: Session & { me: string }, draft: Relay
 }
 
 /** After a relay list changes: invalidate routed feeds (their outbox routing is
- * now stale) + the relay-list cache, and persist so a refresh uses the new set. */
+ * now stale) + the relay-list cache, refresh the NIP-42 auth scope (else a newly
+ * added auth-required relay isn't authed to until the next login/restart), and
+ * persist so a refresh uses the new set. */
 function applyNewRelays(s: Session & { me: string }, next: RelayList): void {
     s.myRelays = next;
     s.followsRoute = null;
     s.followersRoute = null;
+    s.pool.setAuthRelays([...next.write, ...next.read]);
     clearRelayListCache();
     persistSession(s);
 }
@@ -402,7 +405,7 @@ async function publishRestored(s: Session & { me: string }, signed: NostrEvent[]
  * individual editors do, so the running app reflects the restored lists at once. */
 function applyRestored(s: Session & { me: string }, signed: NostrEvent[]): void {
     for (const ev of signed) {
-        if (ev.kind === KIND_RELAY_LIST) { s.myRelays = parseRelayListEvent(ev); clearRelayListCache(); s.followsRoute = null; s.followersRoute = null; }
+        if (ev.kind === KIND_RELAY_LIST) { applyNewRelays(s, parseRelayListEvent(ev)); }
         else if (ev.kind === 3) { s.followsRoute = null; s.followersRoute = null; }
         else if (ev.kind === KIND_DM_RELAYS) { clearDmRelaysCache(s.me); }
         if (ev.kind === 10000 || ev.kind === 10003) { s.lists.set(ev.kind, ev); s.privateTags.delete(ev.kind); }

@@ -5,7 +5,7 @@
 import type { Pool } from './pool.ts';
 import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { INDEXER_RELAYS, MAX_AUTHORS_PER_FILTER, chunk, routeAuthorsToRelays } from '../nostr/nip65.ts';
-import { relayQuality } from './relay-latency.ts';
+import { relayQuality, isReadDead } from './relay-latency.ts';
 import { HEX64, isAddressable, tag1 } from '../nostr/tags.ts';
 import { notFakePodcast } from '../nostr/nipf4.ts';
 import { isExpired } from '../nostr/nip40.ts';
@@ -80,7 +80,9 @@ async function routeFor(pool: Pool, authors: string[]): Promise<FeedRoute> {
         return { authors, route: new Map([[local, new Set(authors)]]) };
     }
     const relayLists = await fetchRelayLists(pool, INDEXER_RELAYS, authors);
-    const route = routeAuthorsToRelays(relayLists, authors, { fallbackRelays: INDEXER_RELAYS, relayScore: relayQuality });
+    // Score 0 = never pick: a read-dead relay (refuses REQs - a write-only blaster in follows' lists,
+    // an auth/pay wall) can't be rescued by coverage weighting; its authors route to their OTHER relays.
+    const route = routeAuthorsToRelays(relayLists, authors, { fallbackRelays: INDEXER_RELAYS, relayScore: (r) => isReadDead(r) ? 0 : relayQuality(r) });
     // 'add': the local relay covers everyone alongside the outbox - queried ONCE for all authors (not
     // per shard), so an aggregator can serve the whole feed from one socket while the outbox fills gaps.
     if (local && localReadMode() === 'add') route.set(local, new Set(authors));
@@ -93,6 +95,10 @@ async function routeFor(pool: Pool, authors: string[]): Promise<FeedRoute> {
 export async function fetchRoutedPage(pool: Pool, route: Map<string, Set<string>>, limit: number, until?: number, kinds: number[] = [1, 1068], since?: number, budget?: 'page' | 'adaptive'): Promise<NostrEvent[]> {
     const queries: Promise<NostrEvent[]>[] = [];
     for (const [relay, authorSet] of route) {
+        // Routes are session-cached, so a relay learned read-dead AFTER the route was built keeps its
+        // shard until the next rebuild - skip it here so it stops costing a socket the moment it's
+        // known. Its results were empty anyway; the authors' second leg / dot poll covers them.
+        if (isReadDead(relay)) continue;
         for (const authorChunk of chunk([...authorSet], MAX_AUTHORS_PER_FILTER)) {
             const filter = { kinds, authors: authorChunk, limit: limit * 2, ...(until ? { until } : {}), ...(since ? { since } : {}) };
             queries.push(pool.query([relay], filter, { fast: true, profile: true, budget }).catch((err) => { console.warn(`[feeds] query failed for ${relay}:`, err?.message ?? err); return []; }));
@@ -154,7 +160,8 @@ async function resolveEvent(pool: Pool, id: string, relayHints: string[], author
     if (author) {
         const writes = (await fetchRelayLists(pool, INDEXER_RELAYS, [author]).catch(() => null))?.get(author)?.write ?? [];
         // ...plus relays we've empirically seen this author on (finds events on relays they don't advertise).
-        const primary = [...new Set([...relayHints, ...writes, ...seenRelaysFor(author)])].filter(Boolean);
+        // Read-dead relays (blasters/walls) are dropped - a get against one just burns its share of the race.
+        const primary = [...new Set([...relayHints, ...writes, ...seenRelaysFor(author)])].filter((u) => u && !isReadDead(u));
         if (primary.length) {
             const ev = await pool.get(primary, { ids: [id] }, maxWait, { resolve: true }).catch(() => null);
             if (ev) return rememberEvent(id, ev);

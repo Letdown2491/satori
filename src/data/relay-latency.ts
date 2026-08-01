@@ -10,6 +10,7 @@
 
 import { join } from 'node:path';
 import { jsonStore, debouncedFlush } from './json-store.ts';
+import { isLocalRelayUrl } from '../local-relay.ts';
 
 const MAX_RELAYS = 500; // LRU cap so the file can't grow without bound
 const ALPHA = 0.3;      // EWMA weight for a new sample (moderate smoothing over the day's queries)
@@ -32,8 +33,10 @@ const norm = (u: string): string => u.replace(/\/+$/, '').toLowerCase();
  * `ev` disambiguates the two truncation modes that `ms` alone conflates (both pin near the cap): a truncation
  * with ~0 `ev` is a CONNECT/DELIVERY problem (waiting longer is HIGH value - the relay barely responded), a
  * truncation with high `ev` is a PROLIFIC relay/aggregator (waiting longer just fetches more older tail that
- * scroll-pagination recovers anyway - so ceiling it). The adaptive budget keys on both. */
-interface RelayStat { ms: number; ev: number; n: number; trunc: number; at: number }
+ * scroll-pagination recovers anyway - so ceiling it). The adaptive budget keys on both.
+ * `deniedAt` = the relay explicitly REFUSED a read (CLOSED our REQ with a denial - a write-only blaster,
+ * an auth wall we won't sign for, a paywall) - the read-dead signal (see isReadDead). */
+interface RelayStat { ms: number; ev: number; n: number; trunc: number; at: number; deniedAt?: number }
 
 const { readAll, writeAll } = jsonStore<Record<string, RelayStat>>(FILE, 'relay-latency');
 
@@ -80,6 +83,39 @@ export function relayBudget(relay: string, floor: number, base: number, ceiling:
     if (truncRate >= TRUNC_HI && s.ev >= RICH_EV)                          // rich but cut off → more rope
         return Math.min(ceiling, Math.round(base + truncRate * (ceiling - base)));
     return base;                                                           // delivers, finishes in time → default
+}
+
+// Read-dead classification. Two independent signals, both empirical:
+//  - an explicit DENIAL (the relay CLOSED our REQ with a refusal) is trusted immediately, for
+//    DENIAL_TTL - re-checked after that in case the relay's policy (or our auth standing) changed;
+//  - the blaster PROFILE SHAPE: many samples, ~zero events, and it (almost) never EOSEs - so every
+//    query rides to the hard cap. A merely QUIET relay EOSEs empty fast (trunc ~0) and is NOT dead;
+//    it stays on the existing EMPTY_Q deprioritization instead.
+const DENIAL_TTL = 12 * 60 * 60 * 1000;
+const DEAD_N = 8;        // min samples before the profile shape alone can condemn a relay
+const DEAD_TRUNC = 0.9;  // ...and it hit the hard cap on at least this share of them
+
+/** Note a relay explicitly refused to serve a read. Never recorded for the configured local relay
+ * (its pre-auth 'auth-required' CLOSEDs are expected; banning it would blank an Only-mode feed). */
+export function recordReadDenial(relay: string): void {
+    const url = norm(relay);
+    if (!url || isLocalRelayUrl(url)) return;
+    const prev = stats.get(url) ?? { ms: 0, ev: 0, n: 0, trunc: 0, at: 0 };
+    stats.delete(url); // reinsert → most-recently-used
+    stats.set(url, { ...prev, deniedAt: Date.now(), at: Date.now() });
+    while (stats.size > MAX_RELAYS) stats.delete(stats.keys().next().value as string);
+    flusher.schedule();
+}
+
+/** True when reading from this relay is known-futile: it denied us recently, or its profile is the
+ * write-only-blaster shape. Routing treats read-dead as score 0 (never picked); the mid-session
+ * shard skip stops paying for already-routed dead relays. The local relay is never read-dead. */
+export function isReadDead(relay: string): boolean {
+    const url = norm(relay);
+    const s = stats.get(url);
+    if (!s || isLocalRelayUrl(url)) return false;
+    if (s.deniedAt && Date.now() - s.deniedAt < DENIAL_TTL) return true;
+    return s.n >= DEAD_N && s.ev < EV_EMPTY && s.trunc / s.n >= DEAD_TRUNC;
 }
 
 /** Selection weight in (0,1] for outbox routing (used by routeAuthorsToRelays). A relay we've LEARNED

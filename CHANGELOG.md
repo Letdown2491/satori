@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-08-01
+
+### Changed
+
+- Relays that refuse to serve reads are now noticed and routed around. Write-only blast relays
+  (sendit and friends) show up in lots of people's relay lists, and the feed router used to keep
+  querying them anyway: every request was denied, and every follow assigned to one silently lost
+  half their redundancy. Satori now learns a relay is read-dead two ways, from traffic it already
+  sends: the relay explicitly refuses a request (remembered for 12 hours), or its track record
+  shows it never delivers and never finishes (the blast-relay signature). Read-dead relays are
+  dropped from feed routing, single-note lookups, and profile fetches, and the people routed to
+  them move to their real relays instead. Quiet-but-healthy relays are unaffected, and your
+  private relay is never demoted, so Only mode keeps working while it waits for you to
+  authenticate. Auth-walled and paywalled relays we can't read get the same treatment, which also
+  quiets the repeated authentication errors in the logs.
+- Authentication log lines now name the relay. "no background auth signer" told you something was
+  declined but not what; the log now reads like "NIP-42 declined for wss://relay.example: not one
+  of your relays", so you can tell a deliberate privacy refusal from a real problem at a glance.
+
+### Fixed
+
+- Adding an auth-required relay to your relay list now takes effect immediately. The set of relays
+  Satori is willing to authenticate to was only computed at login, so a relay added in Settings
+  would not be authenticated to until the next restart. Editing or restoring your relay list now
+  refreshes it on the spot.
+
 ## [0.6.3] - 2026-07-09
 
 Performance release: a full review of the hot paths, then fixes across the board. No new features,
