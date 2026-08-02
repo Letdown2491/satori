@@ -79,9 +79,17 @@ export function parseAdocBlocks(src: string): Block[] {
  * its topic (the render layer resolves the topic to a `d` slug + naddr; kept DOM-free here). */
 export type WikiLink = { t: 'wikilink'; target: string; display: string };
 
-/** NIP-54 topic → `d` slug: lowercase, runs of non-alphanumerics collapsed to one dash, trimmed. */
+/** NIP-54 topic → `d` slug, per the spec's normalization rules: lowercase (MUST), whitespace
+ * to `-` (MUST), punctuation/symbols removed (SHOULD - so "what's up" is "whats-up", not
+ * "what-s-up"), dash runs collapsed + trimmed (SHOULD). Non-ASCII letters and numbers MUST
+ * survive as UTF-8 - a Japanese or Cyrillic topic keeps its characters. `-` itself is kept as
+ * the separator (it's what whitespace becomes), so dashed topics round-trip. */
 export function normalizeWikiTopic(s: string): string {
-    return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return s.toLowerCase()
+        .replace(/\s+/gu, '-')
+        .replace(/(?!-)[\p{P}\p{S}]/gu, '')
+        .replace(/-{2,}/g, '-')
+        .replace(/^-+|-+$/g, '');
 }
 
 // Groups: 1 wikilink · 2 monospace · 3 inline image · 4 link (optional `link:` prefix, http(s) url, [text]) · 5 bold · 6 italic.

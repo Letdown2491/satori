@@ -7,6 +7,7 @@
 
 import { buildFollowsRoute, buildFollowersRoute, fetchRoutedPage, fetchRelayPage } from '../data/feeds.ts';
 import { getFavoriteRelays, toggleFavoriteRelay, normalizeRelayUrl, relayLabel } from '../data/relay-favorites.ts';
+import { ensureRelayInfo, relayInfoCached } from '../data/relay-info.ts';
 import { relayFeedBar, relayPicker, relayPickerBody, relayPickerPage, favStar } from '../render/relay-feed.ts';
 import { html, join, type SafeHtml } from '../html.ts';
 import { noteList, pagerSentinel, feedClearing, facesOOB } from '../render/note.ts';
@@ -435,7 +436,10 @@ export async function getRelay(ctx: Ctx): Promise<void> {
     const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;
     // One favorites read: derive both the title's saved-name and the bar's star state (url is normalized).
     const fav = getFavoriteRelays(s.me).find((r) => r.url === url);
-    const title = relayLabel(url, fav?.name);
+    // NIP-11: fetch the relay's identity document (capped - a relay with no document must not
+    // stall its own timeline). Your saved nickname outranks the relay's self-declared name.
+    await ensureRelayInfo([url], 1500);
+    const title = relayLabel(url, fav?.name ?? relayInfoCached(url)?.name);
 
     if (ctx.isPartial && ctx.hTarget === '#more') {
         const { visible, more } = await fillPage(s, src, until);
@@ -473,6 +477,9 @@ export async function getRelayPick(ctx: Ctx): Promise<void> {
     if (!s) return;
     const mine = myRelayUrls(s.myRelays);
     const favs = getFavoriteRelays(s.me);
+    // NIP-11 names for the picker rows, warmed in the background - the modal opens instantly
+    // and unnamed rows pick up their relay's name on the next open.
+    void ensureRelayInfo([...mine, ...favs.map((f) => f.url)]);
     if (ctx.isPartial) {
         // Rebuild the switcher CLOSED (OOB) for whichever header opened the picker: a non-timeline page
         // carries ?title (+ ?tc); a timeline carries ?tab (+ ?rl). Reconstruct the matching one, keeping the

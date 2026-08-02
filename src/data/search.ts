@@ -11,6 +11,7 @@ import type { NostrEvent, RelayList } from '../nostr/types.ts';
 import { parseProfile, type Profile } from './profiles.ts';
 import { fetchRelayLists } from './relays.ts';
 import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { ensureRelayInfo, nip50Capable } from './relay-info.ts';
 
 // --- search operators (ants-style) -----------------------------------------
 // A query mixes free text (→ NIP-50 `search`) with operators. Relay-native ones become Filter
@@ -123,7 +124,8 @@ export async function searchNotes(pool: Pool, relays: string[], sq: SearchQuery,
     if (sq.until !== undefined) filter.until = sq.until;
     const native = !!(filter.search || filter['#p'] || filter['#t'] || filter.since || filter.until);
     if (!native) return []; // has:/site: alone has nothing to query - we can't ask a relay for "all notes with an image"
-    const events = await pool.query(relays, filter).catch(() => [] as NostrEvent[]);
+    void ensureRelayInfo(relays); // warm NIP-11 in the background; the gate reads whatever's cached
+    const events = await pool.query(nip50Capable(relays), filter).catch(() => [] as NostrEvent[]);
     const byId = new Map<string, NostrEvent>();
     for (const ev of events) if (!byId.has(ev.id) && passesPostFilters(ev, sq)) byId.set(ev.id, ev);
     return [...byId.values()].sort((a, b) => b.created_at - a.created_at).slice(0, limit);
@@ -155,7 +157,8 @@ async function searchByAuthors(pool: Pool, sq: SearchQuery, authors: string[], m
 
 /** People search: kind:0 full-text → newest profile per pubkey, parsed for rendering. */
 export async function searchPeople(pool: Pool, relays: string[], q: string, limit = 20): Promise<{ pubkey: string; profile: Profile }[]> {
-    const events = await pool.query(relays, { kinds: [0], search: q, limit: limit * 2 }).catch(() => [] as NostrEvent[]);
+    void ensureRelayInfo(relays); // warm NIP-11 in the background; the gate reads whatever's cached
+    const events = await pool.query(nip50Capable(relays), { kinds: [0], search: q, limit: limit * 2 }).catch(() => [] as NostrEvent[]);
     const newest = new Map<string, NostrEvent>();
     for (const ev of events) {
         const cur = newest.get(ev.pubkey);

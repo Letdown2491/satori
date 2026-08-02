@@ -826,6 +826,17 @@
         .note-act.pin:hover, .note-act.pin.active,
         .note-act.bookmark:hover, .note-act.bookmark.active { color: var(--accent); }
         .note-act.mute:hover, .note-act.mute.active { color: var(--accent); }
+        /* NIP-11 relay identity: the relay's self-declared name + auth/paid capability chips on
+           settings rows, and a truncated description beside the relay-timeline bar's name. */
+        .relay-inf { font-size: 0.82em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+        .relay-badge { font-size: 0.72em; color: var(--muted); border: 1px solid var(--border, currentColor); border-radius: 8px; padding: 0 6px; line-height: 1.5; white-space: nowrap; }
+        .relay-badge.warn { color: var(--danger, #c0392b); border-color: currentColor; }
+        .relay-bar-desc { font-size: 0.85em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; margin: 0 8px; }
+        /* NIP-09 delete (own posts): quiet glyph; armed confirm shows delete + keep side by side.
+           `deleted` is the inert post-delete state - the card itself drops on the next load. */
+        .note-act.delete:hover, .note-act.delete.active { color: var(--danger, #c0392b); }
+        .del-confirm { display: inline-flex; align-items: center; gap: 7px; }
+        .note-act.delete.deleted { color: var(--muted); cursor: default; }
         /* Emoji reactions (opt-in): a one-click heart + a small smiley that reveals a curated palette
            popover (hidden-checkbox toggle, zero-JS - same idiom as the compose toggles). No counts. */
         .act-form.react { position: relative; display: inline-flex; align-items: center; gap: 7px; }
@@ -1245,6 +1256,8 @@
            then a small muted source citation. The passage IS the content, so it sits first, not under a label. */
         .hl-quote { margin: 0; padding: 2px 0 2px 16px; border-left: 3px solid var(--accent); font-family: var(--serif); font-size: 1.12em; line-height: 1.5; white-space: pre-wrap; color: var(--text); }
         .hl-mark { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); padding: 0 2px; border-radius: 2px; }
+        /* NIP-84 `comment`: the highlighter's words above the quoted passage (quote-repost shape). */
+        .hl-comment { margin-bottom: 8px; white-space: pre-wrap; }
         .hl-cite { margin-top: 8px; font-size: 0.85em; color: var(--muted); }
         .hl-cite a { color: var(--muted); }
         .hl-cite a:hover { color: var(--accent); }

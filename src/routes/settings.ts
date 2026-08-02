@@ -26,6 +26,7 @@ import { readAppearance, writeAppearance, parseRelayList } from '../theme.ts';
 import { parseRelayList as parseRelayListEvent, normalizeRelayUrl } from '../nostr/nip65.ts';
 import { BACKUP_KINDS, BACKUP_VERSION, gatherBackup, restoreTemplate, restoreTargets } from '../data/list-backup.ts';
 import { anyAccepted } from '../data/pool.ts';
+import { ensureRelayInfo } from '../data/relay-info.ts';
 import { SEARCH_NOTE_RELAYS, SEARCH_PROFILE_RELAYS } from '../data/search.ts';
 import { readForm, readUpload, readBatchResults, sendPage, sendFragment, sendSignRequest, notFound, redirect, type Ctx } from '../http.ts';
 import { isSingleUser } from '../access.ts';
@@ -98,6 +99,13 @@ async function buildView(ctx: Ctx, s: Session & { me: string }, ov: Partial<Sett
     ]);
     const searchNoteDraft = ov.searchNoteDraft ?? a.searchNoteRelays;
     const searchProfileDraft = ov.searchProfileDraft ?? a.searchProfileRelays;
+    // NIP-11: warm the relay identity cache for whatever the Relays tab is about to render (names,
+    // auth/paid badges, the no-NIP-50 warning). Short race - fast documents make this paint, slow
+    // ones land in the cache for the next visit; the tab never waits on a dead relay's HTTP.
+    if (active === 'relays') {
+        const urls = [...relayDraft.map((r) => r.url), ...dmRelayDraft, ...searchNoteDraft, ...searchProfileDraft];
+        await ensureRelayInfo(urls, 1200);
+    }
     const filters = ov.filters ?? getFilters(s.me);
     const contentPrefs = ov.contentPrefs ?? getContentPrefs(s.me);
     return { a, relayDraft, mediaDraft, dmRelayDraft, searchNoteDraft, searchProfileDraft, filters, contentPrefs, localRelay: localRelay(), localRelayAuth: localAuthUI(s), ...ov };

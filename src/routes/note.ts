@@ -236,24 +236,28 @@ function decodeReplyTo(nevent: string): ReplyTo | null {
 async function commentTargetFor(s: Session & { me: string }, rt: ReplyTo): Promise<CommentTarget | null> {
     const kind = rt.kind ?? 1;
     if (kind === 1) return null;
+    // The target as its own scope - the degraded shape when we can't learn more. NIP-22 forbids a
+    // kind:1 reply to a non-1 target outright, so every fallback below stays a comment (possibly
+    // with an unknown root or author) rather than returning null into the NIP-10 path.
+    const self: CommentRef = { kind, pubkey: rt.pubkey ?? '', id: rt.id };
     if (kind === KIND_COMMENT) {
         const ev = await fetchEvent(s.pool, rt.id, [], rt.pubkey).catch(() => null);
-        if (!ev) return null;
+        if (!ev) return { root: self, parent: self }; // parent unfetchable: parent-as-root beats a forbidden kind:1
         const root = commentRoot(ev);
         const rootRef: CommentRef = root
             ? { kind: Number(root.kind) || 1, pubkey: root.pubkey ?? rt.pubkey ?? '', ...(root.type === 'A' ? { address: root.value } : { id: root.value }) }
             : { kind, pubkey: rt.pubkey ?? '', id: rt.id }; // malformed comment: treat it as its own root
         return { root: rootRef, parent: { kind, pubkey: rt.pubkey ?? '', id: rt.id } };
     }
-    if (!rt.pubkey) return null; // need the author to scope a comment; without it fall back to NIP-10
     if (isAddressable(kind)) {
         const ev = await fetchEvent(s.pool, rt.id, [], rt.pubkey).catch(() => null);
+        const pubkey = rt.pubkey ?? ev?.pubkey ?? '';
+        if (!pubkey) return null; // no author anywhere: a coordinate can't be built (kindless-nevent edge)
         const d = ev ? tag1(ev, 'd') : '';
-        const ref: CommentRef = { kind, pubkey: rt.pubkey, address: `${kind}:${rt.pubkey}:${d}` };
+        const ref: CommentRef = { kind, pubkey, address: `${kind}:${pubkey}:${d}` };
         return { root: ref, parent: ref };
     }
-    const ref: CommentRef = { kind, pubkey: rt.pubkey, id: rt.id }; // picture/video/etc: root === parent
-    return { root: ref, parent: ref };
+    return { root: self, parent: self }; // picture/video/etc: root === parent (author may be unknown)
 }
 
 /** Decode an nevent/note (→ id) or naddr (→ article address) into a quote ref. */
@@ -436,6 +440,10 @@ export async function postPicture(ctx: Ctx): Promise<void> {
     const cwReason = (form.get('cw_reason') ?? '').trim();
     const fromModal = form.get('inmodal') === '1';
     if (imeta.length === 0) { redirect(ctx, '/compose?type=picture'); return; } // a picture needs at least one image
+    // NIP-68: kind 20 is images only (the spec enumerates image mimes). The shared file input also
+    // accepts video for notes, so a video reaching the picture POST is rejected, not silently posted.
+    const badMime = imeta.map((t) => t.find((v) => v.startsWith('m '))?.slice(2)).find((m) => m && !m.startsWith('image/'));
+    if (badMime) { sendFragment(ctx, html`<div class="notice error">Picture posts accept images only (got ${badMime}) - post video as a note instead.</div>`, {}, 400); return; }
     // Schedule: sign now with created_at = the chosen time, hold on disk, the sweep broadcasts it then.
     let scheduledAt = 0;
     if (form.get('do') === 'schedule') {

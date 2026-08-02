@@ -5,7 +5,7 @@
 
 import { html } from '../html.ts';
 import {
-    isActionName, isValidTarget, actionKind, ensureList, ensurePrivate, isOn, buildToggle, applyPublished,
+    isActionName, isValidTarget, actionKind, ensureList, ensurePrivate, isOn, buildToggle, applyPublished, listKnown,
     isPrivateList, buildPrivateToggle, applyPrivatePublished, resolveTarget, addTag, writeRelays, published, type ActionName,
 } from '../actions.ts';
 import { actionButton } from '../render/actions.ts';
@@ -111,6 +111,13 @@ export async function postAction(ctx: Ctx): Promise<void> {
     const { action, target } = p;
 
     const prev = await ensureList(s, actionKind(action));
+    // Read-before-write guard: a truncated-empty read leaves the list UNKNOWN (ensureList
+    // caches nothing). Building a toggle from "nothing" would publish a one-entry list over
+    // the real one, so refuse and let the retry re-read. Covers all three write paths below.
+    if (!listKnown(s, actionKind(action))) {
+        sendFragment(ctx, html`<div class="notice error">Couldn't ${action}: your current list didn't load from your relays, so nothing was changed. Try again.</div>`, {}, 502);
+        return;
+    }
     if (isPrivateList(action)) await ensurePrivate(s, actionKind(action)); // so isOn sees private state
     const on = !isOn(s, action, target); // desired next state
 

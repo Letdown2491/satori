@@ -96,10 +96,12 @@ export async function signNote(
         // The parent's root: its explicit 'root' marker, else its first non-'mention' e-tag (positional
         // scheme), taken only if it's a valid event id. No valid root → the parent IS the thread root.
         const rootRef = parentEtags.find((t) => t[3] === 'root') ?? parentEtags.find((t) => t[3] !== 'mention') ?? null;
-        const rootId = rootRef && isHex64(rootRef[1] ?? '') ? rootRef[1]! : '';
-        // A marked e-tag: ['e', id, relayHint, marker, authorPubkey?] - drop the trailing author when unknown/invalid.
+        const rootId = rootRef && isHex64(rootRef[1] ?? '') ? rootRef[1]!.toLowerCase() : '';
+        // A marked e-tag: ['e', id, relayHint, marker, authorPubkey?] - drop the trailing author when
+        // unknown/invalid. Values copied from the parent are lowercased (NIP-01: hex is lowercase;
+        // republishing an uppercase id verbatim would poison every filter downstream of our reply).
         const eTag = (id: string, hint: string, marker: string, author?: string): string[] =>
-            author && isHex64(author) ? ['e', id, hint, marker, author] : ['e', id, hint, marker];
+            author && isHex64(author) ? ['e', id.toLowerCase(), hint, marker, author.toLowerCase()] : ['e', id.toLowerCase(), hint, marker];
         if (rootId) {
             tags.push(eTag(rootId, hintOf(rootRef![2]), 'root', rootRef![4]));
             tags.push(eTag(replyTo.id, writeHint, 'reply', replyTo.pubkey));
@@ -112,7 +114,8 @@ export async function signNote(
         // notified. The parent is another user's event, so its tags are UNTRUSTED: copy only valid hex
         // pubkeys, cap the count (anti mention-spam + bloat), and sanitize each carried relay hint.
         const pSeen = new Set<string>();
-        const pushP = (pk?: string, hint = '') => { if (pk && !pSeen.has(pk)) { tags.push(hint ? ['p', pk, hint] : ['p', pk]); pSeen.add(pk); } };
+        // Lowercase at the one point every p-tag flows through - parent-copied and our own alike.
+        const pushP = (pk?: string, hint = '') => { const k = pk?.toLowerCase(); if (k && !pSeen.has(k)) { tags.push(hint ? ['p', k, hint] : ['p', k]); pSeen.add(k); } };
         let ancestors = 0;
         for (const t of parent?.tags ?? []) {
             if (t[0] === 'p' && isHex64(t[1] ?? '') && ancestors < MAX_ANCESTOR_P) { pushP(t[1], hintOf(t[2])); ancestors++; }
@@ -189,7 +192,7 @@ export async function signComment(
     { content, comment, contentWarning = null, imeta = [] }: { content: string; comment: CommentTarget; contentWarning?: string | null; imeta?: string[][] },
 ): Promise<Prepared> {
     const { root, parent } = comment;
-    const lists = await fetchRelayLists(pool, INDEXER_RELAYS, [parent.pubkey]).catch(() => new Map<string, RelayList>());
+    const lists = parent.pubkey ? await fetchRelayLists(pool, INDEXER_RELAYS, [parent.pubkey]).catch(() => new Map<string, RelayList>()) : new Map<string, RelayList>();
     const recipientList = lists.get(parent.pubkey) ?? null;
     const writeHint = recipientList?.write[0] ?? '';
     const readHint = recipientList?.read[0] ?? '';
@@ -197,12 +200,15 @@ export async function signComment(
     const tags: string[][] = [];
     if (contentWarning !== null) tags.push(contentWarning ? ['content-warning', contentWarning] : ['content-warning']);
     for (const m of imeta) tags.push(m); // NIP-92 media metadata, like signNote (comment replies can carry uploads)
-    // root (uppercase)
+    // root (uppercase). The author can be unknown (a degraded scope from commentTargetFor) - an
+    // empty pubkey must not become a malformed P/p tag, so those are skipped, not emitted blank.
     tags.push(root.address ? ['A', root.address, writeHint] : ['E', root.id!, writeHint]);
-    tags.push(['K', String(root.kind)], ['P', root.pubkey, readHint]);
+    tags.push(['K', String(root.kind)]);
+    if (root.pubkey) tags.push(['P', root.pubkey, readHint]);
     // parent (lowercase)
     tags.push(parent.address ? ['a', parent.address, writeHint] : ['e', parent.id!, writeHint]);
-    tags.push(['k', String(parent.kind)], ['p', parent.pubkey, readHint]);
+    tags.push(['k', String(parent.kind)]);
+    if (parent.pubkey) tags.push(['p', parent.pubkey, readHint]);
 
     const signed = await signer.signEvent({ kind: 1111, created_at: Math.floor(Date.now() / 1000), tags, content, pubkey: me });
     const myWrite = writeRelaysFor(myRelays);

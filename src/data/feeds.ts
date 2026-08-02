@@ -9,6 +9,7 @@ import { relayQuality, isReadDead } from './relay-latency.ts';
 import { HEX64, isAddressable, tag1 } from '../nostr/tags.ts';
 import { notFakePodcast } from '../nostr/nipf4.ts';
 import { isExpired } from '../nostr/nip40.ts';
+import { isDeletedEvent } from './deletions.ts';
 import { coalesceOne } from './coalesce.ts';
 import { fetchRelayLists } from './relays.ts';
 import { seenRelaysFor } from './seen-relays.ts';
@@ -47,7 +48,7 @@ export async function buildFollowsRoute(pool: Pool, me: string, myRelays: RelayL
     if (!contacts) return { authors: [], route: new Map() };
     const authors = contacts.tags
         .filter((t) => t[0] === 'p' && HEX64.test(t[1] || ''))
-        .map((t) => t[1] as string)
+        .map((t) => (t[1] as string).toLowerCase()) // NIP-01: filters match lowercase hex; an uppercase p-tag would silently drop the follow
         .filter((pk) => pk !== me);
     return routeFor(pool, authors);
 }
@@ -138,9 +139,9 @@ const inflightEvents = new Map<string, Promise<NostrEvent | null>>();
  * concurrent fetches for the same id are coalesced. */
 export async function fetchEvent(pool: Pool, id: string, relayHints: string[] = [], author?: string, opts: { maxWait?: number } = {}): Promise<NostrEvent | null> {
     const hit = eventCache.get(id);
-    // NIP-40 re-check on hits: the pool never returns expired events, but a cached one can
-    // cross its expiration inside the 30-min TTL.
-    if (hit && Date.now() - hit.at < (hit.ev ? EVENT_TTL : EVENT_MISS_TTL)) return hit.ev && isExpired(hit.ev) ? null : hit.ev;
+    // NIP-40 + NIP-09 re-check on hits: the pool never returns expired or deleted events, but a
+    // cached one can cross its expiration - or have its deletion arrive - inside the 30-min TTL.
+    if (hit && Date.now() - hit.at < (hit.ev ? EVENT_TTL : EVENT_MISS_TTL)) return hit.ev && (isExpired(hit.ev) || isDeletedEvent(hit.ev)) ? null : hit.ev;
     return coalesceOne(inflightEvents, id, () => resolveEvent(pool, id, relayHints, author, opts.maxWait));
 }
 
@@ -149,7 +150,7 @@ export async function fetchEvent(pool: Pool, id: string, relayHints: string[] = 
  * expired entry. */
 export function cachedEvent(id: string): NostrEvent | null {
     const hit = eventCache.get(id);
-    if (!hit || (hit.ev && isExpired(hit.ev))) return null; // NIP-40 re-check (see fetchEvent)
+    if (!hit || (hit.ev && (isExpired(hit.ev) || isDeletedEvent(hit.ev)))) return null; // NIP-40 + NIP-09 re-check (see fetchEvent)
     return Date.now() - hit.at < (hit.ev ? EVENT_TTL : EVENT_MISS_TTL) ? hit.ev : null;
 }
 

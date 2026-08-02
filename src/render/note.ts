@@ -23,7 +23,7 @@ import { parseWiki } from '../nostr/nip54.ts';
 import { parseRepo } from '../nostr/nip34.ts';
 import { tag1, isAddressable } from '../nostr/tags.ts';
 import { renderEvent, actionsFor } from '../manifest/registry.ts';
-import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton } from './actions.ts';
+import { bookmarkButton, pinButton, followButton, muteButton, muteAct, likeButton, deleteAct } from './actions.ts';
 import { isZapped } from '../zaps.ts';
 import { replyFaces, type ReplyFaces } from '../replies.ts';
 import { hasReplied, hasReposted, engageTarget } from '../engaged.ts';
@@ -390,9 +390,11 @@ export function noteActions(ev: NostrEvent, nevent: string, s?: Session, inThrea
     // The action set + order come from the kind's manifest declaration (actionsFor), so a kind
     // affords exactly what its handler declares; NOTE_ACTIONS is the fallback for an unregistered kind.
     const ids = actionsFor(ev.kind) ?? NOTE_ACTIONS;
+    // Delete rides OUTSIDE the vocabulary: it's an ownership affordance (NIP-09), not a
+    // per-kind one, so every own event affords it without each manifest declaring it.
     return html`
       <div class="note-actions">
-        <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
+        <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}${mine && s ? deleteAct(ev) : null}</div>
         ${faces ? replyFacesEl(ev.id, s) : null}
       </div>`;
 }
@@ -435,9 +437,10 @@ export function articleActions(ev: NostrEvent, naddr: string, s?: Session, onPag
         pin: mine && s && naddr ? pinButton(s, naddr) : null,
     };
     const ids = actionsFor(ev.kind) ?? ARTICLE_ACTIONS; // article's declared vocabulary (manifest-driven)
+    // Delete outside the vocabulary - ownership affordance, same as noteActions.
     return html`
       <div class="note-actions article-actions">
-        <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}</div>
+        <div class="note-acts">${ids.map((id) => acts[id]).filter((x): x is SafeHtml => x !== null)}${mine && s ? deleteAct(ev) : null}</div>
         ${!onPage ? replyFacesEl(naddr, s) : null}
       </div>`;
 }

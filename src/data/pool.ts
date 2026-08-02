@@ -10,6 +10,8 @@ import { localReadMode, localWriteMode, localRelayUrl, isLocalRelayUrl, localFet
 import { recordSeen } from './seen-relays.ts';
 import { recordLatency, recordReadDenial, relayBudget } from './relay-latency.ts';
 import { isExpired } from '../nostr/nip40.ts';
+import { recordDeletion, isDeletedEvent, shouldCheckDeletion } from './deletions.ts';
+import { isAddressable, coordinateOf } from '../nostr/tags.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 
 /** True if at least one relay accepted a publish (a settled fan-out succeeds on any acceptance). Lives
@@ -27,7 +29,12 @@ export interface SubHandlers {
 //              sees every version (private-only writes AND your NIP-65 copies) and a modify can't clobber.
 //  - resolve:  in Only mode + "fetch missing" ON, try the private relay first, then fall back to these
 //              (real) relays for what it lacks (other people's profiles / notes / quoted+replied events).
-export interface ReadOpts { fast?: boolean; profile?: boolean; budget?: 'page' | 'adaptive'; direct?: boolean; complete?: boolean; resolve?: boolean }
+export interface ReadOpts { fast?: boolean; profile?: boolean; budget?: 'page' | 'adaptive'; direct?: boolean; complete?: boolean; resolve?: boolean; track?: QueryTrack }
+
+/** Caller-supplied out-param: set truncated=true when the query hit the hard cap before every
+ * relay EOSE'd, i.e. the result may be missing events that exist. Lets a read-modify-write
+ * caller (own lists) tell "confirmed absent" from "didn't load in time". */
+export interface QueryTrack { truncated: boolean }
 
 const normUrl = (u: string) => u.replace(/\/+$/, '').toLowerCase();
 
@@ -335,7 +342,15 @@ export class Pool {
                 clearTimeout(quietTimer);
                 clearTimeout(hardTimer);
                 try { sub?.close(); } catch { /* already closed */ }
-                const list = [...events.values()];
+                // NIP-09 chokepoint: kind:5 deletions are CONSUMED wherever they arrive (recorded
+                // as tombstones, never returned - nothing renders a kind:5), and every other event
+                // is filtered against the store, so a deletion takes effect on the very query that
+                // carried it and on every cached copy's next pass through here.
+                const list: NostrEvent[] = [];
+                for (const e of events.values()) {
+                    if (e.kind === 5) { recordDeletion(e); continue; }
+                    if (!isDeletedEvent(e)) list.push(e);
+                }
                 this.recordSeenOn(list);
                 // Per-relay latency profiling (observation only - see relay-latency.ts). Gated on opts.profile
                 // so ONLY the outbox following/followers fan-out feeds it - NOT the "browse a relay" firehose
@@ -347,7 +362,11 @@ export class Pool {
                     recordLatency(relays[0]!, ms, truncated, list.length);
                     if (process.env.SATORI_REQ_LOG) console.log(`[relay-latency] ${relays[0]} lastEvent=${ms}ms events=${list.length} truncated=${truncated}`);
                 }
+                if (truncated && opts.track) opts.track.truncated = true;
                 resolve(list);
+                // After resolve - the sweep never delays a response. Skip when this query IS the
+                // sweep (it asks for kinds:[5]), which also stops recursion.
+                if (!filter.kinds?.includes(5)) this.checkDeletions(relays, list);
             };
             hardTimer = setTimeout(() => { truncated = true; finish(); }, maxWait);
             try {
@@ -375,6 +394,29 @@ export class Pool {
         });
     }
 
+    /** Background NIP-09 sweep: ask the same relays for kind:5 deletions of the events just
+     * returned - by id, and by coordinate for addressable kinds. TTL-gated per target (30 min)
+     * so the steady-state cost is near zero; hits land as tombstones via the chokepoint above,
+     * so the NEXT render drops the event. Deletion is best-effort by design - first paint is
+     * never spent waiting on it. Fire-and-forget. */
+    private checkDeletions(relays: string[], events: NostrEvent[]): void {
+        const eIds: string[] = [];
+        const aCoords: string[] = [];
+        for (const e of events) {
+            if (shouldCheckDeletion(e.id)) eIds.push(e.id);
+            if (isAddressable(e.kind)) {
+                const coord = coordinateOf(e);
+                if (shouldCheckDeletion(coord)) aCoords.push(coord);
+            }
+        }
+        // #e and #a are separate queries: filter fields AND together, so one combined filter
+        // would only match kind:5s carrying BOTH tags. `direct` - `relays` is already the
+        // policy-applied set of the query that produced these events.
+        const opts: ReadOpts = { fast: true, budget: 'page', direct: true };
+        if (eIds.length) void this.queryOnce(relays, { kinds: [5], '#e': eIds }, opts);
+        if (aCoords.length) void this.queryOnce(relays, { kinds: [5], '#a': aCoords }, opts);
+    }
+
     // `maxWait` lets a best-effort caller shorten the wait - a decorative quote preview shouldn't
     // hold a relay connection for the full 6s when the event isn't there. Under Tor the caller's cap
     // is doubled (circuits are slow; a too-short wait would just always miss) but still honored, so
@@ -397,7 +439,12 @@ export class Pool {
         this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
         if (filter.ids?.length) return this.getById(relays, filter, cap);
         return (this.raw.get(toPoolUrls(relays), filter, { maxWait: cap, onauth: this.onauth } as never) as Promise<NostrEvent | null>)
-            .then((ev) => { if (!ev || isExpired(ev)) return null; this.recordSeenOn([ev]); return ev; }); // NIP-40
+            .then((ev) => { // NIP-40 expiry + NIP-09 tombstone checks
+                if (!ev || isExpired(ev) || isDeletedEvent(ev)) return null;
+                this.recordSeenOn([ev]);
+                if (!filter.kinds?.includes(5)) this.checkDeletions(relays, [ev]);
+                return ev;
+            });
     }
 
     // An id filter names an IMMUTABLE event, so the first copy to arrive IS the answer - resolve on
@@ -413,13 +460,14 @@ export class Pool {
                 settled = true;
                 clearTimeout(timer);
                 try { sub?.close(); } catch { /* already closed */ }
-                if (ev) this.recordSeenOn([ev]);
+                if (ev) { this.recordSeenOn([ev]); this.checkDeletions(relays, [ev]); }
                 resolve(ev);
             };
             const timer = setTimeout(() => finish(null), maxWait);
             try {
                 sub = this.raw.subscribeMany(toPoolUrls(relays), filter as never, {
-                    onevent: (e: NostrEvent) => { if (!isExpired(e)) finish(e); }, // NIP-40: an expired copy doesn't count as found
+                    // NIP-40: an expired copy doesn't count as found; NIP-09: nor does a deleted one
+                    onevent: (e: NostrEvent) => { if (!isExpired(e) && !isDeletedEvent(e)) finish(e); },
                     oneose: () => finish(null),
                     onauth: this.onauth,
                     maxWait,

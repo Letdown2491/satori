@@ -25,6 +25,7 @@ import {
 import { replyParent } from '../nostr/nip10.ts';
 import type { NostrEvent, UnsignedEvent } from '../nostr/types.ts';
 import type { Filter } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools/pure';
 import type { BatchResult } from '../wire.ts';
 import type { Session } from '../session.ts';
 import { signsOnClient } from '../session.ts';
@@ -340,7 +341,9 @@ export function applySeals(s: Session, chainId: string, seals: BatchResult[]): {
         const r = seals[i];
         if (!r || !r.ok) { memSet(w.id, { kind: 'drop' }); return; }
         let seal: NostrEvent | null = null;
-        try { const j = JSON.parse(String(r.value)); if (j && typeof j.pubkey === 'string' && typeof j.content === 'string' && HEX64.test(j.pubkey)) seal = j; } catch { /* drop */ }
+        // NIP-59 MUST: beyond shape, verify the seal's SIGNATURE - the seal is the only signed
+        // layer, so it's what proves the sender the rumor will claim. verifyEvent also pins kind 13.
+        try { const j = JSON.parse(String(r.value)); if (j && j.kind === 13 && typeof j.pubkey === 'string' && typeof j.content === 'string' && HEX64.test(j.pubkey) && verifyEvent(j as never)) seal = j; } catch { /* drop */ }
         if (!seal) { memSet(w.id, { kind: 'drop' }); return; }
         const sender = seal.pubkey;
         if (sender !== me && muted.has(sender)) { memSet(w.id, { kind: 'drop' }); return; }

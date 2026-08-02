@@ -72,10 +72,15 @@ export interface PollTally { counts: Record<string, number>; total: number; mine
 export function tallyResponses(responses: NostrEvent[], me: string | null, poll?: NostrEvent | null): PollTally {
     const endsAt = poll ? parseEndsAt(poll) : null;
     const valid = poll ? new Set(parsePollOptions(poll).map((o) => o.id)) : null;
+    const single = poll ? parsePollType(poll) === 'single' : false;
     const latest = new Map<string, { ts: number; options: string[] }>();
     for (const r of responses) {
         if (endsAt !== null && r.created_at > endsAt) continue;
-        const opts = responseOptionIds(r).filter((id) => !valid || valid.has(id));
+        // NIP-88: on a singlechoice poll only the FIRST response tag is the response (extras are
+        // ignored, not counted); on multiplechoice the first tag per id counts (dupes collapse).
+        // Without this, a crafted vote event inflates its option counts arbitrarily.
+        const ids = responseOptionIds(r);
+        const opts = (single ? ids.slice(0, 1) : [...new Set(ids)]).filter((id) => !valid || valid.has(id));
         if (opts.length === 0) continue;
         const prev = latest.get(r.pubkey);
         if (prev && prev.ts >= r.created_at) continue;

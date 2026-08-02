@@ -17,6 +17,7 @@ import { decode } from 'nostr-tools/nip19';
 import { INDEXER_RELAYS, writeRelaysFor } from './nostr/nip65.ts';
 import { normalizeRelayUrl } from './data/relay-favorites.ts';
 import { cachedEvent } from './data/feeds.ts';
+import { recordDeletion } from './data/deletions.ts';
 import { seenRelaysFor } from './data/seen-relays.ts';
 import { HEX64 } from './nostr/tags.ts';
 import type { NostrEvent, UnsignedEvent } from './nostr/types.ts';
@@ -171,7 +172,11 @@ export function parseScheduleAt(raw: string): ScheduleParse {
  * never throws on relay failure: the caller decides whether to throw or render an error.) */
 export async function published(s: Session, signed: NostrEvent, relays?: string[]): Promise<boolean> {
     const results = await s.pool.publish(relays ?? writeRelays(s), signed);
-    return results.some((r) => r.status === 'fulfilled');
+    const ok = results.some((r) => r.status === 'fulfilled');
+    // NIP-09: your own accepted deletion (a delete, an unlike) takes effect locally at once -
+    // the tombstone suppresses the target everywhere without waiting for relays to echo it back.
+    if (ok && signed.kind === 5) recordDeletion(signed);
+    return ok;
 }
 
 // Per-(session,kind) in-flight guard so two concurrent ensureList calls share one query
@@ -186,17 +191,30 @@ export async function ensureList(s: Session, kind: number): Promise<NostrEvent |
     if (inf) return inf;
     const p = (async (): Promise<NostrEvent | null> => {
         const relays = [...new Set([...(s.myRelays?.read ?? []), ...(s.myRelays?.write ?? []), ...INDEXER_RELAYS])];
-        const events = await s.pool.query(relays, { kinds: [kind], authors: [s.me!] }, { complete: true }).catch(() => [] as NostrEvent[]);
+        const track = { truncated: false };
+        const events = await s.pool.query(relays, { kinds: [kind], authors: [s.me!] }, { complete: true, track }).catch(() => [] as NostrEvent[]);
         const newest = events.sort((a, b) => b.created_at - a.created_at)[0] ?? null;
         // Don't clobber a value that arrived while we queried (e.g. a toggle publish set a
         // newer event, or the relay copy is older/absent) - the publish is the source of truth.
         const cur = s.lists.get(kind);
         if (cur && (!newest || cur.created_at >= newest.created_at)) return cur;
+        // A truncated-EMPTY read is UNKNOWN, not absent: the list may exist on a relay that
+        // didn't answer in time. Cache nothing (the next call re-queries), so a toggle can't
+        // rebuild "from nothing" and wipe the real list. A confirmed-absent read (every relay
+        // EOSE'd with no event) still caches null, so a first toggle can create the list.
+        if (!newest && track.truncated) return null;
         s.lists.set(kind, newest);
         return newest;
     })();
     listInflight.set(key, p);
     try { return await p; } finally { listInflight.delete(key); }
+}
+
+/** True when a list's current state is KNOWN after ensureList: loaded, or confirmed absent
+ * by a complete read. False = the read timed out with nothing, so the real list may exist
+ * on a relay that didn't answer - refuse read-modify-write until a re-read succeeds. */
+export function listKnown(s: Session, kind: number): boolean {
+    return s.lists.has(kind);
 }
 
 /** Ensure several lists are loaded (before rendering buttons that read them), and

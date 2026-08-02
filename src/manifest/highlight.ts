@@ -8,7 +8,7 @@ import type { KindHandler } from './registry.ts';
 import { refFor } from './registry.ts';
 import { type SatoriDeps, notWired } from './deps.ts';
 import { html, join, type SafeHtml } from '../html.ts';
-import { extLink, prettyHost, mentionChip } from '../render/content.ts';
+import { extLink, prettyHost, mentionChip, inlineEntities } from '../render/content.ts';
 import { cardShell, clampIfTall } from '../render/note.ts';
 import { npub, displayName, type ProfileMap } from '../render/util.ts';
 import { ensureProfiles } from '../routes/common.ts';
@@ -35,7 +35,11 @@ function originalAuthors(ev: NostrEvent): string[] {
  * in-app reference link (reusing the registry's refFor, same as inline content references). First present
  * source wins; null when a highlight carries none. */
 function sourceLink(ev: NostrEvent): SafeHtml | null {
-    const r = tag1(ev, 'r');
+    // NIP-84: the highlighted page's url carries the `source` marker; `mention`-marked r tags are
+    // urls from the highlighter's comment, NOT the source. Prefer the marked source, tolerate a
+    // bare (unmarked, legacy) r, never cite a mention as the source.
+    const r = (ev.tags.find((t) => t[0] === 'r' && t[1] && t[2] === 'source')
+        ?? ev.tags.find((t) => t[0] === 'r' && t[1] && t[2] !== 'mention'))?.[1];
     if (r) return extLink(r, prettyHost(r));
     const a = tag1(ev, 'a');
     if (a) {
@@ -83,7 +87,11 @@ function highlightBody(ev: NostrEvent, profiles: ProfileMap | undefined, clamp: 
         inner = html`${rawText}`;
     }
     const quote = rawText ? html`<blockquote class="hl-quote">${inner}</blockquote>` : null;
-    return html`${clampIfTall(quote, rawText, clamp, ev.id)}${citation(ev, profiles)}`;
+    // NIP-84: a `comment` tag MUST render like a quote repost - the highlighter's words as the
+    // post, the highlighted passage as the quoted block beneath them.
+    const comment = tag1(ev, 'comment').trim();
+    const commentEl = comment ? html`<div class="hl-comment">${inlineEntities(comment, profiles)}</div>` : null;
+    return html`${commentEl}${clampIfTall(quote, rawText, clamp, ev.id)}${citation(ev, profiles)}`;
 }
 
 export const highlightHandler: KindHandler<SatoriDeps> = {

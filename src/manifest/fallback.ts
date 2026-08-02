@@ -7,6 +7,7 @@
 
 import { neventEncode } from 'nostr-tools/nip19';
 import { html, join, safeUrl, type SafeHtml } from '../html.ts';
+import { tag1 } from '../nostr/tags.ts';
 import { avatar, displayName, npub, shortNpub, timeAgo } from '../render/util.ts';
 import { kindLabel, handlerUrl, type HandlerInfo } from '../nostr/nip89.ts';
 import type { NostrEvent } from '../nostr/types.ts';
@@ -14,6 +15,7 @@ import { type SatoriDeps, notWired } from './deps.ts';
 import type { KindHandler, Surface } from './registry.ts';
 
 const RAW_CAP = 500; // unknown kinds may carry huge JSON in content; show a bounded, escaped preview
+const ALT_CAP = 300; // NIP-31 alt is meant as a short summary; cap defensively (untrusted free text)
 
 /** Best bech32 reference for this event: the entity the user referenced (embed/thread), else a
  * freshly-encoded nevent, else the raw id (njump still resolves it). */
@@ -59,15 +61,20 @@ function unsupportedCard(ev: NostrEvent, surface: Surface, d: SatoriDeps): SafeH
     const { profiles } = d;
     const bech = bechFor(ev, d);
     const label = kindLabel(ev.kind);
+    // NIP-31: the author's own "what this event is" summary for clients that can't render the
+    // kind. When present it IS the card body - it reads better than a raw JSON preview, so the
+    // preview only shows without it. Plain escaped text, no entity resolution (untrusted).
+    const alt = tag1(ev, 'alt').trim().slice(0, ALT_CAP);
     const raw = ev.content?.trim();
     // Clamp + fade only when it's long enough to actually overflow; short content shows in full.
     const long = !!raw && raw.length > 300;
-    const preview = raw ? html`<div class="content event-raw${long ? ' clamped' : ''}">${raw.slice(0, RAW_CAP)}</div>` : null;
+    const preview = alt ? html`<div class="content event-alt">${alt}</div>`
+        : raw ? html`<div class="content event-raw${long ? ' clamped' : ''}">${raw.slice(0, RAW_CAP)}</div>` : null;
 
     if (surface === 'embed') {
         return html`<a class="quote-label" href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer">↗ ${label}</a
             ><div class="quote-head"><a class="quote-author-link" href="/u/${npub(ev.pubkey)}" h-scroll="top instant">${avatar(ev.pubkey, profiles?.get(ev.pubkey)?.picture, 'xs')}<span class="quote-author">${displayName(ev.pubkey, profiles)}</span></a></div
-            ><div class="quote-body event-unsupported">Satori doesn't render this kind yet.</div>`;
+            ><div class="quote-body event-unsupported">${alt || `Satori doesn't render this kind yet.`}</div>`;
     }
     return html`
       <li class="note">

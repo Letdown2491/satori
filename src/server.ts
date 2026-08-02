@@ -36,6 +36,7 @@ import { postUpload, postUploadFinish } from './routes/upload.ts';
 import { getSuggest } from './routes/suggest.ts';
 import { getSearch } from './routes/search.ts';
 import { postLike, postLikePublish } from './routes/like.ts';
+import { postDelete, postDeleteConfirm, postDeleteCancel, postDeletePublish } from './routes/delete.ts';
 import { getZap, postZap, postZapInvoice, postZapPaid } from './routes/zap.ts';
 import { postArticle, postArticlePublish, postDraft, getDrafts, postDraftDelete, postDraftDeleteFinish, postDraftSyncWrap, postDraftSyncPublish, getDraftsSync, postDraftsSyncApply } from './routes/article.ts';
 import { postComment, postCommentPublish, getCommentForm } from './routes/comment.ts';
@@ -95,6 +96,10 @@ const ROUTES: Route[] = [
     route('POST', '/upload/finish', postUploadFinish),
     route('POST', '/like/:target', postLike),
     route('POST', '/like/:target/publish', postLikePublish),
+    route('POST', '/delete/:id', postDelete),
+    route('POST', '/delete/:id/confirm', postDeleteConfirm),
+    route('POST', '/delete/:id/cancel', postDeleteCancel),
+    route('POST', '/delete/:id/publish', postDeletePublish),
     route('GET', '/zap', getZap),
     route('POST', '/zap', postZap),
     route('POST', '/zap/invoice', postZapInvoice),

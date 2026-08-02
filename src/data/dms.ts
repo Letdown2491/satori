@@ -21,6 +21,7 @@ import {
 import { replyParent } from '../nostr/nip10.ts';
 import type { NostrEvent } from '../nostr/types.ts';
 import type { Filter } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools/pure';
 import type { Session } from '../session.ts';
 import { signsOnServer } from '../session.ts';
 
@@ -118,7 +119,10 @@ async function unwrapToSeal(s: Signed, wrap: NostrEvent): Promise<NostrEvent | n
     const plain = await s.signer.nip44Decrypt(wrap.pubkey, wrap.content); // throws on signer failure
     try {
         const seal = JSON.parse(plain) as NostrEvent;
-        return (seal && seal.pubkey && typeof seal.content === 'string') ? seal : null;
+        if (!seal || seal.kind !== 13 || !seal.pubkey || typeof seal.content !== 'string') return null;
+        // NIP-59 MUST: verify the seal's signature - it's the only SIGNED layer, so it's what proves
+        // the sender is who the rumor will claim (the rumor itself is unsigned by design).
+        return verifyEvent(seal as never) ? seal : null;
     } catch { return null; }
 }
 

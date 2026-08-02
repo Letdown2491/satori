@@ -128,10 +128,14 @@ async function syncEngagement(pool: Pool, me: string, myRelays: RelayList | null
         const newestLike = new Map<string, number>();
         for (const ev of reactions) {
             if (ev.content === '-') continue; // NIP-25 downvote: we don't surface dislikes
-            // NIP-25: last e tag = reacted note; an `a` tag = an addressable target (an article).
-            const e = [...ev.tags].reverse().find((t) => t[0] === 'e' && t[1]);
-            const a = e ? null : [...ev.tags].reverse().find((t) => t[0] === 'a' && t[1]);
-            const key = e ? e[1]! : a ? addrToNaddr(a[1]!) : null; // articles keyed by canonical naddr
+            // NIP-25: an `a` tag = an addressable target (an article); else last e tag = reacted note.
+            // `a` WINS when both are present - our own addressable reactions carry `a` AND the spec's
+            // companion `e`, and the render layer keys article like-state by naddr, so keying such a
+            // reaction by its `e` id would lose your article likes on every backfill (and a retract
+            // would then publish a duplicate like instead of the kind:5).
+            const a = [...ev.tags].reverse().find((t) => t[0] === 'a' && t[1]);
+            const e = a ? null : [...ev.tags].reverse().find((t) => t[0] === 'e' && t[1]);
+            const key = a ? addrToNaddr(a[1]!) : e ? e[1]! : null; // articles keyed by canonical naddr
             if (!key) continue;
             if ((newestLike.get(key) ?? -1) >= ev.created_at) continue;
             newestLike.set(key, ev.created_at);

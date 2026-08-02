@@ -4,6 +4,74 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - unreleased
+
+### Added
+
+- Relays introduce themselves (NIP-11). Every relay can serve an identity document - name,
+  description, and what it requires and supports - and Satori now reads it. The Relays settings
+  rows show each relay's name with auth/paid chips where declared, the browse picker and a
+  relay's timeline header lead with the relay's own name and description, and search got its
+  first capability gate: a relay whose document lists supported NIPs without NIP-50 is skipped
+  by search queries (it would never answer) and its settings row says so. Documents are fetched
+  over the same guarded, Privacy-Mode-aware path as everything else, cached for a day, and a
+  relay without one just stays a bare URL.
+- Unknown event kinds explain themselves when they can (NIP-31). An event Satori can't render
+  used to show only "Unsupported event" and a kind number; when the author attached an `alt`
+  summary, that text now speaks for the event - in the fallback card and in embeds - so the
+  frontier card tells you what the thing is, not just that we can't draw it.
+- You can delete your own posts (NIP-09). Every post of yours - notes, articles, pictures, any
+  kind - now carries a small trash glyph at the end of its action row. Clicking it arms an inline
+  confirm (nothing is signed yet); confirming publishes a deletion request to your relays and the
+  post disappears from your own views immediately. Relays that honor deletion requests drop the
+  event; ones that don't can keep serving it to others, which is nostr's deal, not ours.
+- Deletion requests are honored when reading. Satori never asked relays about kind:5 at all, so a
+  deleted event rendered forever, including from its own half-hour caches. Deletions now take
+  effect three ways: any deletion arriving in a normal query is recorded on the spot, a cheap
+  background check asks about the events just fetched (remembered for 30 minutes, so repeat views
+  cost nothing), and recorded deletions persist across restarts. Only the author's own deletion
+  counts - someone else publishing a deletion request for your event has no effect, checked both
+  on the way in and at render. A side effect worth having: reactions you retracted can no longer
+  sneak back in when engagement state is rebuilt from relays.
+
+### Fixed
+
+- Wiki topic slugs now follow the NIP-54 rules. The old normalization flattened everything to
+  ASCII, so a Japanese or Cyrillic topic collapsed to an empty slug, and punctuation became
+  dashes where the spec removes it ("what's up" is "whats-up", not "what-s-up"). Non-Latin
+  titles work now, and new slugs match what other wiki clients produce. Articles published
+  under an old mangled slug are still readable; links to them just normalize to the correct
+  form now.
+- Liking an article survives a session restart. Reaction state rebuilt from relays keyed your
+  addressable reactions by their event id instead of the article's address, so the heart showed
+  empty and clicking it published a second like instead of retracting the first.
+- Poll tallies can't be inflated by a crafted vote. On a single-choice poll only the first
+  response tag counts now, and duplicate response tags in one vote collapse to one - previously
+  a single event could add arbitrarily many votes to its options.
+- Highlights with commentary render the commentary. The NIP-84 `comment` tag was ignored
+  entirely; it now shows as the highlighter's words above the quoted passage, the way the spec
+  wants it (a quote-repost shape). The source citation also prefers the url marked `source` and
+  never cites a `mention`-marked url from the commentary as the source.
+- Picture posts (kind 20) only accept images, as the spec requires. The composer's file picker
+  is shared with notes (which do take video), so a video reaching the picture route is now
+  rejected with an explanation instead of being published in an event kind that means "image".
+- Replying to a picture, video, or comment whose details couldn't be fetched no longer falls
+  back to a plain kind:1 reply, which NIP-22 forbids on those kinds. The reply stays a proper
+  comment with the best scope we have.
+- Hex ids and pubkeys are lowercased where they enter from other people's events. An uppercase
+  p-tag in your follow list silently matched nothing in relay filters (that follow's posts just
+  never arrived), and replying under a parent with uppercase tag values republished them
+  verbatim into the new event.
+- Sealed DMs verify the seal's signature (NIP-59). The seal is the only signed layer of a
+  gift-wrapped message, so it's what actually proves the sender; both the bunker and the
+  extension decrypt paths now check it instead of trusting the decrypted shape.
+- Toggling a follow, mute, bookmark, or pin can no longer wipe the list it lives in. When none of
+  your relays answered the "what's my current list" read in time, an empty result used to look
+  identical to "you have no list yet", and the toggle would publish a one-entry list over your real
+  one. The two cases are now told apart: a read that timed out empty is treated as unknown, the
+  toggle is refused with an error instead of guessing, and trying again re-reads. A genuinely empty
+  list (your relays confirmed there is none) still lets a first toggle create it.
+
 ## [0.6.4] - 2026-08-01
 
 ### Changed

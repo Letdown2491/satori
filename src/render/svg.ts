@@ -82,7 +82,7 @@ export const ENSO_DEFS: SafeHtml = raw(`<svg width="0" height="0" class="enso-de
 
 export type IconName =
     | 'reply' | 'zap' | 'like' | 'quote' | 'bookmark' | 'pin' | 'more' | 'bell'
-    | 'play' | 'globe' | 'image' | 'alert' | 'home' | 'gear' | 'back' | 'notes' | 'thread' | 'search' | 'shield' | 'compose' | 'lock' | 'clock' | 'mute' | 'smile' | 'calendar' | 'map-pin' | 'git';
+    | 'play' | 'globe' | 'image' | 'alert' | 'home' | 'gear' | 'back' | 'notes' | 'thread' | 'search' | 'shield' | 'compose' | 'lock' | 'clock' | 'mute' | 'smile' | 'calendar' | 'map-pin' | 'git' | 'trash';
 
 // Each shape is "<tag attr=\"v\" …/>" raw markup (geometry only - no user data).
 const ICONS: Record<IconName, string[]> = {
@@ -118,6 +118,8 @@ const ICONS: Record<IconName, string[]> = {
     'map-pin': ['<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>', '<circle cx="12" cy="10" r="3"/>'],
     // Feather "git-branch" - the NIP-34 repository glyph.
     git: ['<line x1="6" y1="3" x2="6" y2="15"/>', '<circle cx="18" cy="6" r="3"/>', '<circle cx="6" cy="18" r="3"/>', '<path d="M18 9a9 9 0 0 1-9 9"/>'],
+    // Feather "trash-2" - delete your own post (NIP-09).
+    trash: ['<polyline points="3 6 5 6 21 6"/>', '<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>', '<line x1="10" y1="11" x2="10" y2="17"/>', '<line x1="14" y1="11" x2="14" y2="17"/>'],
     gear: ['<circle cx="12" cy="12" r="3"/>', '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'],
 };
 

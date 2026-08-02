@@ -17,6 +17,7 @@ import type { FeedFilters, SurfaceFlags } from '../data/filters.ts';
 import { CONTENT_TYPES, isCoreType, type ContentPrefs } from '../data/content-prefs.ts';
 import { BACKUP_LISTS } from '../data/list-backup.ts';
 import type { TrustScore } from '../data/trust.ts';
+import { relayInfoCached } from '../data/relay-info.ts';
 
 /** Everything the settings page renders from. The network editors (relays now,
  * media servers in 7b) carry their draft here so a zero-JS add/remove can
@@ -53,6 +54,24 @@ function relaySaveFooter(status?: string, statusErr = false, saveLabel = 'Save')
             <button type="submit" class="busy-btn${status && !statusErr ? ' saved' : ''}"><span class="btn-label">${saveLabel}</span><span class="btn-busy">Saving…</span><span class="btn-done">Saved ✓</span></button>
             ${status && statusErr ? html`<span class="settings-status err">${status}</span>` : html`<span class="settings-status"></span>`}
           </div>`;
+}
+
+/** NIP-11 identity on a settings relay row: the relay's self-declared name (description in the
+ * tooltip) plus auth/paid chips when its document declares those requirements. Renders nothing
+ * until a document is cached - the route warms the cache just before rendering. */
+function relayInfoBadges(url: string): SafeHtml | null {
+    const i = relayInfoCached(url);
+    if (!i) return null;
+    return html`${i.name ? html`<span class="relay-inf" title="${i.description ?? ''}">${i.name}</span>` : null}${i.auth ? html`<span class="relay-badge" title="Requires authentication (NIP-42)">auth</span>` : null}${i.payment ? html`<span class="relay-badge" title="Requires payment">paid</span>` : null}`;
+}
+
+/** Warn when a search relay's NIP-11 document advertises a NIP list without NIP-50 - search
+ * queries skip such relays (see nip50Capable), so the row should say why it's inert. */
+function nip50Warn(url: string): SafeHtml | null {
+    const i = relayInfoCached(url);
+    return i?.nips?.length && !i.nips.includes(50)
+        ? html`<span class="relay-badge warn" title="This relay doesn't advertise NIP-50 search, so search queries skip it">no search</span>`
+        : null;
 }
 
 /** The shared ✕ remove button for a relay-editor row. `editPath` is the section's stateless
@@ -263,6 +282,8 @@ export function searchRelayEditor(kind: 'note' | 'profile', urls: string[], stat
               <input type="hidden" name="relay" value="${url}">
               ${relayScoreChip(url, undefined, `rscore-${kind}-${shortHash(url)}`)}
               <span class="relay-url" title="${url}">${shortRelay(url)}</span>
+              ${relayInfoBadges(url)}
+              ${nip50Warn(url)}
               ${relayRemoveBtn(url, '/settings/search/edit', id)}
             </li>`);
     return html`
@@ -537,6 +558,7 @@ export function relaySection(draft: RelayEntry[], status?: string, statusErr = f
               <input type="hidden" name="relay" value="${r.url}">
               ${relayScoreChip(r.url)}
               <span class="relay-url" title="${r.url}">${shortRelay(r.url)}</span>
+              ${relayInfoBadges(r.url)}
               <div class="rw-group">${rwChip('read', r.url, 'Read', r.read)}${rwChip('write', r.url, 'Write', r.write)}</div>
               ${relayRemoveBtn(r.url, '/settings/relays/edit', 'relay-section')}
             </li>`);
@@ -566,6 +588,7 @@ export function dmRelaySection(draft: string[], status?: string, statusErr = fal
               <input type="hidden" name="dmrelay" value="${url}">
               ${relayScoreChip(url, undefined, `rscore-dm-${shortHash(url)}`)}
               <span class="relay-url" title="${url}">${shortRelay(url)}</span>
+              ${relayInfoBadges(url)}
               ${relayRemoveBtn(url, '/settings/dm-relays/edit', 'dm-relay-section')}
             </li>`);
     return html`

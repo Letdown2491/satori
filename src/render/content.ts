@@ -492,7 +492,7 @@ function inlineText(s: string, profiles?: ProfileMap): SafeHtml {
 }
 
 /** Resolve urls / nostr entities in a markdown text fragment (no whitespace normalize). */
-function inlineEntities(text: string, profiles?: ProfileMap): SafeHtml {
+export function inlineEntities(text: string, profiles?: ProfileMap): SafeHtml {
     const parts: SafeHtml[] = [];
     for (const tok of tokenize(text, false)) {
         if (tok.t === 'text') parts.push(html`${tok.value}`);

@@ -6,6 +6,8 @@
 import { html, type SafeHtml } from '../html.ts';
 import { icon, type IconName } from './svg.ts';
 import { isOn, type ActionName } from '../actions.ts';
+import { isAddressable, coordinateOf } from '../nostr/tags.ts';
+import type { NostrEvent } from '../nostr/types.ts';
 import { cachedReaction } from '../data/engagement-cache.ts';
 import { REACTIONS } from '../data/reactions.ts';
 import { userEmojiCached } from '../data/emoji-sets.ts';
@@ -93,6 +95,23 @@ export function likeButton(s: Session, noteId: string, author: string, kind: num
         <label class="note-act react-more" for="pal-${noteId}" title="React" aria-label="React">${icon('smile')}</label>
         <span class="react-palette">${REACTIONS.map((e) => { const g = e === '+' ? '❤️' : e; return html`<button type="submit" name="emoji" value="${e}" class="react-opt" title="React ${g}" aria-label="React ${g}">${g}</button>`; })}${custom.map(([code, url]) => html`<button type="submit" name="emoji" value="${code}" class="react-opt" title="React :${code}:" aria-label="React ${code}"><img class="emoji" src="${imgSrc(url)}" alt=":${code}:" loading="lazy"></button>`)}</span>
       </form>`;
+}
+
+/** Delete-your-own-post glyph (NIP-09). Not part of any kind's action vocabulary: deletion is
+ * an OWNERSHIP affordance, so noteActions/articleActions append it for every own event
+ * regardless of kind. The POST returns an inline confirm in place of the glyph (nothing is
+ * signed yet); only the confirm builds + publishes the kind:5. `coord` rides along for
+ * addressable kinds so the deletion carries the `a` tag beside the `e`. */
+export function deleteActRaw(id: string, kind: number, coord: string): SafeHtml {
+    return html`<form id="del-${id}" class="act-form" action="/delete/${id}" method="post" h-post h-target="#del-${id}" h-swap="outer">
+        <input type="hidden" name="k" value="${String(kind)}">
+        ${coord ? html`<input type="hidden" name="a" value="${coord}">` : null}
+        <button type="submit" class="note-act delete" title="Delete" aria-label="Delete">${icon('trash')}</button>
+      </form>`;
+}
+
+export function deleteAct(ev: NostrEvent): SafeHtml {
+    return deleteActRaw(ev.id, ev.kind, isAddressable(ev.kind) ? coordinateOf(ev) : '');
 }
 
 /** A text action (follow / mute) on a profile - `.follow-btn` / `.mute-btn`. The
