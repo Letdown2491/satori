@@ -43,6 +43,12 @@ export function chunk<T>(arr: T[], size: number): T[][] {
     return out;
 }
 
+/** The light relay-url MAP KEY normalizer: lowercase, no trailing slash, no validation. For keying
+ * caches/sets where the url is already relay-shaped (pool auth sets, seen-relays, relay-info); the
+ * validating normalizeRelayUrl below stays the boundary for user-entered urls. One copy - this
+ * existed inline in four files before it earned the export. */
+export const relayKey = (u: string): string => u.trim().replace(/\/+$/, '').toLowerCase();
+
 /** Normalize a relay URL for dedup/grouping: lowercase, no trailing slash. `assumeWss` prepends wss://
  * to a bare host (for user-entered relay sets), so settings + routing agree on one canonical form. */
 export function normalizeRelayUrl(url: string, opts: { assumeWss?: boolean } = {}): string | null {

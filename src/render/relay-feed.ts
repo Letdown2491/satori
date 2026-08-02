@@ -21,11 +21,13 @@ export function favStar(url: string, fav: boolean): SafeHtml {
 }
 
 /** The bar above a relay timeline: the relay's label + a favorite star. With a cached NIP-11
- * document the relay's self-declared name leads (url in the tooltip) and its description runs
- * beside it, so "whose relay am I reading" is answered by the relay itself. */
+ * document the relay's self-declared name leads and its description runs beside it, so "whose
+ * relay am I reading" is answered by the relay itself. The real HOST stays visible next to a
+ * self-declared name (not tooltip-only): the name is the relay's word, and a hostile relay
+ * could otherwise present as some other relay entirely. */
 export function relayFeedBar(url: string, fav: boolean): SafeHtml {
     const info = relayInfoCached(url);
-    return html`<div class="relay-bar"><span class="relay-bar-name" title="${url}">${icon('globe')} ${relayLabel(url, info?.name)}</span>${info?.description ? html`<span class="relay-bar-desc" title="${info.description}">${info.description}</span>` : null}${favStar(url, fav)}</div>`;
+    return html`<div class="relay-bar"><span class="relay-bar-name" title="${url}">${icon('globe')} ${relayLabel(url, info?.name)}</span>${info?.name ? html`<span class="relay-bar-host">${relayLabel(url)}</span>` : null}${info?.description ? html`<span class="relay-bar-desc" title="${info.description}">${info.description}</span>` : null}${favStar(url, fav)}</div>`;
 }
 
 /** The "type a relay URL → Browse" form, shared by the modal picker and the full-page fallback. */
@@ -67,7 +69,7 @@ export function relayPickerBody(favorites: SavedRelay[], myRelays: string[]): Sa
     const row = (url: string, name: string | undefined, fav: boolean): SafeHtml => {
         const enc = encodeURIComponent(url);
         return html`<li class="relay-pick-row">
-          <a class="relay-pick-name" href="/relay?r=${enc}" h-get h-scroll="top instant" title="${url}">${icon('globe')} ${relayLabel(url, name ?? relayInfoCached(url)?.name)}</a>
+          <a class="relay-pick-name" href="/relay?r=${enc}" h-get h-scroll="top instant" title="${url}">${icon('globe')} ${relayLabel(url, name ?? relayInfoCached(url)?.name)}${!name && relayInfoCached(url)?.name ? html` <span class="relay-pick-host">${relayLabel(url)}</span>` : null}</a>
           ${starButton(fav, 'relay-fav-mini', `/relay/favorite?r=${enc}&from=pick`, '#relay-picker-body', 'inner')}
         </li>`;
     };

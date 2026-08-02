@@ -110,7 +110,7 @@ export async function postAction(ctx: Ctx): Promise<void> {
     if (!p) { notFound(ctx); return; }
     const { action, target } = p;
 
-    const prev = await ensureList(s, actionKind(action));
+    const prev = await ensureList(s, actionKind(action), { retry: true }); // bypass the unknown sentinel: a toggle deserves a fresh read
     // Read-before-write guard: a truncated-empty read leaves the list UNKNOWN (ensureList
     // caches nothing). Building a toggle from "nothing" would publish a one-entry list over
     // the real one, so refuse and let the retry re-read. Covers all three write paths below.

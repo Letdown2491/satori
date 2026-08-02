@@ -281,7 +281,7 @@ export async function postThreadPrivateSeals(ctx: Ctx): Promise<void> {
     const noteId = threadNoteId(entity);
     const chainId = ctx.query.get('chain') ?? '';
     const results = await readBatchResults(ctx.req);
-    const next = results ? applySeals(s, chainId, results) : null;
+    const next = results ? await applySeals(s, chainId, results) : null;
     if (next) { sendSignRequest(ctx, { items: next.items }, `/t/${entity}/private/rumors?chain=${chainId}`, 'nip44_decrypt_batch'); return; }
     if (noteId) await appendThreadPrivates(ctx, s as Session & { me: string }, chainId, noteId, entity); else sendFragment(ctx, html``);
 }

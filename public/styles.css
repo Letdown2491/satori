@@ -832,6 +832,8 @@
         .relay-badge { font-size: 0.72em; color: var(--muted); border: 1px solid var(--border, currentColor); border-radius: 8px; padding: 0 6px; line-height: 1.5; white-space: nowrap; }
         .relay-badge.warn { color: var(--danger, #c0392b); border-color: currentColor; }
         .relay-bar-desc { font-size: 0.85em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; margin: 0 8px; }
+        /* The real host stays visible beside a relay's self-declared NIP-11 name (anti-spoofing). */
+        .relay-bar-host, .relay-pick-host { font-size: 0.8em; color: var(--muted); white-space: nowrap; }
         /* NIP-09 delete (own posts): quiet glyph; armed confirm shows delete + keep side by side.
            `deleted` is the inert post-delete state - the card itself drops on the next load. */
         .note-act.delete:hover, .note-act.delete.active { color: var(--danger, #c0392b); }

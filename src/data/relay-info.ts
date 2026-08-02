@@ -14,6 +14,7 @@
 import { join } from 'node:path';
 import { jsonStore, debouncedFlush } from './json-store.ts';
 import { isPublicHttpUrl } from '../ssrf.ts';
+import { relayKey } from '../nostr/nip65.ts';
 import { torRequest } from './torfetch.ts';
 
 const OK_TTL = 24 * 3600_000;   // a fresh document is good for a day
@@ -23,15 +24,13 @@ const FETCH_MS = 6000;
 const MAX_BYTES = 128 * 1024;
 const FILE = process.env.SATORI_RELAY_INFO_FILE || join(process.cwd(), '.data', 'relay-info.json');
 
+// Only the fields a surface actually renders (or a gate reads) are kept - icon/contact/
+// software/version exist in the wild but storing them unrendered would be dead data.
 export interface RelayInfo {
     ok: boolean;          // false = negative-cached miss
     at: number;           // fetch time (ms)
     name?: string;
     description?: string;
-    icon?: string;        // public http(s) url only
-    contact?: string;
-    software?: string;
-    version?: string;
     nips?: number[];      // supported_nips, when advertised
     auth?: boolean;       // limitation.auth_required
     payment?: boolean;    // limitation.payment_required
@@ -40,7 +39,7 @@ export interface RelayInfo {
 interface Stored extends Record<string, unknown> { [url: string]: unknown }
 const { readAll, writeAll } = jsonStore<Stored>(FILE, 'relay-info');
 
-const norm = (u: string): string => u.trim().replace(/\/+$/, '').toLowerCase();
+const norm = relayKey; // the shared light key-normalizer (nip65)
 const infos = new Map<string, RelayInfo>(Object.entries(readAll()).slice(-MAX_ENTRIES) as [string, RelayInfo][]);
 const flusher = debouncedFlush(() => writeAll(Object.fromEntries(infos)), 10000);
 
@@ -52,28 +51,27 @@ export function relayInfoCached(url: string): RelayInfo | null {
     return i && i.ok && fresh(i) ? i : null;
 }
 
-/** A bounded string field from untrusted JSON: the value when it's a string, trimmed + capped, else undefined. */
+/** A bounded string field from untrusted JSON: trimmed, capped, and stripped of control and
+ * format characters (\p{Cc}\p{Cf} - covers bidi overrides and zero-width tricks). A relay's
+ * self-declared name replaces a host label in the UI, so it must not be able to visually
+ * impersonate another host via RTL/invisible characters. */
 function str(v: unknown, cap: number): string | undefined {
-    return typeof v === 'string' && v.trim() ? v.trim().slice(0, cap) : undefined;
+    if (typeof v !== 'string') return undefined;
+    const clean = v.replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
+    return clean ? clean.slice(0, cap) : undefined;
 }
 
 /** Parse + sanitize a NIP-11 document. Every field is untrusted remote JSON: strings are capped
- * (they land in tooltips/labels), the icon must itself pass the SSRF screen (it may be proxied
- * later), supported_nips keeps integers only. */
+ * (they land in tooltips/labels), supported_nips keeps integers only. */
 function parseInfo(json: unknown): RelayInfo {
     const j = (json ?? {}) as Record<string, unknown>;
     const lim = (j.limitation ?? {}) as Record<string, unknown>;
-    const icon = str(j.icon, 512);
     const nips = Array.isArray(j.supported_nips) ? j.supported_nips.filter((n): n is number => Number.isInteger(n)).slice(0, 256) : undefined;
     return {
         ok: true,
         at: Date.now(),
         name: str(j.name, 64),
         description: str(j.description, 280),
-        icon: icon && isPublicHttpUrl(icon) ? icon : undefined,
-        contact: str(j.contact, 128),
-        software: str(j.software, 128),
-        version: str(j.version, 32),
         ...(nips ? { nips } : {}),
         ...(typeof lim.auth_required === 'boolean' ? { auth: lim.auth_required } : {}),
         ...(typeof lim.payment_required === 'boolean' ? { payment: lim.payment_required } : {}),
@@ -125,14 +123,18 @@ export function ensureRelayInfo(urls: string[], waitMs?: number): Promise<void> 
     return Promise.race([all, new Promise<void>((r) => setTimeout(r, waitMs))]);
 }
 
-/** Search-capability gate: drop relays whose NIP-11 document advertises a NIP list WITHOUT
- * NIP-50 - they will never answer a search filter. Unknown relays (no document, no nips field)
- * are kept: absence of evidence isn't refusal. Never returns empty - if every configured relay
- * is known-incapable the original list is used, so search degrades instead of breaking. */
+/** True when a relay's NIP-11 document advertises a NIP list WITHOUT NIP-50 - the one shared
+ * predicate behind the search gate and the settings "no search" chip, so they can't drift. */
+export function lacksNip50(url: string): boolean {
+    const i = relayInfoCached(url);
+    return !!(i?.nips?.length && !i.nips.includes(50));
+}
+
+/** Search-capability gate: drop relays known (via NIP-11) to lack NIP-50 - they will never
+ * answer a search filter. Unknown relays (no document, no nips field) are kept: absence of
+ * evidence isn't refusal. Never returns empty - if every configured relay is known-incapable
+ * the original list is used, so search degrades instead of breaking. */
 export function nip50Capable(relays: string[]): string[] {
-    const kept = relays.filter((u) => {
-        const i = relayInfoCached(u);
-        return !(i?.nips?.length && !i.nips.includes(50));
-    });
+    const kept = relays.filter((u) => !lacksNip50(u));
     return kept.length ? kept : relays;
 }

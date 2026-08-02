@@ -11,7 +11,7 @@
 // there would stop resolving until you visited again. Bounded so the file can't grow without limit.
 
 import { join } from 'node:path';
-import { INDEXER_RELAYS } from '../nostr/nip65.ts';
+import { INDEXER_RELAYS, relayKey } from '../nostr/nip65.ts';
 import { isPublicWsUrl } from '../ssrf.ts';
 import { jsonStore, debouncedFlush } from './json-store.ts';
 
@@ -19,7 +19,7 @@ const MAX_PER_AUTHOR = 6;   // keep the most-recently-seen relays per author (a 
 const MAX_AUTHORS = 8000;   // LRU cap so the map (and its file) can't grow without bound on a busy daemon
 const FILE = process.env.SATORI_SEEN_RELAYS_FILE || join(process.cwd(), '.data', 'seen-relays.json');
 
-const norm = (u: string): string => u.replace(/\/+$/, '').toLowerCase();
+const norm = relayKey; // the shared light key-normalizer (nip65)
 const INDEXERS = new Set(INDEXER_RELAYS.map(norm));
 
 const { readAll, writeAll } = jsonStore<Record<string, string[]>>(FILE, 'seen-relays');

@@ -17,7 +17,7 @@ import type { FeedFilters, SurfaceFlags } from '../data/filters.ts';
 import { CONTENT_TYPES, isCoreType, type ContentPrefs } from '../data/content-prefs.ts';
 import { BACKUP_LISTS } from '../data/list-backup.ts';
 import type { TrustScore } from '../data/trust.ts';
-import { relayInfoCached } from '../data/relay-info.ts';
+import { relayInfoCached, lacksNip50 } from '../data/relay-info.ts';
 
 /** Everything the settings page renders from. The network editors (relays now,
  * media servers in 7b) carry their draft here so a zero-JS add/remove can
@@ -65,11 +65,10 @@ function relayInfoBadges(url: string): SafeHtml | null {
     return html`${i.name ? html`<span class="relay-inf" title="${i.description ?? ''}">${i.name}</span>` : null}${i.auth ? html`<span class="relay-badge" title="Requires authentication (NIP-42)">auth</span>` : null}${i.payment ? html`<span class="relay-badge" title="Requires payment">paid</span>` : null}`;
 }
 
-/** Warn when a search relay's NIP-11 document advertises a NIP list without NIP-50 - search
- * queries skip such relays (see nip50Capable), so the row should say why it's inert. */
+/** Warn when a search relay is known to lack NIP-50 - search queries skip such relays (the
+ * gate and this chip share one predicate, lacksNip50, so the row can't lie about the gate). */
 function nip50Warn(url: string): SafeHtml | null {
-    const i = relayInfoCached(url);
-    return i?.nips?.length && !i.nips.includes(50)
+    return lacksNip50(url)
         ? html`<span class="relay-badge warn" title="This relay doesn't advertise NIP-50 search, so search queries skip it">no search</span>`
         : null;
 }

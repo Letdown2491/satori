@@ -436,16 +436,17 @@ export async function getRelay(ctx: Ctx): Promise<void> {
     const until = untilParam && /^\d+$/.test(untilParam) ? Number(untilParam) : undefined;
     // One favorites read: derive both the title's saved-name and the bar's star state (url is normalized).
     const fav = getFavoriteRelays(s.me).find((r) => r.url === url);
-    // NIP-11: fetch the relay's identity document (capped - a relay with no document must not
-    // stall its own timeline). Your saved nickname outranks the relay's self-declared name.
-    await ensureRelayInfo([url], 1500);
-    const title = relayLabel(url, fav?.name ?? relayInfoCached(url)?.name);
 
     if (ctx.isPartial && ctx.hTarget === '#more') {
+        // Infinite-scroll partial: no header renders here, so never wait on the NIP-11 fetch.
         const { visible, more } = await fillPage(s, src, until);
         sendFragment(ctx, html`${noteList(visible, s.profiles, s, { mute: true, faces: true })}${more}`);
         return;
     }
+    // NIP-11: fetch the relay's identity document (capped - a relay with no document must not
+    // stall its own timeline). Your saved nickname outranks the relay's self-declared name.
+    await ensureRelayInfo([url], 1500);
+    const title = relayLabel(url, fav?.name ?? relayInfoCached(url)?.name);
     const { content } = await buildFeed(s, src, until);
     const body = html`${relayFeedBar(url, !!fav)}${content}`;
     sendPage(ctx, body, chromeFor(ctx, s, { active: 'feed', title, relayLabel: title }));

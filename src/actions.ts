@@ -174,8 +174,9 @@ export async function published(s: Session, signed: NostrEvent, relays?: string[
     const results = await s.pool.publish(relays ?? writeRelays(s), signed);
     const ok = results.some((r) => r.status === 'fulfilled');
     // NIP-09: your own accepted deletion (a delete, an unlike) takes effect locally at once -
-    // the tombstone suppresses the target everywhere without waiting for relays to echo it back.
-    if (ok && signed.kind === 5) recordDeletion(signed);
+    // the tombstone suppresses the target everywhere without waiting for relays to echo it
+    // back. PINNED: your own tombstones must survive any amount of relay-fed tombstone churn.
+    if (ok && signed.kind === 5) recordDeletion(signed, true);
     return ok;
 }
 
@@ -183,10 +184,23 @@ export async function published(s: Session, signed: NostrEvent, relays?: string[
 // (instead of both querying and both writing s.lists after the await).
 const listInflight = new Map<string, Promise<NostrEvent | null>>();
 
-/** Load (and cache) the user's list event of a kind. */
-export async function ensureList(s: Session, kind: number): Promise<NostrEvent | null> {
+// Truncated-empty reads leave the list UNKNOWN (never cached in s.lists). This short-TTL
+// sentinel keeps renders from re-paying the full complete-read fan-out on every page for a
+// user whose relay set chronically truncates - reads within the TTL just render empty, and
+// listKnown stays false so writes stay refused. A toggle passes retry:true to bypass it (the
+// user explicitly asked; one fresh attempt is worth the wait).
+const listUnknownAt = new Map<string, number>();
+const LIST_UNKNOWN_TTL = 60_000;
+
+/** Load (and cache) the user's list event of a kind.
+ * CONTRACT for read-modify-write callers: a resolved null can mean confirmed-absent OR
+ * unknown - check listKnown() before building any event from the result, or a failed read
+ * becomes a published one-entry list over the real one (the mute-list clobber class). */
+export async function ensureList(s: Session, kind: number, opts: { retry?: boolean } = {}): Promise<NostrEvent | null> {
     if (s.lists.has(kind)) return s.lists.get(kind) ?? null;
     const key = `${s.id}:${kind}`;
+    const unknownAt = listUnknownAt.get(key);
+    if (!opts.retry && unknownAt !== undefined && Date.now() - unknownAt < LIST_UNKNOWN_TTL) return null;
     const inf = listInflight.get(key);
     if (inf) return inf;
     const p = (async (): Promise<NostrEvent | null> => {
@@ -199,10 +213,12 @@ export async function ensureList(s: Session, kind: number): Promise<NostrEvent |
         const cur = s.lists.get(kind);
         if (cur && (!newest || cur.created_at >= newest.created_at)) return cur;
         // A truncated-EMPTY read is UNKNOWN, not absent: the list may exist on a relay that
-        // didn't answer in time. Cache nothing (the next call re-queries), so a toggle can't
-        // rebuild "from nothing" and wipe the real list. A confirmed-absent read (every relay
-        // EOSE'd with no event) still caches null, so a first toggle can create the list.
-        if (!newest && track.truncated) return null;
+        // didn't answer (or refused - the tracked read counts a denial as truncation). Cache
+        // only the short-TTL sentinel, so a toggle can't rebuild "from nothing" and wipe the
+        // real list. A confirmed-absent read (every relay cleanly EOSE'd with no event) still
+        // caches null, so a first toggle can create the list.
+        if (!newest && track.truncated) { listUnknownAt.set(key, Date.now()); return null; }
+        listUnknownAt.delete(key);
         s.lists.set(kind, newest);
         return newest;
     })();
@@ -232,7 +248,9 @@ export function isOn(s: Session, name: ActionName, target: string): boolean {
 }
 
 /** Build the toggled list event: drop the target tag, add it back iff `on`.
- * Other tags + the content blob are preserved (no data loss). */
+ * Other tags + the content blob are preserved (no data loss). `prev` MUST come from an
+ * ensureList whose listKnown() is true - building from an UNKNOWN read publishes a one-entry
+ * list over the real one (see the ensureList contract). */
 export function buildToggle(name: ActionName, prev: NostrEvent | null, target: string, on: boolean, me: string): UnsignedEvent {
     const { tag, value } = resolveTarget(name, target);
     const tags = (prev?.tags ?? []).filter((t) => !(t[0] === tag && t[1] === value));

@@ -4,7 +4,7 @@
 
 import { SimplePool } from 'nostr-tools/pool';
 import type { Filter } from 'nostr-tools';
-import { toPoolUrls, toPoolUrl, fromPoolUrl } from '../nostr/nip65.ts';
+import { toPoolUrls, toPoolUrl, fromPoolUrl, relayKey } from '../nostr/nip65.ts';
 import { relaysViaTor } from '../privacy.ts';
 import { localReadMode, localWriteMode, localRelayUrl, isLocalRelayUrl, localFetchMissing } from '../local-relay.ts';
 import { recordSeen } from './seen-relays.ts';
@@ -36,7 +36,7 @@ export interface ReadOpts { fast?: boolean; profile?: boolean; budget?: 'page' |
  * caller (own lists) tell "confirmed absent" from "didn't load in time". */
 export interface QueryTrack { truncated: boolean }
 
-const normUrl = (u: string) => u.replace(/\/+$/, '').toLowerCase();
+const normUrl = relayKey; // the shared light key-normalizer (nip65)
 
 // NIP-46 bunker RPC transport kind. Publishes of this kind are the signer channel (connect / sign
 // requests) and must reach EXACTLY the bunker's relays - the local-relay write policy must never
@@ -290,7 +290,76 @@ export class Pool {
     query(relays: string[], filter: Filter, opts: ReadOpts = {}): Promise<NostrEvent[]> {
         this.healIfSuspended(); // drop zombie sockets before we subscribe if we just woke from sleep
         if (opts.resolve && localFetchMissing()) return this.resolveQuery(relays, filter, opts);
+        if (opts.complete && opts.track) return this.queryCompleteTracked(relays, filter, opts); // own-list reads: per-relay accounting
         return this.queryOnce(relays, filter, opts);
+    }
+
+    /** The NIP-09 chokepoint shared by every read path: kind:5 deletions are CONSUMED (recorded,
+     * never returned - nothing renders a kind:5) and everything else is filtered against the
+     * tombstones. Two passes, so a deletion takes effect even on the result set that carried it,
+     * regardless of arrival order within it. */
+    private consumeAndFilter(events: Map<string, NostrEvent>): NostrEvent[] {
+        for (const e of events.values()) if (e.kind === 5) recordDeletion(e);
+        const list: NostrEvent[] = [];
+        for (const e of events.values()) if (e.kind !== 5 && !isDeletedEvent(e)) list.push(e);
+        return list;
+    }
+
+    /** A complete+tracked read (the read-modify-write of your OWN lists) runs ONE SUB PER RELAY,
+     * so a relay that REFUSED or dropped the request is distinguishable from one that cleanly
+     * served an empty result. On the pooled path nostr-tools counts a relay CLOSE toward the
+     * all-EOSE condition, so a read where every relay DENIED resolves empty and looks
+     * confirmed-absent - exactly the state a list toggle must never rebuild from (the mute-list
+     * clobber class). Here `track.truncated` stays false only when EVERY relay EOSE'd cleanly
+     * (no relay-initiated close, no hard cap): nothing but a fully clean empty read counts as
+     * "you have no list". Costs N single-relay subs instead of one pooled sub - fine for the
+     * once-per-session own-list loads this serves. */
+    private queryCompleteTracked(relays: string[], filter: Filter, opts: ReadOpts): Promise<NostrEvent[]> {
+        relays = this.withLocalRead(relays, opts); // complete → union (the private relay may hold the newest version)
+        if (!relays.length) { if (opts.track) opts.track.truncated = true; return Promise.resolve([]); } // asked nobody = unknown
+        const tor = relaysViaTor();
+        const maxWait = tor ? TOR_LIST_MAX_WAIT : LIST_MAX_WAIT;
+        this.raw.maxWaitForConnection = tor ? TOR_CONNECT_MAX_WAIT : CONNECT_MAX_WAIT;
+        return new Promise<NostrEvent[]>((resolve) => {
+            const events = new Map<string, NostrEvent>();
+            const state = relays.map(() => ({ eosed: false, closed: false }));
+            const subs: { close: (reason?: string) => void }[] = [];
+            let settled = false;
+            let done = 0;
+            let hardTimer: ReturnType<typeof setTimeout>;
+            let decideTimer: ReturnType<typeof setTimeout> | undefined;
+            const finish = (hardCap: boolean): void => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(hardTimer);
+                clearTimeout(decideTimer);
+                for (const su of subs) { try { su.close(); } catch { /* already closed */ } }
+                if ((hardCap || !state.every((st) => st.eosed && !st.closed)) && opts.track) opts.track.truncated = true;
+                const list = this.consumeAndFilter(events);
+                this.recordSeenOn(list);
+                resolve(list);
+                if (!filter.kinds?.includes(5)) this.checkDeletions(relays, list);
+            };
+            // A denied relay fires oneose and THEN onclose in the same tick (nostr-tools maps close
+            // to EOSE), so the verdict waits one macrotask after the last relay reports - letting
+            // those synchronous closes land in `state` before cleanliness is judged.
+            const maybeDecide = (): void => {
+                if (++done < relays.length) return;
+                decideTimer = setTimeout(() => finish(false), 0);
+            };
+            hardTimer = setTimeout(() => finish(true), maxWait);
+            relays.forEach((r, i) => {
+                try {
+                    subs.push(this.raw.subscribeMany(toPoolUrls([r]), filter as never, {
+                        onevent: (e: NostrEvent) => { if (!events.has(e.id) && !isExpired(e)) events.set(e.id, e); },
+                        oneose: () => { if (!state[i]!.eosed) { state[i]!.eosed = true; maybeDecide(); } },
+                        onclose: () => { if (!settled) state[i]!.closed = true; }, // relay-initiated (ours comes after settle)
+                        onauth: this.onauth,
+                        maxWait,
+                    } as never) as { close: (reason?: string) => void });
+                } catch { state[i]!.closed = true; maybeDecide(); }
+            });
+        });
     }
 
     /** Only mode + "fetch missing" ON: try the private relay, then fetch what it lacks from the given
@@ -342,15 +411,7 @@ export class Pool {
                 clearTimeout(quietTimer);
                 clearTimeout(hardTimer);
                 try { sub?.close(); } catch { /* already closed */ }
-                // NIP-09 chokepoint: kind:5 deletions are CONSUMED wherever they arrive (recorded
-                // as tombstones, never returned - nothing renders a kind:5), and every other event
-                // is filtered against the store, so a deletion takes effect on the very query that
-                // carried it and on every cached copy's next pass through here.
-                const list: NostrEvent[] = [];
-                for (const e of events.values()) {
-                    if (e.kind === 5) { recordDeletion(e); continue; }
-                    if (!isDeletedEvent(e)) list.push(e);
-                }
+                const list = this.consumeAndFilter(events); // NIP-09 chokepoint (see consumeAndFilter)
                 this.recordSeenOn(list);
                 // Per-relay latency profiling (observation only - see relay-latency.ts). Gated on opts.profile
                 // so ONLY the outbox following/followers fan-out feeds it - NOT the "browse a relay" firehose
@@ -460,7 +521,7 @@ export class Pool {
                 settled = true;
                 clearTimeout(timer);
                 try { sub?.close(); } catch { /* already closed */ }
-                if (ev) { this.recordSeenOn([ev]); this.checkDeletions(relays, [ev]); }
+                if (ev) { this.recordSeenOn([ev]); if (!filter.kinds?.includes(5)) this.checkDeletions(relays, [ev]); }
                 resolve(ev);
             };
             const timer = setTimeout(() => finish(null), maxWait);
@@ -520,11 +581,10 @@ export class Pool {
     /** Live status of content relays - every open relay minus the given transport
      * relays - with .onion relays shown by their real URL (not the proxy URL). */
     contentRelays(transport: string[]): { url: string; connected: boolean }[] {
-        const norm = (u: string) => u.replace(/\/+$/, '').toLowerCase();
-        const t = new Set(transport.map(norm));
+        const t = new Set(transport.map(normUrl));
         const out: { url: string; connected: boolean }[] = [];
         for (const [url, connected] of this.raw.listConnectionStatus()) {
-            if (t.has(norm(url))) continue;
+            if (t.has(normUrl(url))) continue;
             out.push({ url: fromPoolUrl(url), connected });
         }
         return out.sort((a, b) => a.url.localeCompare(b.url));

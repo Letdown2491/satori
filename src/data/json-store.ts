@@ -92,3 +92,12 @@ export function trimOldest<K, V>(map: Map<K, V>, cap: number): void {
     let over = map.size - cap;
     for (const k of map.keys()) { if (over-- <= 0) break; map.delete(k); }
 }
+
+/** Reinsert-and-evict: set `key` as most-recently-used (Map insertion order = recency) and drop
+ * the oldest entries over `cap`. The recency idiom the persisted stores share (seen-relays,
+ * deletions, relay-info) - the third copy earned the helper. */
+export function lruSet<K, V>(map: Map<K, V>, key: K, val: V, cap: number): void {
+    map.delete(key);
+    map.set(key, val);
+    trimOldest(map, cap);
+}

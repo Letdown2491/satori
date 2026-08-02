@@ -223,7 +223,7 @@ export async function postDmSeals(ctx: Ctx): Promise<void> {
     const warm = chainWarm(chainId);
     const results = await readBatchResults(ctx.req);
     if (!results) { if (warm) silentPrewarm(ctx); else sendFragment(ctx, html`<div class="notice error">Couldn’t read the decrypted messages.</div>`, errPlace(view)); return; }
-    const next = applySeals(s, chainId, results);
+    const next = await applySeals(s, chainId, results);
     if (next) { sendSignRequest(ctx, { items: next.items }, `/messages/sync/rumors?chain=${chainId}`, 'nip44_decrypt_batch'); return; }
     await continueOrFinalize(ctx, s, chainId, view, warm);
 }

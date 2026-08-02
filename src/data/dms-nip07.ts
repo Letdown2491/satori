@@ -330,29 +330,34 @@ export function applyLegacy(s: Session, chainId: string, results: BatchResult[])
  * opened peer -> needs layer-2; stranger -> deferred Request). Returns the layer-2
  * decrypt batch (seal content -> rumor) for the known set, or null when there's none
  * left to decrypt (caller finalizes). */
-export function applySeals(s: Session, chainId: string, seals: BatchResult[]): { items: DecryptItem[] } | null {
+export async function applySeals(s: Session, chainId: string, seals: BatchResult[]): Promise<{ items: DecryptItem[] } | null> {
     const chain = takeSync(chainId);
     if (!chain) return null;
     const me = s.me!;
     const muted = mutedPubkeys(s);
     const items: DecryptItem[] = [];
     chain.l2 = [];
-    chain.l1.forEach((w, i) => {
+    for (let i = 0; i < chain.l1.length; i++) {
+        // A cold sync can carry the whole wrap window (up to 500 seals) in ONE batch, and each
+        // verifyEvent below is a synchronous schnorr verify - back to back that's a multi-second
+        // event-loop stall on small boxes. Yield every 128, like the zap-receipt verifier.
+        if (i && (i & 127) === 0) await new Promise<void>((r) => setImmediate(r));
+        const w = chain.l1[i]!;
         const r = seals[i];
-        if (!r || !r.ok) { memSet(w.id, { kind: 'drop' }); return; }
+        if (!r || !r.ok) { memSet(w.id, { kind: 'drop' }); continue; }
         let seal: NostrEvent | null = null;
         // NIP-59 MUST: beyond shape, verify the seal's SIGNATURE - the seal is the only signed
         // layer, so it's what proves the sender the rumor will claim. verifyEvent also pins kind 13.
         try { const j = JSON.parse(String(r.value)); if (j && j.kind === 13 && typeof j.pubkey === 'string' && typeof j.content === 'string' && HEX64.test(j.pubkey) && verifyEvent(j as never)) seal = j; } catch { /* drop */ }
-        if (!seal) { memSet(w.id, { kind: 'drop' }); return; }
+        if (!seal) { memSet(w.id, { kind: 'drop' }); continue; }
         const sender = seal.pubkey;
-        if (sender !== me && muted.has(sender)) { memSet(w.id, { kind: 'drop' }); return; }
+        if (sender !== me && muted.has(sender)) { memSet(w.id, { kind: 'drop' }); continue; }
         // Queue EVERYONE (non-muted) for layer-2 - not just follows. A private reply is
         // indistinguishable from a DM until the rumor is decrypted, and strangers reply privately to
         // public notes, so we can't defer them; applyRumors triages by the decrypted inner kind.
         chain.l2.push({ id: w.id, sealPubkey: sender });
         items.push({ pubkey: sender, ciphertext: seal.content });
-    });
+    }
     chains.set(chainId, chain); // keep alive for layer-2 / finalize
     return items.length ? { items } : null;
 }
