@@ -53,6 +53,10 @@ sending you off to another app. Media goes through the daemon so your browser ne
 connects to a stranger's host (and a dead image can be refetched by its hash), anything
 the server fetches can be routed over Tor, your reads and posts can go through a private
 relay only you run, and a short undo window holds a post before it is actually sent.
+You can delete your own posts: the deletion request goes to your relays and the post
+stops rendering everywhere, though a relay that ignores deletions can keep serving its
+copy. And relays introduce themselves: a relay's own name and description show up in
+settings and when you browse it, and search skips relays that say they can't search.
 
 ## Run it
 
